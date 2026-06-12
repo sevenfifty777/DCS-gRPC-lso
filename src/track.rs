@@ -4,9 +4,16 @@ use std::str::FromStr;
 use ultraviolet::{DRotor3, DVec3};
 
 use crate::data::{AirplaneInfo, CarrierInfo};
+use crate::grading::{compute_pass_grade, PassGrade};
 use crate::transform::Transform;
+use crate::utils::m_to_ft;
 
-#[derive(Debug, PartialEq)]
+/// Gate distances in meters at which LSO deviations are sampled.
+const GATE_THREE_QUARTER_NM: f64 = 1389.0;
+const GATE_HALF_NM: f64 = 926.0;
+const GATE_QUARTER_NM: f64 = 463.0;
+
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Datum {
     pub x: f64,
     pub y: f64,
@@ -18,16 +25,38 @@ pub struct Track {
     pilot_name: String,
     previous_distance: f64,
     datums: Vec<Datum>,
+    gate_deviations: GateDeviations,
+    /// Set to `true` once the aircraft enters inside 3/4 nm and below 300 ft AGL.
+    entered_groove: bool,
     grading: Option<Grading>,
     dcs_grading: Option<String>,
     carrier_info: &'static CarrierInfo,
     plane_info: &'static AirplaneInfo,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// GS and lineup deviation recorded at a key gate distance.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct GateDatum {
+    /// Glide slope deviation from ideal path in feet (positive = high, negative = low).
+    pub gs_deviation_ft: f64,
+    /// Lateral lineup deviation in feet (positive = right of centerline, negative = left).
+    pub lineup_ft: f64,
+}
+
+/// Deviation scores sampled at the standard LSO grading gates.
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub struct GateDeviations {
+    pub at_three_quarter_nm: Option<GateDatum>,
+    pub at_half_nm: Option<GateDatum>,
+    pub at_quarter_nm: Option<GateDatum>,
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub enum Grading {
     Unknown,
     Bolter,
+    /// Pilot broke off the approach after entering the groove (inside 3/4 nm, below 300 ft).
+    WaveoffPilot,
     Recovered {
         cable: Option<u8>,
         cable_estimated: Option<u8>,
@@ -38,7 +67,9 @@ pub enum Grading {
 pub struct TrackResult {
     pub pilot_name: String,
     pub grading: Grading,
+    pub pass_grade: PassGrade,
     pub dcs_grading: Option<String>,
+    pub gate_deviations: GateDeviations,
     pub datums: Vec<Datum>,
     pub plane_info: &'static AirplaneInfo,
 }
@@ -53,6 +84,8 @@ impl Track {
             pilot_name: pilot_name.into(),
             previous_distance: f64::MAX,
             datums: Default::default(),
+            gate_deviations: GateDeviations::default(),
+            entered_groove: false,
             grading: None,
             dcs_grading: None,
             carrier_info,
@@ -114,6 +147,27 @@ impl Track {
 
         let hook_offset = self.plane_info.hook.rotated_by(plane.rotation);
         let alt = plane.alt - self.carrier_info.deck_altitude + hook_offset.y;
+
+        // Sample gate deviations at key distances on first crossing.
+        let ideal_gs_alt = x * self.plane_info.glide_slope.to_radians().tan();
+        let gs_deviation_ft = m_to_ft(alt - ideal_gs_alt);
+        let lineup_ft = m_to_ft(y);
+        if x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
+            self.gate_deviations.at_three_quarter_nm =
+                Some(GateDatum { gs_deviation_ft, lineup_ft });
+        }
+        if x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
+            self.gate_deviations.at_half_nm = Some(GateDatum { gs_deviation_ft, lineup_ft });
+        }
+        if x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
+            self.gate_deviations.at_quarter_nm = Some(GateDatum { gs_deviation_ft, lineup_ft });
+        }
+
+        // Mark groove entry: inside 3/4 nm and below 300 ft AGL.
+        if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 {
+            self.entered_groove = true;
+        }
+
         self.datums.push(Datum {
             x,
             y,
@@ -133,7 +187,13 @@ impl Track {
         tracing::debug!(?cable, "landed, stop tracking");
     }
 
-    pub fn finish(self) -> TrackResult {
+    pub fn finish(mut self) -> TrackResult {
+        // If the plane entered the groove but never landed and no other grading was set,
+        // it performed a waveoff.
+        if self.grading.is_none() && self.entered_groove {
+            self.grading = Some(Grading::WaveoffPilot);
+        }
+
         // If DCS grading is set, use its reported wire instead of the estimated one.
         let grading = if let Some(dcs_wire) = self.dcs_grading.as_ref().and_then(|s| {
             s.split_once("WIRE# ")
@@ -155,10 +215,14 @@ impl Track {
             self.grading.unwrap_or_default()
         };
 
+        let pass_grade = compute_pass_grade(&grading, &self.gate_deviations);
+
         TrackResult {
             pilot_name: self.pilot_name,
             grading,
+            pass_grade,
             dcs_grading: self.dcs_grading,
+            gate_deviations: self.gate_deviations,
             datums: self.datums,
             plane_info: self.plane_info,
         }
@@ -176,22 +240,9 @@ impl Track {
             .forward
             .rotated_by(DRotor3::from_rotation_xz(-self.carrier_info.deck_angle));
 
-        // The land event is fired shortly after the aircraft caught the wire, so already when the hook
-        // is past the wire it caught. To compensate for that, move the touchdown position 3.0m back.
+        // The land event fires slightly after the wire is caught, so the hook has already
+        // passed the wire. Move the touchdown 3.0 m forward to compensate.
         let touchdown = touchdown + (forward * 3.0);
-
-        // For some visual debugging, uncomment the println! lines here and in the `.map()` below and
-        // plot them (e.g. in excel in a scatter graph; plotting the top-down view, so only x/y is
-        // usually enough).
-        // println!("name;x;y;z");
-        // println!(
-        //     "plane_position;{};{};{}",
-        //     plane.position.x, plane.position.z, plane.position.y
-        // );
-        // println!(
-        //     "hook_touchdown;{};{};{}",
-        //     touchdown.x, touchdown.z, touchdown.y
-        // );
 
         let cables = [
             (1, &self.carrier_info.cable1),
@@ -208,15 +259,6 @@ impl Track {
             let mid_cable = (pendants.0 - pendants.1) / 2.0;
             let mid_cable = pendants.0 - mid_cable;
             let mid_cable = carrier.position + mid_cable.rotated_by(carrier.rotation);
-
-            // println!(
-            //     "cable_{};{};{};{}",
-            //     nr, mid_cable.x, mid_cable.z, mid_cable.y
-            // );
-            // let p0 = carrier.position + pendants.0.rotated_by(carrier.rotation);
-            // let p1 = carrier.position + pendants.1.rotated_by(carrier.rotation);
-            // println!("p0_{};{};{};{}", nr, p0.x, p0.z, p0.y);
-            // println!("p1_{};{};{};{}", nr, p1.x, p1.z, p1.y);
 
             (nr, mid_cable)
         })

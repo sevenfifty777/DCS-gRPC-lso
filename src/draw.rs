@@ -14,7 +14,7 @@ use plotters_bitmap::bitmap_pixel::RGBPixel;
 use plotters_bitmap::BitMapBackend;
 
 use crate::data::{AirplaneInfo, Aoa};
-use crate::track::{Datum, Grading, TrackResult};
+use crate::track::{Datum, GateDatum, Grading, TrackResult};
 use crate::utils::{ft_to_nm, m_to_ft, m_to_nm, nm_to_ft, nm_to_m};
 
 const THEME_BG: RGBColor = RGBColor(31, 41, 55); // 1F2937
@@ -75,16 +75,41 @@ pub fn draw_chart(
     )?;
 
     root_drawing_area.draw_text(
+        &format!("Grade: {}", track.pass_grade.label()),
+        &text_style,
+        (16, 48),
+    )?;
+
+    root_drawing_area.draw_text(
         &match track.grading {
             Grading::Unknown => Cow::Borrowed(""),
             Grading::Bolter => Cow::Borrowed("Bolter"),
+            Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
             Grading::Recovered { cable, .. } => cable
                 .map(|c| Cow::Owned(format!("Cable {}", c)))
                 .unwrap_or(Cow::Borrowed("(failed to detect cable)")),
         },
         &text_style,
-        (16, 48),
+        (16, 80),
     )?;
+
+    let text_style_small = TextStyle::from(("sans-serif", 18).into_font()).color(&THEME_FG);
+    for (index, (label, gate)) in [
+        ("3/4nm", track.gate_deviations.at_three_quarter_nm.as_ref()),
+        ("1/2nm", track.gate_deviations.at_half_nm.as_ref()),
+        ("1/4nm", track.gate_deviations.at_quarter_nm.as_ref()),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (label, gate) = (*label, *gate);
+        let y_pos = 112 + (index as i32) * 28;
+        root_drawing_area.draw_text(
+            &format!("{}: {}", label, fmt_gate(gate)),
+            &text_style_small,
+            (16, y_pos),
+        )?;
+    }
 
     std::mem::drop(root_drawing_area);
 
@@ -353,6 +378,16 @@ fn text_style() -> TextStyle<'static> {
     TextStyle::from(("sans-serif", 20).into_font()).color(&THEME_FG)
 }
 
+fn fmt_gate(gate: Option<&GateDatum>) -> String {
+    match gate {
+        Some(g) => format!(
+            "GS {:+.0}ft  LU {:+.0}ft",
+            g.gs_deviation_ft, g.lineup_ft
+        ),
+        None => "-".to_string(),
+    }
+}
+
 fn aoa_color(aoa: f64, plane_info: &'static AirplaneInfo) -> RGBColor {
     match (plane_info.aoa_rating)(aoa) {
         Aoa::Fast => THEME_AOA_FAST,
@@ -361,49 +396,6 @@ fn aoa_color(aoa: f64, plane_info: &'static AirplaneInfo) -> RGBColor {
         Aoa::SlightlySlow => THEME_AOA_SLIGHTLY_SLOW,
         Aoa::Slow => THEME_AOA_SLOW,
     }
-
-    /*
-    if plane_type == "F14" {
-            // https://www.heatblur.se/F-14Manual/cockpit.html?highlight=aoa#approach-indexer
-            // aoa degrees for tomcat calculated by degrees=((units/1.0989) - 3.01) from units in manual based off conversation found here:
-            // https://forum.dcs.world/topic/228893-aoa-units-to-degrees-conversion/#:~:text=Which%20makes%20around%201%20unit%3D1%2C67%20degrees.
-            if aoa <= 9.7 {
-                // fast
-                THEME_AOA_FAST
-            } else if aoa <= 10.2 {
-                // slightly fast
-                THEME_AOA_SLIGHTLY_FAST
-            } else if aoa < 11.1 {
-                // on speed
-                THEME_AOA_ON_SPEED
-            } else if aoa < 11.6 {
-                // slightly slow
-                THEME_AOA_SLIGHTLY_SLOW
-            } else {
-                // slow
-                THEME_AOA_SLOW
-            }
-        } else {
-            // default to FA18C
-            // https://forums.vrsimulations.com/support/index.php/Navigation_Tutorial_Flight#Angle_of_Attack_Bracket
-            if aoa <= 6.9 {
-                // fast
-                THEME_AOA_FAST
-            } else if aoa <= 7.4 {
-                // slightly fast
-                THEME_AOA_SLIGHTLY_FAST
-            } else if aoa < 8.8 {
-                // on speed
-                THEME_AOA_ON_SPEED
-            } else if aoa < 9.3 {
-                // slightly slow
-                THEME_AOA_SLIGHTLY_SLOW
-            } else {
-                // slow
-                THEME_AOA_SLOW
-            }
-        }
-        */
 }
 
 struct CustomRange(WithKeyPoints<RangedCoordf64>);

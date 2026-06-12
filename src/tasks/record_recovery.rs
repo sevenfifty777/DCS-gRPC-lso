@@ -22,10 +22,24 @@ use time::OffsetDateTime;
 use tonic::Status;
 
 use crate::client::{HookClient, MissionClient, UnitClient};
-use crate::track::{Grading, Track};
+use crate::grading::PassGrade;
+use crate::track::{Datum, GateDeviations, Grading, Track};
 use crate::transform::Transform;
 
-use super::TaskParams;
+use super::{CompletedPass, TaskParams};
+
+/// Serialisable snapshot of a single recovery attempt, written to a `.json` file alongside
+/// the ACMI and PNG chart.
+#[derive(serde::Serialize)]
+struct RecoveryReport<'a> {
+    pilot_name: &'a str,
+    grading: &'a Grading,
+    pass_grade: PassGrade,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dcs_grading: Option<&'a str>,
+    gate_deviations: &'a GateDeviations,
+    datums: &'a [Datum],
+}
 
 pub static FILENAME_DATETIME_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>> =
     Lazy::new(|| {
@@ -339,18 +353,77 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         }
     }
 
-    // If the plane was never below 100ft, don't consider it a worthy recovery attempt and discard
-    // the record
+    // If the plane was never below 100 m MSL, discard as a non-attempt.
+    // Waveoffs and bolters still pass this check since they require being in the groove.
     if lowest_altitude > 100.0 {
-        tracing::debug!("discard as plane was never below 100ft");
+        tracing::debug!("discard as plane was never below 100m MSL");
         return Ok(());
     }
 
     recording.into_inner();
     let data = acmi.into_inner();
-    let acmi_path = params.out_dir.join(&filename).with_extension("zip.acmi");
-    tokio::fs::write(&acmi_path, &data).await?;
+    let acmi_path = if params.record_acmi {
+        let path = params.out_dir.join(&filename).with_extension("zip.acmi");
+        tokio::fs::write(&path, &data).await?;
+        Some(path)
+    } else {
+        None
+    };
     let track = datums.finish();
+
+    // Discard if no recognisable outcome was established (e.g. plane flew through the zone
+    // without ever entering the groove).
+    if track.grading == Grading::Unknown {
+        tracing::debug!("discard: no recovery outcome (Unknown grading)");
+        return Ok(());
+    }
+
+    // Write JSON report.
+    let json_path = params.out_dir.join(&filename).with_extension("json");
+    let report = RecoveryReport {
+        pilot_name: &track.pilot_name,
+        grading: &track.grading,
+        pass_grade: track.pass_grade,
+        dcs_grading: track.dcs_grading.as_deref(),
+        gate_deviations: &track.gate_deviations,
+        datums: &track.datums,
+    };
+    tokio::fs::write(&json_path, serde_json::to_vec_pretty(&report)?).await?;
+
+    let wire = match track.grading {
+        Grading::Recovered { cable, .. } => cable,
+        _ => None,
+    };
+    let completed = CompletedPass {
+        timestamp: filename.clone(),
+        pilot_name: track.pilot_name.clone(),
+        pass_grade: track.pass_grade,
+        wire,
+        dcs_grading: track.dcs_grading.clone(),
+    };
+
+    // Append to in-memory session greenie board log.
+    if let Ok(mut log) = params.session_log.lock() {
+        log.push(completed.clone());
+    }
+
+    // Persist to SQLite database (non-fatal — a write failure must not abort the recovery).
+    {
+        let db = params.db.clone();
+        let entry = crate::db::DbPass {
+            timestamp: completed.timestamp.clone(),
+            pilot_name: completed.pilot_name.clone(),
+            pass_grade_label: completed.pass_grade.label().to_string(),
+            wire: completed.wire,
+            dcs_grading: completed.dcs_grading.clone(),
+        };
+        match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(?err, "failed to persist pass to database"),
+            Err(err) => tracing::error!(?err, "database task panicked"),
+        }
+    }
+
     let chart_path = crate::draw::draw_chart(params.out_dir, &filename, &track)?;
 
     if let Some(discord_webhook) = params.discord_webhook.as_deref() {
@@ -368,27 +441,46 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 true,
             )
             .field(
-                "Grading",
+                "Grade",
+                track.pass_grade.label(),
+                true,
+            )
+            .field(
+                "Outcome",
                 match track.grading {
                     Grading::Unknown => Cow::Borrowed("unknown"),
                     Grading::Bolter => Cow::Borrowed("Bolter"),
+                    Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
                     Grading::Recovered { cable, .. } => cable
-                        .map(|c| Cow::Owned(format!("#{}", c)))
+                        .map(|c| Cow::Owned(format!("Wire #{}", c)))
                         .unwrap_or(Cow::Borrowed("-")),
                 },
                 true,
+            )
+            .field(
+                "Gates (GS / LU)",
+                {
+                    let fmt = |g: Option<&crate::track::GateDatum>| match g {
+                        Some(d) => format!("{:+.0}ft / {:+.0}ft", d.gs_deviation_ft, d.lineup_ft),
+                        None => "-".to_string(),
+                    };
+                    Cow::Owned(format!(
+                        "3/4nm: {}\n1/2nm: {}\n1/4nm: {}",
+                        fmt(track.gate_deviations.at_three_quarter_nm.as_ref()),
+                        fmt(track.gate_deviations.at_half_nm.as_ref()),
+                        fmt(track.gate_deviations.at_quarter_nm.as_ref()),
+                    ))
+                },
+                false,
             );
 
-        webhook
-            .execute(
-                &http,
-                false,
-                ExecuteWebhook::new()
-                    .embeds(vec![embed])
-                    .add_file(CreateAttachment::path(&chart_path).await?)
-                    .add_file(CreateAttachment::path(&acmi_path).await?),
-            )
-            .await?;
+        let mut execute = ExecuteWebhook::new()
+            .embeds(vec![embed])
+            .add_file(CreateAttachment::path(&chart_path).await?);
+        if let Some(ref path) = acmi_path {
+            execute = execute.add_file(CreateAttachment::path(path).await?);
+        }
+        webhook.execute(&http, false, execute).await?;
     }
 
     Ok(())

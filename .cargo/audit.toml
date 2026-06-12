@@ -1,0 +1,25 @@
+# cargo audit configuration
+# Run: cargo audit
+#
+# Last reviewed: 2026-06-10
+# All ignored advisories are blocked by serenity 0.12.5 (latest on crates.io).
+# Dependency chain: serenity -> tokio-tungstenite 0.21 -> rustls 0.22.4 -> rustls-webpki 0.102.8
+# Re-evaluate when serenity 0.13+ is released.
+#
+# Exploitability note: these rustls-webpki CVEs affect TLS certificate validation
+# (CRL matching, name constraints). An attacker would need to be MITM between
+# this process and Discord's servers to exploit them.
+
+[advisories]
+ignore = [
+    # rustls-webpki 0.102.8 — blocked by serenity 0.12.5 -> tokio-tungstenite 0.21
+    "RUSTSEC-2026-0049", # CRLs not considered authoritative by Distribution Point
+    "RUSTSEC-2026-0098", # Name constraints for URI names incorrectly accepted
+    "RUSTSEC-2026-0099", # Name constraints accepted for wildcard certificates
+    "RUSTSEC-2026-0104", # Reachable panic in CRL parsing
+    # backoff 0.4.0 — unmaintained; used directly via backoff::ExponentialBackoff in run.rs
+    # Replacement (tokio-retry) requires a code refactor; no CVE, logic-only risk.
+    "RUSTSEC-2025-0012",
+    # instant 0.1.13 — unmaintained; transitive dep via backoff
+    "RUSTSEC-2024-0384",
+]

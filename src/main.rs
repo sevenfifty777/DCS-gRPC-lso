@@ -1,14 +1,17 @@
 mod client;
 mod commands;
 mod data;
+mod db;
 mod draw;
 mod error;
+mod grading;
 mod tasks;
 #[cfg(test)]
 mod tests;
 mod track;
 mod transform;
 mod utils;
+mod web;
 
 use clap::{ArgAction, Parser};
 use tracing_subscriber::layer::SubscriberExt;

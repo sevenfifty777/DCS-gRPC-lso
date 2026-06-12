@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use std::ops::Neg;
 
 use ultraviolet::{DRotor3, DVec3};
@@ -190,14 +188,20 @@ static T45: AirplaneInfo = AirplaneInfo {
     },
     glide_slope: 3.5,
     aoa_rating: |aoa: f64| -> Aoa {
-        // same as FA18C, so potentially wrong
-        if aoa <= 6.9 {
+        // Thresholds derived from VNAO T-45 v1.0.2 DEU (DisplayElectronicsUnit.lua).
+        // The cockpit AOA indexer uses UNITS_AOA (set by the EFM DLL). A commented reference
+        // in the DEU (`getAngleOfAttack()*degrees_per_radian + 10`) implies the mapping
+        // degrees ≈ UNITS_AOA - 10. Indexer thresholds in UNITS → degrees:
+        //   Fast  (chevron "^"):  UNITS <= 16.5  → degrees <= 6.5
+        //   OnSpd (circle  "O"):  16 <= UNITS <= 18  → 6.0–8.0° (centre 7.0°)
+        //   Slow  (vee    "V"):   UNITS >= 17.5  → degrees >= 7.5
+        if aoa <= 6.0 {
             Aoa::Fast
-        } else if aoa <= 7.4 {
+        } else if aoa <= 6.5 {
             Aoa::SlightlyFast
-        } else if aoa < 8.8 {
+        } else if aoa < 7.5 {
             Aoa::OnSpeed
-        } else if aoa < 9.3 {
+        } else if aoa < 8.0 {
             Aoa::SlightlySlow
         } else {
             Aoa::Slow
@@ -235,9 +239,11 @@ impl CarrierInfo {
 
     pub fn by_type(t: &str) -> Option<&'static Self> {
         match t {
+            // CVN-74 (USS John C. Stennis) uses the type name "Stennis" in DCS
+            // (confirmed via CoreMods/tech/USS_Nimitz/Database/USS_CVN_74.lua: GT.Name = "Stennis")
             "CVN_71" | "CVN_72" | "CVN_73" | "CVN_75" | "Stennis" => Some(&NIMITZ),
             "Forrestal" => Some(&FORRESTAL),
-            t => None,
+            _ => None,
         }
     }
 }
@@ -251,7 +257,7 @@ pub enum Aoa {
     Slow,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct AirplaneInfo {
     /// Hook position relative to the object's origin.
     pub hook: DVec3,
@@ -261,13 +267,19 @@ pub struct AirplaneInfo {
     pub aoa_rating: fn(aoa: f64) -> Aoa,
 }
 
+impl PartialEq for AirplaneInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.hook == other.hook && self.glide_slope == other.glide_slope
+    }
+}
+
 impl AirplaneInfo {
     pub fn by_type(t: &str) -> Option<&'static Self> {
         match t {
             "FA-18C_hornet" => Some(&FA18C),
             "F-14A-135-GR" | "F-14B" => Some(&F14),
             "T-45" => Some(&T45),
-            t => None,
+            _ => None,
         }
     }
 }

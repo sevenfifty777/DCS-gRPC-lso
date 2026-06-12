@@ -16,4 +16,6 @@ pub enum Error {
     Discord(#[from] serenity::prelude::SerenityError),
     #[error("failed to deserialize JSON")]
     Serde(#[from] serde_json::Error),
+    #[error("database error")]
+    Db(#[from] rusqlite::Error),
 }

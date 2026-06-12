@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::data::{AirplaneInfo, CarrierInfo};
-use crate::tasks::TaskParams;
+use crate::db::{RecoveryDb, SharedDb};
+use crate::tasks::{SessionLog, TaskParams};
 use crate::utils::shutdown::ShutdownHandle;
 use backoff::ExponentialBackoff;
 use futures_util::future::select;
@@ -41,6 +42,14 @@ pub struct Opts {
     /// Whether to also record carrier recoveries of KI units (mostly useful for testing/debugging).
     #[clap(long = "ki")]
     include_ki: bool,
+
+    /// Disable saving of TacView ACMI files (PNG chart and JSON report are still saved).
+    #[clap(long = "no-acmi")]
+    no_acmi: bool,
+
+    /// Port to serve the web greenie board on (e.g. 8080). Disabled if not specified.
+    #[clap(long)]
+    web_port: Option<u16>,
 }
 
 pub async fn execute(
@@ -68,13 +77,26 @@ pub async fn execute(
         ..Default::default()
     };
 
+    let session_log: SessionLog = Arc::new(Mutex::new(Vec::new()));
+    let db: SharedDb = Arc::new(RecoveryDb::open(&opts.out_dir.join("lso.db"))?);
+
+    // Optionally start the web greenie board dashboard.
+    if let Some(port) = opts.web_port {
+        let db = db.clone();
+        tokio::spawn(async move {
+            if let Err(err) = crate::web::serve(db, port).await {
+                tracing::error!(%err, "web dashboard server error");
+            }
+        });
+    }
+
     select(
         Box::pin(backoff::future::retry_notify(
             backoff,
             // on each try, run the program and consider every error as transient (ie. worth
             // retrying)
             || async {
-                run(&opts, users.clone(), shutdown_handle.clone())
+                run(&opts, users.clone(), shutdown_handle.clone(), session_log.clone(), db.clone())
                     .await
                     .map_err(backoff::Error::transient)
             },
@@ -91,6 +113,8 @@ pub async fn execute(
     )
     .await;
 
+    print_greenie_board(&session_log);
+
     Ok(())
 }
 
@@ -98,6 +122,8 @@ async fn run(
     opts: &Opts,
     users: Arc<HashMap<String, u64>>,
     shutdown_handle: ShutdownHandle,
+    session_log: SessionLog,
+    db: SharedDb,
 ) -> Result<(), crate::error::Error> {
     let out_dir = opts.out_dir.clone();
     let channel = Endpoint::from(opts.uri.clone())
@@ -171,6 +197,7 @@ async fn run(
     let (tx, mut rx) = mpsc::channel(1);
 
     let discord_webhook = opts.discord_webhook.clone();
+    let record_acmi = !opts.no_acmi;
     let tx2 = tx.clone();
     let spawn_detect_recovery_attempt =
         move |carrier_id: u32,
@@ -182,15 +209,19 @@ async fn run(
               pilot_name: String| {
             let out_dir = out_dir.clone();
             let discord_webhook = discord_webhook.clone();
+            let record_acmi = record_acmi;
             let users = users.clone();
             let channel = channel.clone();
             let tx = tx2.clone();
             let shutdown_handle = shutdown_handle.clone();
+            let session_log = session_log.clone();
+            let db = db.clone();
             tokio::spawn(async move {
                 if let Err(err) =
                     crate::tasks::detect_recovery_attempt::detect_recovery_attempt(TaskParams {
                         out_dir: &out_dir,
                         discord_webhook,
+                        record_acmi,
                         users,
                         ch: channel,
                         carrier_id,
@@ -201,6 +232,8 @@ async fn run(
                         carrier_info,
                         plane_info,
                         shutdown: shutdown_handle,
+                        session_log,
+                        db,
                     })
                     .await
                 {
@@ -297,6 +330,8 @@ async fn run(
         Some(err) => Err(err),
         None => Ok(()),
     }
+
+    // This point is reached after shutdown or fatal error; print the greenie board.
 }
 
 #[derive(Debug)]
@@ -334,4 +369,44 @@ async fn check_candidate(
     }
 
     Ok(None)
+}
+
+/// Print a session greenie board to stdout.
+fn print_greenie_board(session_log: &SessionLog) {
+    let passes = match session_log.lock() {
+        Ok(log) => log.clone(),
+        Err(_) => return,
+    };
+    if passes.is_empty() {
+        return;
+    }
+
+    println!();
+    println!("╔══════════════════════════════════════════════════════════╗");
+    println!("║              SESSION GREENIE BOARD                       ║");
+    println!("╠═══════════════════════╦══════╦══════╦════════════════════╣");
+    println!("║ Pilot                 ║ Wire ║ Grd  ║ DCS Grade          ║");
+    println!("╠═══════════════════════╬══════╬══════╬════════════════════╣");
+    for pass in &passes {
+        let wire = pass
+            .wire
+            .map(|w| format!("  {}  ", w))
+            .unwrap_or_else(|| "  -  ".to_string());
+        let dcs = pass
+            .dcs_grading
+            .as_deref()
+            .unwrap_or("-")
+            .chars()
+            .take(18)
+            .collect::<String>();
+        println!(
+            "║ {:<21} ║{:^6}║ {:<4} ║ {:<18} ║",
+            pass.pilot_name.chars().take(21).collect::<String>(),
+            wire,
+            pass.pass_grade.label(),
+            dcs,
+        );
+    }
+    println!("╚═══════════════════════╩══════╩══════╩════════════════════╝");
+    println!();
 }
