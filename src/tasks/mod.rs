@@ -20,6 +20,7 @@ pub struct CompletedPass {
     pub pass_grade: PassGrade,
     pub wire: Option<u8>,
     pub dcs_grading: Option<String>,
+    pub aircraft_type: String,
 }
 
 /// Shared log of all completed passes in this session.

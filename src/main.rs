@@ -5,6 +5,7 @@ mod db;
 mod draw;
 mod error;
 mod grading;
+mod lso_notation;
 mod tasks;
 #[cfg(test)]
 mod tests;

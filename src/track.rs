@@ -28,6 +28,10 @@ pub struct Track {
     gate_deviations: GateDeviations,
     /// Set to `true` once the aircraft enters inside 3/4 nm and below 300 ft AGL.
     entered_groove: bool,
+    /// DCS simulation time (seconds since scenario start) when groove entry was first detected.
+    groove_entry_time: Option<f64>,
+    /// DCS simulation time (seconds since scenario start) when touchdown was recorded.
+    landing_time: Option<f64>,
     grading: Option<Grading>,
     dcs_grading: Option<String>,
     carrier_info: &'static CarrierInfo,
@@ -72,6 +76,8 @@ pub struct TrackResult {
     pub gate_deviations: GateDeviations,
     pub datums: Vec<Datum>,
     pub plane_info: &'static AirplaneInfo,
+    /// Time from groove entry to touchdown in seconds, if both were recorded.
+    pub groove_time_secs: Option<f64>,
 }
 
 impl Track {
@@ -86,6 +92,8 @@ impl Track {
             datums: Default::default(),
             gate_deviations: GateDeviations::default(),
             entered_groove: false,
+            groove_entry_time: None,
+            landing_time: None,
             grading: None,
             dcs_grading: None,
             carrier_info,
@@ -165,6 +173,9 @@ impl Track {
 
         // Mark groove entry: inside 3/4 nm and below 300 ft AGL.
         if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 {
+            if self.groove_entry_time.is_none() {
+                self.groove_entry_time = Some(plane.time);
+            }
             self.entered_groove = true;
         }
 
@@ -184,6 +195,7 @@ impl Track {
             cable,
             cable_estimated: cable,
         });
+        self.landing_time = Some(plane.time);
         tracing::debug!(?cable, "landed, stop tracking");
     }
 
@@ -217,6 +229,11 @@ impl Track {
 
         let pass_grade = compute_pass_grade(&grading, &self.gate_deviations);
 
+        let groove_time_secs = match (self.groove_entry_time, self.landing_time) {
+            (Some(entry), Some(land)) if land > entry => Some(land - entry),
+            _ => None,
+        };
+
         TrackResult {
             pilot_name: self.pilot_name,
             grading,
@@ -225,6 +242,7 @@ impl Track {
             gate_deviations: self.gate_deviations,
             datums: self.datums,
             plane_info: self.plane_info,
+            groove_time_secs,
         }
     }
 

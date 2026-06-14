@@ -55,6 +55,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
     // Tacview-20211111-143727-DCS-grpc-lso.zip
     let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let now_utc = now.to_offset(time::UtcOffset::UTC);
+    let recovery_timestamp = now_utc.format(&Rfc3339).unwrap_or_default();
     let filename = format!(
         "LSO-{}-{}",
         now.format(&FILENAME_DATETIME_FORMAT).unwrap_or_default(),
@@ -103,6 +105,10 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut known_plane_coords = None;
     let mut track_stopped: Option<Instant> = None;
     let mut lowest_altitude = f64::MAX;
+    // Last known carrier geodetic position, used for the wind query at pass completion.
+    let mut last_carrier_lat: f64 = 0.0;
+    let mut last_carrier_lon: f64 = 0.0;
+    let mut last_carrier_alt: f64 = 0.0;
 
     let mut stream = select(interval.map(Either::Left), events.map(Either::Right));
 
@@ -165,6 +171,10 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     recording.write(Record::Frame(carrier.time))?;
                     recording.write(carrier_update)?;
                 }
+
+                last_carrier_lat = carrier.lat;
+                last_carrier_lon = carrier.lon;
+                last_carrier_alt = carrier.alt;
 
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
@@ -400,6 +410,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         pass_grade: track.pass_grade,
         wire,
         dcs_grading: track.dcs_grading.clone(),
+        aircraft_type: params.plane_info.name.to_string(),
     };
 
     // Append to in-memory session greenie board log.
@@ -416,6 +427,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             pass_grade_label: completed.pass_grade.label().to_string(),
             wire: completed.wire,
             dcs_grading: completed.dcs_grading.clone(),
+            aircraft_type: Some(completed.aircraft_type.clone()),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -430,7 +442,21 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         let http = Http::new("token");
         let webhook = http.get_webhook_from_url(discord_webhook).await?;
 
-        let embed = CreateEmbed::new()
+        // Query wind at carrier position (non-fatal — a failure must not abort the post).
+        let wind: Option<(u16, f32)> = {
+            let mut atmo = crate::client::AtmosphereClient::new(params.ch.clone());
+            match atmo.get_wind(last_carrier_lat, last_carrier_lon, last_carrier_alt).await {
+                Ok(w) => Some(w),
+                Err(err) => {
+                    tracing::warn!(?err, "failed to query wind at carrier position");
+                    None
+                }
+            }
+        };
+
+        let mut embed = CreateEmbed::new()
+            .field("Aircraft", params.plane_info.name, false)
+            .field("Date / Time (UTC)", recovery_timestamp.as_str(), false)
             .field(
                 "Pilot",
                 params
@@ -440,11 +466,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     .unwrap_or(Cow::Borrowed(params.pilot_name)),
                 true,
             )
-            .field(
-                "Grade",
-                track.pass_grade.label(),
-                true,
-            )
+            .field("Grade", track.pass_grade.label(), true)
             .field(
                 "Outcome",
                 match track.grading {
@@ -473,6 +495,23 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 },
                 false,
             );
+
+        // LSO notation and plain-English notes from DCS grading string.
+        if let Some(ref notation) = track.dcs_grading {
+            embed = embed.field("LSO Notation", notation.as_str(), false);
+            let notes = crate::lso_notation::to_english(notation);
+            if !notes.is_empty() {
+                embed = embed.field("LSO Notes", notes, false);
+            }
+        }
+
+        // Wind and groove time — Discord-only fields.
+        if let Some((dir, spd)) = wind {
+            embed = embed.field("Wind", format!("{}° at {:.0} kts", dir, spd), true);
+        }
+        if let Some(secs) = track.groove_time_secs {
+            embed = embed.field("Groove Time", format!("{:.1} s", secs), true);
+        }
 
         let mut execute = ExecuteWebhook::new()
             .embeds(vec![embed])

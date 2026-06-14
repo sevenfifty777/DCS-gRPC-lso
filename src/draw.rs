@@ -81,6 +81,12 @@ pub fn draw_chart(
     )?;
 
     root_drawing_area.draw_text(
+        &format!("Aircraft: {}", track.plane_info.name),
+        &text_style,
+        (16, 80),
+    )?;
+
+    root_drawing_area.draw_text(
         &match track.grading {
             Grading::Unknown => Cow::Borrowed(""),
             Grading::Bolter => Cow::Borrowed("Bolter"),
@@ -90,7 +96,7 @@ pub fn draw_chart(
                 .unwrap_or(Cow::Borrowed("(failed to detect cable)")),
         },
         &text_style,
-        (16, 80),
+        (16, 112),
     )?;
 
     let text_style_small = TextStyle::from(("sans-serif", 18).into_font()).color(&THEME_FG);
@@ -103,7 +109,7 @@ pub fn draw_chart(
     .enumerate()
     {
         let (label, gate) = (*label, *gate);
-        let y_pos = 112 + (index as i32) * 28;
+        let y_pos = 144 + (index as i32) * 28;
         root_drawing_area.draw_text(
             &format!("{}: {}", label, fmt_gate(gate)),
             &text_style_small,

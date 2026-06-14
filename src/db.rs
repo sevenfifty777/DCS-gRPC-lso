@@ -22,6 +22,7 @@ pub struct DbPass {
     pub pass_grade_label: String,
     pub wire: Option<u8>,
     pub dcs_grading: Option<String>,
+    pub aircraft_type: Option<String>,
 }
 
 /// Pass record as returned from a database query (JSON-serialisable for the web API).
@@ -33,6 +34,9 @@ pub struct StoredPass {
     pub pass_grade: String,
     pub wire: Option<i64>,
     pub dcs_grading: Option<String>,
+    pub aircraft_type: Option<String>,
+    /// Plain-English translation of `dcs_grading`, computed at query time.
+    pub lso_notes: Option<String>,
 }
 
 impl RecoveryDb {
@@ -41,14 +45,21 @@ impl RecoveryDb {
         let conn = Connection::open(path)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS passes (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp   TEXT    NOT NULL,
-                pilot_name  TEXT    NOT NULL,
-                pass_grade  TEXT    NOT NULL,
-                wire        INTEGER,
-                dcs_grading TEXT
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp     TEXT    NOT NULL,
+                pilot_name    TEXT    NOT NULL,
+                pass_grade    TEXT    NOT NULL,
+                wire          INTEGER,
+                dcs_grading   TEXT,
+                aircraft_type TEXT
             );",
         )?;
+        // Migration: add aircraft_type column to pre-existing databases that lack it.
+        // Silently ignored when the column already exists (SQLite does not support IF NOT EXISTS
+        // on ALTER TABLE ADD COLUMN).
+        let _ = conn.execute_batch(
+            "ALTER TABLE passes ADD COLUMN aircraft_type TEXT;",
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -58,14 +69,15 @@ impl RecoveryDb {
     pub fn insert(&self, pass: &DbPass) -> rusqlite::Result<()> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         conn.execute(
-            "INSERT INTO passes (timestamp, pilot_name, pass_grade, wire, dcs_grading)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO passes (timestamp, pilot_name, pass_grade, wire, dcs_grading, aircraft_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
                 &pass.pass_grade_label,
                 pass.wire.map(|w| w as i64),
                 &pass.dcs_grading,
+                &pass.aircraft_type,
             ],
         )?;
         Ok(())
@@ -75,17 +87,24 @@ impl RecoveryDb {
     pub fn all_passes(&self) -> rusqlite::Result<Vec<StoredPass>> {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
-            "SELECT id, timestamp, pilot_name, pass_grade, wire, dcs_grading
+            "SELECT id, timestamp, pilot_name, pass_grade, wire, dcs_grading, aircraft_type
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
+            let dcs_grading: Option<String> = row.get(5)?;
+            let lso_notes = dcs_grading
+                .as_deref()
+                .map(crate::lso_notation::to_english)
+                .filter(|s| !s.is_empty());
             Ok(StoredPass {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,
                 pilot_name: row.get(2)?,
                 pass_grade: row.get(3)?,
                 wire: row.get(4)?,
-                dcs_grading: row.get(5)?,
+                dcs_grading,
+                aircraft_type: row.get(6)?,
+                lso_notes,
             })
         })?;
         rows.collect()

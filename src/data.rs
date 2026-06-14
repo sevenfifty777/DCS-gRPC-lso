@@ -133,6 +133,7 @@ const FORRESTAL: CarrierInfo = CarrierInfo {
 };
 
 static FA18C: AirplaneInfo = AirplaneInfo {
+    name: "F/A-18C Hornet",
     hook: DVec3 {
         x: 0.0,
         y: -2.240897,
@@ -156,6 +157,7 @@ static FA18C: AirplaneInfo = AirplaneInfo {
 };
 
 static F14: AirplaneInfo = AirplaneInfo {
+    name: "F-14 Tomcat",
     hook: DVec3 {
         x: 0.0,
         y: -1.978941,
@@ -181,6 +183,7 @@ static F14: AirplaneInfo = AirplaneInfo {
 };
 
 static T45: AirplaneInfo = AirplaneInfo {
+    name: "T-45C Goshawk",
     hook: DVec3 {
         x: 0.0,
         y: -1.778766,
@@ -259,6 +262,8 @@ pub enum Aoa {
 
 #[derive(Debug)]
 pub struct AirplaneInfo {
+    /// Human-readable aircraft display name shown in grading output.
+    pub name: &'static str,
     /// Hook position relative to the object's origin.
     pub hook: DVec3,
     /// The optimal glide slope in degrees.

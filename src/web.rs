@@ -58,6 +58,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     .g-Cut { color: #f87171; font-weight: bold; }
     .g-B, .g-WO { color: #9ca3af; }
     .empty { color: #4b5563; padding: 1rem .75rem; }
+    .lso-notes { color: #d1d5db; font-size: .8rem; max-width: 28rem; white-space: normal; }
     #status { margin-top: .75rem; color: #4b5563; font-size: .75rem; }
   </style>
 </head>
@@ -65,9 +66,9 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   <h1>&#x2708;&#xFE0F; LSO Greenie Board</h1>
   <table>
     <thead>
-      <tr><th>#</th><th>Timestamp</th><th>Pilot</th><th>Grade</th><th>Wire</th><th>DCS Grade</th></tr>
+      <tr><th>#</th><th>Timestamp</th><th>Pilot</th><th>Aircraft</th><th>Grade</th><th>Wire</th><th>DCS Grade</th><th>LSO Notes</th></tr>
     </thead>
-    <tbody id="rows"><tr><td class="empty" colspan="6">Loading&#x2026;</td></tr></tbody>
+    <tbody id="rows"><tr><td class="empty" colspan="8">Loading&#x2026;</td></tr></tbody>
   </table>
   <div id="status"></div>
   <script>
@@ -89,7 +90,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         const passes = await resp.json();
         const tbody = document.getElementById('rows');
         if (passes.length === 0) {
-          tbody.innerHTML = '<tr><td class="empty" colspan="6">No passes recorded yet.</td></tr>';
+          tbody.innerHTML = '<tr><td class="empty" colspan="8">No passes recorded yet.</td></tr>';
         } else {
           tbody.innerHTML = passes.map((p, i) => {
             const n = passes.length - i;
@@ -98,9 +99,11 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
               + '<td>' + n + '</td>'
               + '<td>' + esc(p.timestamp) + '</td>'
               + '<td>' + esc(p.pilot_name) + '</td>'
+              + '<td>' + esc(p.aircraft_type) + '</td>'
               + '<td class="g-' + gc + '">' + esc(p.pass_grade) + '</td>'
               + '<td>' + esc(p.wire) + '</td>'
               + '<td>' + esc(p.dcs_grading) + '</td>'
+              + '<td class="lso-notes">' + esc(p.lso_notes) + '</td>'
               + '</tr>';
           }).join('');
         }
