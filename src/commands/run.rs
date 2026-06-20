@@ -285,7 +285,7 @@ async fn run(
         .stream_events(mission::v0::StreamEventsRequest {})
         .await?
         .into_inner();
-    let tx = tx.clone();
+    let tx_events = tx.clone();
     let include_ki = opts.include_ki;
     tokio::spawn(async move {
         while let Some(event) = events.next().await {
@@ -295,7 +295,7 @@ async fn run(
                 }) => event,
                 Ok(_) => continue,
                 Err(err) => {
-                    tx.send(err.into()).await.ok();
+                    tx_events.send(err.into()).await.ok();
                     return;
                 }
             };
@@ -348,11 +348,14 @@ async fn run(
                 }
             }
         }
+        tx_events.send(tonic::Status::aborted("Mission event stream ended").into()).await.ok();
     });
+
+    drop(tx);
 
     match rx.recv().await {
         Some(err) => Err(err),
-        None => Ok(()),
+        None => Err(tonic::Status::aborted("All tasks finished unexpectedly").into()),
     }
 
     // This point is reached after shutdown or fatal error; print the greenie board.
