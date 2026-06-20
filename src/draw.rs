@@ -14,7 +14,7 @@ use plotters_bitmap::bitmap_pixel::RGBPixel;
 use plotters_bitmap::BitMapBackend;
 
 use crate::data::{AirplaneInfo, Aoa};
-use crate::track::{Datum, GateDatum, Grading, TrackResult};
+use crate::track::{Datum, GateDatum, Grading, PatternDatum, TrackResult};
 use crate::utils::{ft_to_nm, m_to_ft, m_to_nm, nm_to_ft, nm_to_m};
 
 const THEME_BG: RGBColor = RGBColor(31, 41, 55); // 1F2937
@@ -75,7 +75,7 @@ pub fn draw_chart(
     )?;
 
     root_drawing_area.draw_text(
-        &format!("Grade: {}", track.pass_grade.label()),
+        &format!("Grade: {}  ({:.1} pts)", track.pass_grade.label(), track.pass_grade.points()),
         &text_style,
         (16, 48),
     )?;
@@ -387,8 +387,8 @@ fn text_style() -> TextStyle<'static> {
 fn fmt_gate(gate: Option<&GateDatum>) -> String {
     match gate {
         Some(g) => format!(
-            "GS {:+.0}ft  LU {:+.0}ft",
-            g.gs_deviation_ft, g.lineup_ft
+            "GS {:+.1}\u{00B0}  LU {:+.1}\u{00B0}",
+            g.gs_deviation_deg, g.lineup_deg
         ),
         None => "-".to_string(),
     }
@@ -439,6 +439,193 @@ impl ValueFormatter<f64> for CustomRange {
             _ => format!("{}nm", v),
         }
     }
+}
+// ---------------------------------------------------------------------------
+// Pattern (circuit) overview chart
+// ---------------------------------------------------------------------------
+
+/// Width in nm of the pattern chart (port–starboard).
+const PAT_WIDTH_NM: f64 = 5.0;
+/// Height in nm of the pattern chart (ahead–astern, 0 = carrier).
+const PAT_ASTERN_NM: f64 = 3.0; // astern (bottom of chart)
+const PAT_AHEAD_NM: f64 = 3.0;  // ahead  (top of chart)
+/// Physical size of the pattern PNG.
+const PAT_IMG_W: u32 = 900;
+const PAT_IMG_H: u32 = 900;
+
+/// Draw a top-down bird's-eye chart of the full recovery circuit and save it
+/// next to the approach chart as `<filename>-pattern.png`.
+///
+/// Coordinate conventions (carrier = origin):
+/// - chart X axis: right = starboard, left = port  (chart_x = -port_m)
+/// - chart Y axis: top = ahead of carrier, bottom = astern  (chart_y = -astern_m)
+///
+/// A standard Case I left-hand circuit will appear with the break/abeam
+/// positions on the left side and the approach from the bottom.
+#[tracing::instrument(skip_all)]
+pub fn draw_pattern_chart(
+    out_dir: &std::path::Path,
+    filename: &str,
+    track: &TrackResult,
+) -> Result<PathBuf, DrawError> {
+    let path = out_dir.join(format!("{filename}-pattern")).with_extension("png");
+
+    let root =
+        BitMapBackend::new(&path, (PAT_IMG_W, PAT_IMG_H)).into_drawing_area();
+    root.fill(&THEME_BG)?;
+
+    // Title
+    let title_style = TextStyle::from(("sans-serif", 22).into_font()).color(&THEME_FG);
+    root.draw_text(
+        &format!(
+            "Pattern — {}  {} pts",
+            track.pass_grade.label(),
+            track.pass_grade.points()
+        ),
+        &title_style,
+        (16, 12),
+    )?;
+
+    let x_range = (-PAT_WIDTH_NM / 2.0)..(PAT_WIDTH_NM / 2.0);
+    // chart_y = -astern_m: carrier at 0, ahead = positive, astern = negative
+    let y_range = (-PAT_ASTERN_NM)..PAT_AHEAD_NM;
+
+    let mut chart = ChartBuilder::on(&root)
+        .margin(48u32)
+        .x_label_area_size(30u32)
+        .y_label_area_size(52u32)
+        .build_cartesian_2d(x_range, y_range.clone())?;
+
+    chart
+        .configure_mesh()
+        .light_line_style(THEME_BG.mix(0.0))
+        .bold_line_style(THEME_GUIDE_GRAY.mix(0.15))
+        .axis_style(THEME_FG)
+        .x_label_style(text_style())
+        .y_label_style(text_style())
+        .x_desc("← Port                 Starboard →")
+        .y_desc("nm")
+        .draw()?;
+
+    // BRC reference line through carrier
+    chart.draw_series(LineSeries::new(
+        [( 0.0, y_range.start), (0.0, y_range.end)],
+        THEME_GUIDE_GRAY.mix(0.3).stroke_width(1),
+    ))?;
+
+    // carrier-top-full-transp.png rotated: bow=top, port=left, stbd=right.
+    // Composite onto THEME_BG before drawing (BitMapBackend has no alpha support).
+    // Drawn at 4.5× visual scale so it is readable at 5 nm chart width.
+    {
+        let carrier_len_m = 333.0_f64;
+        let carrier_wid_m = 99.0_f64;
+        let vs = 4.5_f64;
+
+        let data_w = PAT_IMG_W as f64 - 2.0 * 48.0 - 52.0;
+        let data_h = PAT_IMG_H as f64 - 2.0 * 48.0 - 30.0;
+        let m2px_x = data_w / nm_to_m(PAT_WIDTH_NM);
+        let m2px_y = data_h / nm_to_m(PAT_ASTERN_NM + PAT_AHEAD_NM);
+
+        let img_w = ((carrier_wid_m * vs * m2px_x) as u32).max(1);
+        let img_h = ((carrier_len_m * vs * m2px_y) as u32).max(1);
+
+        let img = image::load_from_memory_with_format(
+            include_bytes!("../img/carrier-top-full-transp.png"),
+            ImageFormat::Png,
+        )?
+        .rotate90()
+        .resize_exact(img_w, img_h, FilterType::CatmullRom)
+        .into_rgba8();
+        let mut bg = image::RgbaImage::from_pixel(
+            img_w, img_h,
+            image::Rgba([THEME_BG.0, THEME_BG.1, THEME_BG.2, 255]),
+        );
+        image::imageops::overlay(&mut bg, &img, 0, 0);
+
+        let anchor_x = -m_to_nm(carrier_wid_m * vs / 2.0);
+        let anchor_y =  m_to_nm(carrier_len_m * vs / 2.0);
+        let elem: BitMapElement<_> = (
+            (anchor_x, anchor_y),
+            image::DynamicImage::ImageRgba8(bg),
+        )
+            .into();
+        chart.draw_series(std::iter::once(elem))?;
+    }
+
+    // Gate rings (1/4, 1/2, 3/4 nm astern)
+    for (gate_nm, label) in [(0.25, "¼"), (0.5, "½"), (0.75, "¾")] {
+        chart.draw_series(std::iter::once(Circle::new(
+            (0.0_f64, 0.0_f64),
+            // radius in pixels = gate_nm / x_range_span * img_width_minus_margins
+            ((gate_nm / PAT_WIDTH_NM) * (PAT_IMG_W as f64 - 96.0)) as u32,
+            THEME_GUIDE_GRAY.mix(0.25).stroke_width(1),
+        )))?;
+        chart.draw_series(std::iter::once(Text::new(
+            format!("{gate_nm} nm"),
+            (m_to_nm(25.0), -gate_nm + m_to_nm(20.0)),
+            text_style().color(&THEME_GUIDE_GRAY.mix(0.6)),
+        )))?;
+        let _ = label; // label kept for reference
+    }
+
+    // Pattern track coloured by AoA
+    let datums_nm: Vec<_> = track
+        .pattern_datums
+        .iter()
+        .map(|d| PatternDatum {
+            // chart coords: port on left (negate port_m), ahead at top (negate astern_m)
+            astern_m: -m_to_nm(d.astern_m),  // chart_y = -astern_m
+            port_m:   -m_to_nm(d.port_m),    // chart_x = -port_m
+            alt_ft: d.alt_ft,
+            aoa: d.aoa,
+        })
+        .filter(|d| {
+            d.port_m  >= -PAT_WIDTH_NM / 2.0 && d.port_m  <= PAT_WIDTH_NM / 2.0
+                && d.astern_m >= -PAT_ASTERN_NM   && d.astern_m <= PAT_AHEAD_NM
+        })
+        .collect();
+
+    let mut iter = datums_nm.iter().peekable();
+    let mut seg_pts: Vec<(f64, f64)> = Vec::new();
+    let mut seg_color = THEME_AOA_ON_SPEED;
+
+    while let Some(d) = iter.next() {
+        let pt = (d.port_m, d.astern_m); // (chart_x, chart_y)
+        let color = aoa_color(d.aoa, track.plane_info);
+        if seg_pts.is_empty() {
+            seg_color = color;
+        }
+        if color != seg_color || iter.peek().is_none() {
+            if color != seg_color {
+                seg_pts.push(pt);
+            }
+            chart.draw_series(LineSeries::new(
+                seg_pts.drain(..).collect::<Vec<_>>(),
+                seg_color.stroke_width(2),
+            ))?;
+            seg_color = color;
+        }
+        seg_pts.push(pt);
+    }
+    if !seg_pts.is_empty() {
+        chart.draw_series(LineSeries::new(
+            seg_pts,
+            seg_color.stroke_width(2),
+        ))?;
+    }
+
+    // Touchdown marker (last datum)
+    if let Some(last) = datums_nm.last() {
+        chart.draw_series(std::iter::once(Circle::new(
+            (last.port_m, last.astern_m),
+            5,
+            THEME_FG.filled(),
+        )))?;
+    }
+
+    std::mem::drop(chart);
+    std::mem::drop(root);
+    Ok(path)
 }
 
 #[derive(Debug, thiserror::Error)]

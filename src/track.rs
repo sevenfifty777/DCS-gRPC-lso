@@ -6,11 +6,49 @@ use ultraviolet::{DRotor3, DVec3};
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::grading::{compute_pass_grade, PassGrade};
 use crate::transform::Transform;
-use crate::utils::m_to_ft;
+use crate::utils::{m_to_ft, m_to_nm};
 
-/// Gate distances in meters at which LSO deviations are sampled.
+// ---------------------------------------------------------------------------
+// LSO grading gates
+//
+// The three standard gates are fixed distances aft of the touchdown point at
+// which the LSO samples glide-slope and lineup deviations.  They correspond
+// to the ¾ nm, ½ nm, and ¼ nm "start of the ball" calls used in real-world
+// NAVAIR 00-80T-104 grading.
+//
+// Each gate is recorded exactly once, on the first polling frame where the
+// aircraft's angled-deck x-coordinate (distance along the deck angle axis,
+// positive = behind the threshold) has decreased to or below that distance
+// AND the aircraft is below 500 ft AGL (to exclude the overhead-pattern
+// crossing of x = 0 at altitude, which would otherwise produce bogus ~90°
+// deviation readings via atan2).
+//
+// | Constant                | nm   | meters | Purpose                          |
+// |-------------------------|------|--------|----------------------------------|
+// | GATE_THREE_QUARTER_NM   | ¾ nm | 1389 m | Early groove — first deviation   |
+// |                         |      |        | sample; sets the tone for the    |
+// |                         |      |        | whole pass.  Deviation here      |
+// |                         |      |        | typically drives (H)/(L) notes.  |
+// | GATE_HALF_NM            | ½ nm | 926 m  | Mid-groove — primary grading     |
+// |                         |      |        | reference for OK/Fair/NoGrade.   |
+// |                         |      |        | Correlates to the "in close"     |
+// |                         |      |        | LSO observation window.          |
+// | GATE_QUARTER_NM         | ¼ nm | 463 m  | At the ramp / "in close" — if   |
+// |                         |      |        | GS deviation is ≤ GS_CUT_LOW_DEG|
+// |                         |      |        | here, the pass is graded Cut.    |
+//
+// Deviation values stored per gate:
+//   gs_deviation_deg  — glide-slope deviation in degrees (+ = high, − = low)
+//   gs_deviation_ft   — same deviation expressed in feet (for chart labels)
+//   lineup_deg        — lateral lineup deviation in degrees (+ = right of CL)
+//   lineup_ft         — same deviation expressed in feet (for chart labels)
+// ---------------------------------------------------------------------------
+
+/// ¾ nm gate — first LSO grading sample (1 nm = 1 852 m → ¾ nm ≈ 1 389 m).
 const GATE_THREE_QUARTER_NM: f64 = 1389.0;
+/// ½ nm gate — primary grading reference.
 const GATE_HALF_NM: f64 = 926.0;
+/// ¼ nm gate — ramp / "in close"; dangerously low here triggers a Cut pass.
 const GATE_QUARTER_NM: f64 = 463.0;
 
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -21,10 +59,27 @@ pub struct Datum {
     pub alt: f64,
 }
 
+/// Single frame of full-pattern position data recorded in the carrier BRC frame.
+///
+/// Origin is the carrier. Used to draw the overhead circuit chart (break → abeam →
+/// ninety → final → touchdown).
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct PatternDatum {
+    /// Distance astern of carrier along BRC (m). Positive = behind carrier (approach direction).
+    pub astern_m: f64,
+    /// Lateral distance from carrier BRC centerline (m). Positive = port (left) side.
+    pub port_m: f64,
+    /// Altitude MSL in feet.
+    pub alt_ft: f64,
+    /// Angle of Attack (degrees).
+    pub aoa: f64,
+}
+
 pub struct Track {
     pilot_name: String,
     previous_distance: f64,
     datums: Vec<Datum>,
+    pattern_datums: Vec<PatternDatum>,
     gate_deviations: GateDeviations,
     /// Set to `true` once the aircraft enters inside 3/4 nm and below 300 ft AGL.
     entered_groove: bool,
@@ -41,9 +96,15 @@ pub struct Track {
 /// GS and lineup deviation recorded at a key gate distance.
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct GateDatum {
-    /// Glide slope deviation from ideal path in feet (positive = high, negative = low).
+    /// Glide slope deviation from ideal glide path in degrees
+    /// (positive = high, negative = low).
+    pub gs_deviation_deg: f64,
+    /// Lateral lineup deviation from the angled-deck centerline in degrees
+    /// (positive = right of centerline / lined-up-left, negative = left).
+    pub lineup_deg: f64,
+    /// Glide slope deviation in feet — kept for the PNG chart display label.
     pub gs_deviation_ft: f64,
-    /// Lateral lineup deviation in feet (positive = right of centerline, negative = left).
+    /// Lineup deviation in feet — kept for the PNG chart display label.
     pub lineup_ft: f64,
 }
 
@@ -75,6 +136,7 @@ pub struct TrackResult {
     pub dcs_grading: Option<String>,
     pub gate_deviations: GateDeviations,
     pub datums: Vec<Datum>,
+    pub pattern_datums: Vec<PatternDatum>,
     pub plane_info: &'static AirplaneInfo,
     /// Time from groove entry to touchdown in seconds, if both were recorded.
     pub groove_time_secs: Option<f64>,
@@ -90,6 +152,7 @@ impl Track {
             pilot_name: pilot_name.into(),
             previous_distance: f64::MAX,
             datums: Default::default(),
+            pattern_datums: Default::default(),
             gate_deviations: GateDeviations::default(),
             entered_groove: false,
             groove_entry_time: None,
@@ -102,6 +165,35 @@ impl Track {
     }
 
     pub fn next(&mut self, carrier: &Transform, plane: &Transform) -> bool {
+        // ---------------------------------------------------------------
+        // Pattern datum — BRC frame, recorded every frame.
+        // Origin = carrier position. x_chart = -port_m, y_chart = -astern_m
+        // so the circuit appears with port on the left and the carrier at the
+        // top of the overview PNG.
+        // ---------------------------------------------------------------
+        {
+            let brc_rot =
+                DRotor3::from_rotation_xz(carrier.heading.neg().to_radians());
+            let brc_fwd  = DVec3::unit_z().rotated_by(brc_rot); // BRC forward
+            let brc_stbd = DVec3::unit_x().rotated_by(brc_rot); // starboard
+
+            // rel = vector from plane to carrier
+            let rel = carrier.position - plane.position;
+            // astern_m > 0 when plane is behind carrier (normal approach direction)
+            let astern_m = rel.dot(brc_fwd);
+            // port_m > 0 when plane is on the port (left) side of the carrier
+            // (rel points toward the carrier; when the plane is to port, rel
+            // points toward the starboard side → positive dot with brc_stbd)
+            let port_m = rel.dot(brc_stbd);
+
+            self.pattern_datums.push(PatternDatum {
+                astern_m,
+                port_m,
+                alt_ft: m_to_ft(plane.alt),
+                aoa: plane.aoa,
+            });
+        }
+
         let landing_pos_offset = self
             .carrier_info
             .optimal_landing_offset(self.plane_info)
@@ -114,20 +206,45 @@ impl Track {
             landing_pos.z - plane.position.z,
         );
 
-        // Stop tracking once the distance from the plane to the landing position is increasing and
-        // has increased more than 100m (since the last time the distance was decreasing).
+        // Stop once the plane leaves the wide pattern detection zone (RTB or go-around).
+        // This prevents a recording from running forever when no landing is made.
+        let carrier_distance = (carrier.position - plane.position).mag();
+        if m_to_nm(carrier_distance) > 3.5 || m_to_ft(plane.alt) > 1100.0 {
+            tracing::debug!("stop: plane exited pattern detection zone");
+            return false;
+        }
+
+        // Track the minimum distance to the touchdown point.
         let distance = ray_from_plane_to_carrier.mag();
         if distance < self.previous_distance {
             self.previous_distance = distance;
         } else if distance - self.previous_distance > 150.0 {
-            if self.grading.is_some() {
-                tracing::debug!(distance_in_m = distance, "bolter detected");
-                self.grading = Some(Grading::Bolter);
+            match &self.grading {
+                Some(Grading::Recovered { .. }) => {
+                    // Landed and now moving away → bolter.
+                    tracing::debug!(distance_in_m = distance, "bolter detected");
+                    self.grading = Some(Grading::Bolter);
+                    return false;
+                }
+                Some(_) => {
+                    // Waveoff or other graded outcome, plane moving away → stop.
+                    tracing::debug!(distance_in_m = distance, "stop tracking (graded, moving away)");
+                    return false;
+                }
+                None if self.entered_groove => {
+                    // Entered the groove but now moving away → pilot waveoff.
+                    tracing::debug!(distance_in_m = distance, "waveoff detected (entered groove, moving away)");
+                    self.grading = Some(Grading::WaveoffPilot);
+                    return false;
+                }
+                None => {
+                    // No graded outcome yet and plane not in groove → still flying the overhead
+                    // pattern (break turn, downwind, abeam).  Reset the distance floor so the
+                    // next approaching leg is tracked from a fresh minimum instead of stopping.
+                    self.previous_distance = distance;
+                    tracing::trace!(distance_in_m = distance, "pattern: plane moving away, resetting distance tracker");
+                }
             }
-
-            tracing::debug!(distance_in_m = distance, "stop tracking");
-
-            return false;
         }
 
         // Already landed, no need to actually record any more datums, but keep going to detect
@@ -156,27 +273,55 @@ impl Track {
         let hook_offset = self.plane_info.hook.rotated_by(plane.rotation);
         let alt = plane.alt - self.carrier_info.deck_altitude + hook_offset.y;
 
-        // Sample gate deviations at key distances on first crossing.
-        let ideal_gs_alt = x * self.plane_info.glide_slope.to_radians().tan();
-        let gs_deviation_ft = m_to_ft(alt - ideal_gs_alt);
-        let lineup_ft = m_to_ft(y);
-        if x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
-            self.gate_deviations.at_three_quarter_nm =
-                Some(GateDatum { gs_deviation_ft, lineup_ft });
-        }
-        if x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
-            self.gate_deviations.at_half_nm = Some(GateDatum { gs_deviation_ft, lineup_ft });
-        }
-        if x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
-            self.gate_deviations.at_quarter_nm = Some(GateDatum { gs_deviation_ft, lineup_ft });
-        }
-
-        // Mark groove entry: inside 3/4 nm and below 300 ft AGL.
-        if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 {
-            if self.groove_entry_time.is_none() {
-                self.groove_entry_time = Some(plane.time);
+        // Gate sampling and groove entry only apply when the aircraft is on the approach side of
+        // the threshold (x > 0).  When x ≤ 0 the aircraft is ahead of the touchdown point
+        // (e.g., still in the break or flying the overhead pattern), and atan2 with a negative x
+        // would produce a bogus ~177° deviation reading.
+        if x > 0.0 {
+            // Sample gate deviations at key distances on first crossing.
+            let ideal_gs_alt = x * self.plane_info.glide_slope.to_radians().tan();
+            let gs_deviation_m = alt - ideal_gs_alt;
+            let gs_deviation_ft = m_to_ft(gs_deviation_m);
+            let lineup_ft = m_to_ft(y);
+            // Angular deviations: atan2 is valid here because x > 0, so the angle is in (−90°, +90°).
+            let gs_deviation_deg = gs_deviation_m.atan2(x).to_degrees();
+            let lineup_deg = y.atan2(x).to_degrees();
+            // Gate altitude guard: on-glidepath at ¾ nm is ~278 ft; even a GS+3° deviation is
+            // ~400 ft at that distance.  500 ft cleanly rejects the 600–1000 ft overhead-pattern
+            // crossing of x = 0 while still capturing all realistic final-approach deviations.
+            let in_approach = m_to_ft(alt) <= 500.0;
+            if in_approach && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
+                self.gate_deviations.at_three_quarter_nm = Some(GateDatum {
+                    gs_deviation_deg,
+                    lineup_deg,
+                    gs_deviation_ft,
+                    lineup_ft,
+                });
             }
-            self.entered_groove = true;
+            if in_approach && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
+                self.gate_deviations.at_half_nm = Some(GateDatum {
+                    gs_deviation_deg,
+                    lineup_deg,
+                    gs_deviation_ft,
+                    lineup_ft,
+                });
+            }
+            if in_approach && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
+                self.gate_deviations.at_quarter_nm = Some(GateDatum {
+                    gs_deviation_deg,
+                    lineup_deg,
+                    gs_deviation_ft,
+                    lineup_ft,
+                });
+            }
+
+            // Mark groove entry: inside 3/4 nm and below 300 ft AGL.
+            if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 {
+                if self.groove_entry_time.is_none() {
+                    self.groove_entry_time = Some(plane.time);
+                }
+                self.entered_groove = true;
+            }
         }
 
         self.datums.push(Datum {
@@ -227,12 +372,12 @@ impl Track {
             self.grading.unwrap_or_default()
         };
 
-        let pass_grade = compute_pass_grade(&grading, &self.gate_deviations);
-
         let groove_time_secs = match (self.groove_entry_time, self.landing_time) {
             (Some(entry), Some(land)) if land > entry => Some(land - entry),
             _ => None,
         };
+
+        let pass_grade = compute_pass_grade(&grading, &self.gate_deviations, groove_time_secs);
 
         TrackResult {
             pilot_name: self.pilot_name,
@@ -241,6 +386,7 @@ impl Track {
             dcs_grading: self.dcs_grading,
             gate_deviations: self.gate_deviations,
             datums: self.datums,
+            pattern_datums: self.pattern_datums,
             plane_info: self.plane_info,
             groove_time_secs,
         }

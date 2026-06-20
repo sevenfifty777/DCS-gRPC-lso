@@ -46,6 +46,12 @@ pub static FILENAME_DATETIME_FORMAT: Lazy<Vec<time::format_description::FormatIt
         time::format_description::parse("[year][month][day]-[hour][minute][second]").unwrap()
     });
 
+/// ISO-8601 datetime format for the `grade_date` database column: `YYYY-MM-DD HH:MM:SS`.
+pub static GRADE_DATE_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>> =
+    Lazy::new(|| {
+        time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").unwrap()
+    });
+
 #[tracing::instrument(
     skip_all,
     fields(carrier_name = params.carrier_name, plane_name = params.plane_name)
@@ -71,6 +77,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut client2 = UnitClient::new(params.ch.clone());
     let mut mission = MissionClient::new(params.ch.clone());
     let mut hook = HookClient::new(params.ch.clone());
+    let mut world = crate::client::WorldClient::new(params.ch.clone());
     let interval = crate::utils::interval::interval(Duration::from_millis(100), params.shutdown);
 
     let mut acmi = Cursor::new(Vec::new());
@@ -92,6 +99,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         "dcs-grpc-lso v{}",
         env!("CARGO_PKG_VERSION")
     )))?;
+
+    // Query the theatre (map) name once at the start of the recording.
+    let map_name: String = match world.get_theatre().await {
+        Ok(t) => t,
+        Err(err) => {
+            tracing::warn!(?err, "failed to query theatre name");
+            String::new()
+        }
+    };
+
     let mut ref_written = false;
     let mut lat_ref = 0.0;
     let mut lon_ref = 0.0;
@@ -411,6 +428,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         wire,
         dcs_grading: track.dcs_grading.clone(),
         aircraft_type: params.plane_info.name.to_string(),
+        map_name: map_name.clone(),
     };
 
     // Append to in-memory session greenie board log.
@@ -428,6 +446,12 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             wire: completed.wire,
             dcs_grading: completed.dcs_grading.clone(),
             aircraft_type: Some(completed.aircraft_type.clone()),
+            map_name: if completed.map_name.is_empty() { None } else { Some(completed.map_name.clone()) },
+            esf_pilot_name: completed.pilot_name.clone(),
+            grade_date: now_utc
+                .format(&GRADE_DATE_FORMAT)
+                .unwrap_or_default(),
+            grade_points: completed.pass_grade.points(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -437,6 +461,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     }
 
     let chart_path = crate::draw::draw_chart(params.out_dir, &filename, &track)?;
+    let pattern_chart_path =
+        crate::draw::draw_pattern_chart(params.out_dir, &filename, &track)?;
 
     if let Some(discord_webhook) = params.discord_webhook.as_deref() {
         let http = Http::new("token");
@@ -456,6 +482,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
         let mut embed = CreateEmbed::new()
             .field("Aircraft", params.plane_info.name, false)
+            .field("Map", if map_name.is_empty() { "-" } else { map_name.as_str() }, false)
             .field("Date / Time (UTC)", recovery_timestamp.as_str(), false)
             .field(
                 "Pilot",
@@ -466,7 +493,11 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     .unwrap_or(Cow::Borrowed(params.pilot_name)),
                 true,
             )
-            .field("Grade", track.pass_grade.label(), true)
+            .field(
+                "Grade",
+                format!("{} ({:.1} pts)", track.pass_grade.label(), track.pass_grade.points()),
+                true,
+            )
             .field(
                 "Outcome",
                 match track.grading {
@@ -515,7 +546,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
         let mut execute = ExecuteWebhook::new()
             .embeds(vec![embed])
-            .add_file(CreateAttachment::path(&chart_path).await?);
+            .add_file(CreateAttachment::path(&chart_path).await?)
+            .add_file(CreateAttachment::path(&pattern_chart_path).await?);
         if let Some(ref path) = acmi_path {
             execute = execute.add_file(CreateAttachment::path(path).await?);
         }

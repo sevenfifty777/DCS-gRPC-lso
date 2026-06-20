@@ -51,14 +51,18 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     thead th { background: #1f2937; color: #9ca3af; padding: .5rem .75rem; text-align: left; border-bottom: 2px solid #374151; white-space: nowrap; }
     tbody td { padding: .4rem .75rem; border-bottom: 1px solid #1f2937; }
     tbody tr:hover td { background: #1f2937; }
+    .g-UNI { color: #facc15; font-weight: bold; text-shadow: 0 0 6px #fbbf24; }
     .g-OK  { color: #4ade80; font-weight: bold; }
     .g-OKP { color: #86efac; }
-    .g-Fair { color: #fde68a; }
-    .g-NG  { color: #fb923c; font-weight: bold; }
+    .g-NG  { color: #fde68a; font-weight: bold; }
     .g-Cut { color: #f87171; font-weight: bold; }
-    .g-B, .g-WO { color: #9ca3af; }
+    .g-B   { color: #9ca3af; }
+    .g-WO  { color: #9ca3af; }
     .empty { color: #4b5563; padding: 1rem .75rem; }
     .lso-notes { color: #d1d5db; font-size: .8rem; max-width: 28rem; white-space: normal; }
+    .pts   { color: #6b7280; font-size: .8rem; }
+    .esf   { color: #a78bfa; font-size: .85rem; }
+    .gdate { color: #93c5fd; font-size: .8rem; white-space: nowrap; }
     #status { margin-top: .75rem; color: #4b5563; font-size: .75rem; }
   </style>
 </head>
@@ -66,9 +70,9 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   <h1>&#x2708;&#xFE0F; LSO Greenie Board</h1>
   <table>
     <thead>
-      <tr><th>#</th><th>Timestamp</th><th>Pilot</th><th>Aircraft</th><th>Grade</th><th>Wire</th><th>DCS Grade</th><th>LSO Notes</th></tr>
+      <tr><th>#</th><th>Timestamp</th><th>Grade Date</th><th>Pilot</th><th>ESF Pilot</th><th>Aircraft</th><th>Map</th><th>Grade</th><th>Pts</th><th>Wire</th><th>DCS Grade</th><th>LSO Notes</th></tr>
     </thead>
-    <tbody id="rows"><tr><td class="empty" colspan="8">Loading&#x2026;</td></tr></tbody>
+    <tbody id="rows"><tr><td class="empty" colspan="12">Loading&#x2026;</td></tr></tbody>
   </table>
   <div id="status"></div>
   <script>
@@ -80,8 +84,13 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
     }
+    // Map NAVAIR grade labels → CSS suffix (matches .g-* classes above).
     function gradeClass(g) {
-      return ({'OK':'OK','(OK)':'OKP','Fair':'Fair','NG':'NG','Cut':'Cut','B':'B','WO':'WO'})[g] || '';
+      return ({'_OK_':'UNI','OK':'OK','(OK)':'OKP','--':'NG','C':'Cut','B':'B','WO':'WO'})[g] || '';
+    }
+    // NAVAIR points table — used client-side when the server field is absent.
+    function gradePoints(g) {
+      return ({'_OK_':5.0,'OK':4.0,'(OK)':3.0,'--':2.0,'C':0.0,'B':2.5,'WO':1.0})[g];
     }
     async function refresh() {
       try {
@@ -90,17 +99,26 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         const passes = await resp.json();
         const tbody = document.getElementById('rows');
         if (passes.length === 0) {
-          tbody.innerHTML = '<tr><td class="empty" colspan="8">No passes recorded yet.</td></tr>';
+          tbody.innerHTML = '<tr><td class="empty" colspan="12">No passes recorded yet.</td></tr>';
         } else {
           tbody.innerHTML = passes.map((p, i) => {
             const n = passes.length - i;
             const gc = gradeClass(p.pass_grade);
+            // Use server-provided grade_points; fall back to client-side table if absent.
+            const pts = (p.grade_points !== undefined && p.grade_points !== null)
+              ? p.grade_points
+              : gradePoints(p.pass_grade);
+            const ptsStr = pts !== undefined ? Number(pts).toFixed(1) : '-';
             return '<tr>'
               + '<td>' + n + '</td>'
               + '<td>' + esc(p.timestamp) + '</td>'
+              + '<td class="gdate">' + esc(p.grade_date) + '</td>'
               + '<td>' + esc(p.pilot_name) + '</td>'
+              + '<td class="esf">' + esc(p.esf_pilot_name) + '</td>'
               + '<td>' + esc(p.aircraft_type) + '</td>'
+              + '<td>' + esc(p.map_name) + '</td>'
               + '<td class="g-' + gc + '">' + esc(p.pass_grade) + '</td>'
+              + '<td class="pts">' + ptsStr + '</td>'
               + '<td>' + esc(p.wire) + '</td>'
               + '<td>' + esc(p.dcs_grading) + '</td>'
               + '<td class="lso-notes">' + esc(p.lso_notes) + '</td>'

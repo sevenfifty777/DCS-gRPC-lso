@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tokio::task::JoinHandle;
+
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::db::{RecoveryDb, SharedDb};
 use crate::tasks::{SessionLog, TaskParams};
@@ -196,9 +198,16 @@ async fn run(
 
     let (tx, mut rx) = mpsc::channel(1);
 
+    // Tracks the active detect_recovery_attempt task for each (plane_id, carrier_id) pair.
+    // When a Birth event re-spawns a known unit the old task is aborted before a new one starts,
+    // preventing duplicate recordings.
+    let active_tasks: Arc<Mutex<HashMap<(u32, u32), JoinHandle<()>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     let discord_webhook = opts.discord_webhook.clone();
     let record_acmi = !opts.no_acmi;
     let tx2 = tx.clone();
+    let active_tasks2 = active_tasks.clone();
     let spawn_detect_recovery_attempt =
         move |carrier_id: u32,
               carrier_name: String,
@@ -216,7 +225,8 @@ async fn run(
             let shutdown_handle = shutdown_handle.clone();
             let session_log = session_log.clone();
             let db = db.clone();
-            tokio::spawn(async move {
+            let active_tasks = active_tasks2.clone();
+            let handle = tokio::spawn(async move {
                 if let Err(err) =
                     crate::tasks::detect_recovery_attempt::detect_recovery_attempt(TaskParams {
                         out_dir: &out_dir,
@@ -239,7 +249,21 @@ async fn run(
                 {
                     tx.send(err).await.ok();
                 }
+                // Remove ourselves from the active map when done.
+                if let Ok(mut map) = active_tasks.lock() {
+                    map.remove(&(plane_id, carrier_id));
+                }
             });
+            // Abort any existing task for this pair before registering the new one.
+            if let Ok(mut map) = active_tasks2.lock() {
+                if let Some(old) = map.insert((plane_id, carrier_id), handle) {
+                    tracing::debug!(
+                        plane_id, carrier_id,
+                        "aborting stale detect_recovery_attempt task for re-spawned unit"
+                    );
+                    old.abort();
+                }
+            }
         };
 
     for (carrier_name, (carrier_id, carrier_info)) in &carriers {

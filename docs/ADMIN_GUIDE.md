@@ -457,12 +457,16 @@ sqlite3 C:\LSO\recordings\lso.db "SELECT * FROM passes ORDER BY id DESC LIMIT 20
 
 ```sql
 CREATE TABLE passes (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp   TEXT    NOT NULL,   -- "LSO-YYYYMMDD-HHMMSS-Pilot"
-    pilot_name  TEXT    NOT NULL,
-    pass_grade  TEXT    NOT NULL,   -- "OK", "(OK)", "Fair", "NG", "Cut", "B", "WO"
-    wire        INTEGER,            -- NULL for bolter / waveoff
-    dcs_grading TEXT                -- raw DCS LandingQualityMark string, or NULL
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp      TEXT    NOT NULL,   -- "LSO-YYYYMMDD-HHMMSS-Pilot"
+    pilot_name     TEXT    NOT NULL,
+    pass_grade     TEXT    NOT NULL,   -- "OK", "(OK)", "Fair", "NG", "Cut", "B", "WO"
+    wire           INTEGER,            -- NULL for bolter / waveoff
+    dcs_grading    TEXT,               -- raw DCS LandingQualityMark string, or NULL
+    aircraft_type  TEXT,               -- DCS type name, e.g. "FA-18C_hornet"
+    esf_pilot_name TEXT    NOT NULL,   -- duplicate of pilot_name for external dashboard use
+    grade_date     TEXT    NOT NULL,   -- UTC datetime of the recovery: "YYYY-MM-DD HH:MM:SS"
+    grade_points   REAL    NOT NULL    -- NAVAIR numeric score (5.0 OK_, 4.0 OK, 3.0 (OK), 2.0 --, 2.5 B, 1.0 WO, 0.0 C)
 );
 ```
 

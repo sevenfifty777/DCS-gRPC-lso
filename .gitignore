@@ -6,3 +6,32 @@
 /*.png
 /*.acmi
 notes*
+
+# Common OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs / temporary files
+*.log
+tmp/
+temp/
+
+# Local environment files
+.env
+.env.*
+
+# Common build artifacts
+dist/
+build/
+coverage/
+
+# Generated analysis output
+graphify-out/

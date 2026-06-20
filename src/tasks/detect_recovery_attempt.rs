@@ -31,6 +31,8 @@ pub async fn detect_recovery_attempt(params: TaskParams<'_>) -> Result<(), crate
         match result {
             Ok((carrier, plane)) => {
                 if is_recovery_attempt(&carrier, &plane) {
+                    // record_recovery runs to completion (landed / bolter / waveoff /
+                    // crash) before we check again — no cooldown needed here.
                     super::record_recovery::record_recovery(params.clone()).await?;
                 }
             }
@@ -48,57 +50,41 @@ pub async fn detect_recovery_attempt(params: TaskParams<'_>) -> Result<(), crate
 }
 
 pub fn is_recovery_attempt(carrier: &Transform, plane: &Transform) -> bool {
-    // ignore planes above 500ft
-    if m_to_ft(plane.alt) > 500.0 {
-        tracing::trace!(alt_in_ft = m_to_ft(plane.alt), "ignore planes above 500ft");
+    // Pattern entry: within 3.5 nm and below 1100 ft.
+    // The nose-pointing check is intentionally removed — during the break the
+    // aircraft is abeam the carrier with its nose perpendicular to BRC.
+    if m_to_ft(plane.alt) > 1100.0 {
+        tracing::trace!(alt_in_ft = m_to_ft(plane.alt), "ignore planes above 1100ft");
         return false;
     }
 
     let ray_from_plane_to_carrier = carrier.position - plane.position;
     let distance = ray_from_plane_to_carrier.mag();
 
-    // ignore planes farther away than 1.5nm
-    if m_to_nm(distance) > 1.5 {
+    // ignore planes farther away than 3.5nm
+    if m_to_nm(distance) > 3.5 {
         tracing::trace!(
             distance_in_nm = m_to_nm(distance),
-            "ignore planes farther away than 1.5nm"
+            "ignore planes farther away than 3.5nm"
         );
         return false;
     }
 
-    // ignore takeoffs
+    // ignore takeoffs / aircraft on deck
     if distance < 200.0 {
         tracing::trace!(distance_in_m = distance, "ignore takeoffs");
         return false;
     }
 
-    // is the plane behind the carrier
-    let dot = carrier
-        .forward
-        .normalized()
-        .dot(ray_from_plane_to_carrier.normalized());
-    if dot < 0.0 {
-        tracing::trace!(dot, "ignore not behind the carrier");
-        return false;
-    }
-
-    // Does the nose of the plane roughly point towards the carrier?
-    let dot = plane
-        .forward
-        .normalized()
-        .dot(ray_from_plane_to_carrier.normalized());
-    if dot < 0.65 {
-        tracing::trace!(dot, "ignore not roughly pointing towards the carrier");
-        return false;
-    }
+    // No rear-hemisphere check: the overhead pattern takes the aircraft ahead of
+    // the carrier (initial / break), so we must capture all quadrants within the
+    // distance + altitude envelope above.
 
     tracing::debug!(
         at = plane.time,
-        dot,
         distance_in_m = distance,
         distance_in_nm = m_to_nm(distance),
-        "found recovery attempt",
+        "found pattern / recovery attempt",
     );
-
     true
 }
