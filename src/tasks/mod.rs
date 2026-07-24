@@ -21,6 +21,7 @@ pub struct CompletedPass {
     pub wire: Option<u8>,
     pub dcs_grading: Option<String>,
     pub aircraft_type: String,
+    pub aircraft_id: Option<i64>,
     pub map_name: String,
 }
 
@@ -38,6 +39,7 @@ pub struct TaskParams<'a> {
     pub carrier_name: &'a str,
     pub plane_id: u32,
     pub plane_name: &'a str,
+    pub plane_type: &'a str,
     pub pilot_name: &'a str,
     pub carrier_info: &'static CarrierInfo,
     pub plane_info: &'static AirplaneInfo,

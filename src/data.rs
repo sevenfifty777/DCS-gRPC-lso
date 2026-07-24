@@ -288,3 +288,15 @@ impl AirplaneInfo {
         }
     }
 }
+
+pub fn get_aircraft_id(t: &str) -> Option<i64> {
+    match t {
+        "FA-18C_hornet" => Some(1),
+        "F-14A-135-GR" | "F-14B" | "F-14A/B" => Some(2),
+        "F-14B(U)" => Some(3),
+        "AV8BNA" => Some(4),
+        "A-6E" => Some(5),
+        "T-45" => Some(0),
+        _ => None,
+    }
+}

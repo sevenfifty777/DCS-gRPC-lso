@@ -421,13 +421,21 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         Grading::Recovered { cable, .. } => cable,
         _ => None,
     };
+    let aircraft_id = crate::data::get_aircraft_id(params.plane_type);
+    let display_type = match aircraft_id {
+        Some(2) => "F-14A/B",
+        Some(3) => "F-14B(U)",
+        _ => params.plane_info.name,
+    };
+
     let completed = CompletedPass {
         timestamp: filename.clone(),
         pilot_name: track.pilot_name.clone(),
         pass_grade: track.pass_grade,
         wire,
         dcs_grading: track.dcs_grading.clone(),
-        aircraft_type: params.plane_info.name.to_string(),
+        aircraft_type: display_type.to_string(),
+        aircraft_id,
         map_name: map_name.clone(),
     };
 
@@ -436,18 +444,35 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         log.push(completed.clone());
     }
 
+    // Query pilot UCID
+    let pilot_ucid = {
+        let mut net = crate::client::NetClient::new(params.ch.clone());
+        match net.get_players().await {
+            Ok(players) => players
+                .into_iter()
+                .find(|p| p.name == track.pilot_name)
+                .map(|p| p.ucid)
+                .filter(|u| !u.is_empty()),
+            Err(err) => {
+                tracing::warn!(?err, "failed to query players for UCID");
+                None
+            }
+        }
+    };
+
     // Persist to SQLite database (non-fatal — a write failure must not abort the recovery).
     {
         let db = params.db.clone();
         let entry = crate::db::DbPass {
             timestamp: completed.timestamp.clone(),
             pilot_name: completed.pilot_name.clone(),
+            pilot_ucid,
+            aircraft_id: completed.aircraft_id,
             pass_grade_label: completed.pass_grade.label().to_string(),
             wire: completed.wire,
             dcs_grading: completed.dcs_grading.clone(),
             aircraft_type: Some(completed.aircraft_type.clone()),
             map_name: if completed.map_name.is_empty() { None } else { Some(completed.map_name.clone()) },
-            esf_pilot_name: completed.pilot_name.clone(),
             grade_date: now_utc
                 .format(&GRADE_DATE_FORMAT)
                 .unwrap_or_default(),
