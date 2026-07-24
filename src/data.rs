@@ -282,7 +282,7 @@ impl AirplaneInfo {
     pub fn by_type(t: &str) -> Option<&'static Self> {
         match t {
             "FA-18C_hornet" => Some(&FA18C),
-            "F-14A-135-GR" | "F-14B" => Some(&F14),
+            "F-14A-135-GR" | "F-14B" | "F-14A/B" | "F-14B(U)" => Some(&F14),
             "T-45" => Some(&T45),
             _ => None,
         }

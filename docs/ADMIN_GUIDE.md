@@ -411,7 +411,7 @@ This reads the ACMI, re-runs the tracking and grading logic, and writes a fresh 
 | DCS Type Name | Aircraft | AoA On-Speed | Glide Slope |
 |---|---|---|---|
 | `FA-18C_hornet` | F/A-18C Hornet | 7.4° – 8.8° | 3.5° |
-| `F-14A-135-GR`, `F-14B` | F-14A/B Tomcat | ~10.2° – 11.1° | 3.5° |
+| `F-14A-135-GR`, `F-14B`, `F-14A/B`, `F-14B(U)` | F-14A/B Tomcat | ~10.2° – 11.1° | 3.5° |
 | `T-45` | VNAO T-45C Goshawk | 7.0° – 7.5° | 3.5° |
 
 > Aircraft or carriers **not** in the tables above are silently ignored by the monitoring tasks. To add support, add entries to `src/data.rs`.
@@ -446,7 +446,16 @@ A waveoff is recorded when:
 
 The SQLite database lives at `<out-dir>/lso.db`.
 
-### View all passes
+### Inspect Database with a GUI (Optional)
+
+If you prefer a graphical interface over the command line to inspect or query the database, you can use **[DB Browser for SQLite](https://sqlitebrowser.org/)**.
+
+1. Download and install DB Browser for SQLite from their website.
+2. Open the application.
+3. Click **Open Database** and select your `lso.db` file (e.g., in `C:\LSO\recordings\lso.db`).
+4. Switch to the **Browse Data** tab and select the `passes` table to view all recorded recoveries in a spreadsheet-like view.
+
+### View all passes via CLI
 
 ```powershell
 # Using the sqlite3 CLI (download from https://www.sqlite.org/download.html)

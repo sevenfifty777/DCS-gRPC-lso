@@ -159,7 +159,7 @@ Grading::Unknown       → --  (2.0 pts)
 |---|---|---|---|
 | F/A-18C Hornet | `FA-18C_hornet` | 3.5° | 7.4–8.1° |
 | F/A-18E/F Super Hornet | `F-18E` / `F-18F` | 3.5° | 7.4–8.1° |
-| F-14A/B Tomcat | `F-14A` / `F-14B` | 3.5° | 10.2–11.1° |
+| F-14A/B Tomcat | `F-14A` / `F-14B` / `F-14A/B` / `F-14B(U)` | 3.5° | 10.2–11.1° |
 | T-45C Goshawk | `T-45` | 3.5° | 6.5–7.5° |
 
 ## Supported Carriers

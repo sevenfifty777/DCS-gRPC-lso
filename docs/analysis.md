@@ -86,7 +86,7 @@ Each carrier has precise **cable pendant positions** (1–4) extracted from DCS 
 | Type | Hook offset | Glide slope |
 |------|------------|-------------|
 | FA-18C_hornet | (0, -2.24, -7.24) m | 3.5° |
-| F-14A-135-GR, F-14B | (0, -1.98, -6.56) m | 3.5° |
+| F-14A-135-GR, F-14B, F-14A/B, F-14B(U) | (0, -1.98, -6.56) m | 3.5° |
 | T-45 | (0, -1.78, -4.78) m | 3.5° |
 
 **AOA Ratings (per aircraft):**
