@@ -156,30 +156,51 @@ static FA18C: AirplaneInfo = AirplaneInfo {
     },
 };
 
-static F14: AirplaneInfo = AirplaneInfo {
-    name: "F-14 Tomcat",
-    hook: DVec3 {
-        x: 0.0,
-        y: -1.978941,
-        z: -6.563727,
-    },
+/// F-14 AOA rating shared by all Tomcat variants.
+/// https://www.heatblur.se/F-14Manual/cockpit.html?highlight=aoa#approach-indexer
+/// AOA degrees for Tomcat calculated by degrees=((units/1.0989) - 3.01)
+/// from units in manual based off conversation found here:
+/// https://forum.dcs.world/topic/228893-aoa-units-to-degrees-conversion/
+fn f14_aoa_rating(aoa: f64) -> Aoa {
+    if aoa <= 9.7 {
+        Aoa::Fast
+    } else if aoa <= 10.2 {
+        Aoa::SlightlyFast
+    } else if aoa < 11.1 {
+        Aoa::OnSpeed
+    } else if aoa < 11.6 {
+        Aoa::SlightlySlow
+    } else {
+        Aoa::Slow
+    }
+}
+
+/// Hook position shared by all F-14 variants (extracted via ModelViewer2).
+const F14_HOOK: DVec3 = DVec3 {
+    x: 0.0,
+    y: -1.978941,
+    z: -6.563727,
+};
+
+static F14A: AirplaneInfo = AirplaneInfo {
+    name: "F-14A Tomcat",
+    hook: F14_HOOK,
     glide_slope: 3.5,
-    aoa_rating: |aoa: f64| -> Aoa {
-        // https://www.heatblur.se/F-14Manual/cockpit.html?highlight=aoa#approach-indexer
-        // aoa degrees for tomcat calculated by degrees=((units/1.0989) - 3.01) from units in manual based off conversation found here:
-        // https://forum.dcs.world/topic/228893-aoa-units-to-degrees-conversion/#:~:text=Which%20makes%20around%201%20unit%3D1%2C67%20degrees.
-        if aoa <= 9.7 {
-            Aoa::Fast
-        } else if aoa <= 10.2 {
-            Aoa::SlightlyFast
-        } else if aoa < 11.1 {
-            Aoa::OnSpeed
-        } else if aoa < 11.6 {
-            Aoa::SlightlySlow
-        } else {
-            Aoa::Slow
-        }
-    },
+    aoa_rating: f14_aoa_rating,
+};
+
+static F14B: AirplaneInfo = AirplaneInfo {
+    name: "F-14B Tomcat",
+    hook: F14_HOOK,
+    glide_slope: 3.5,
+    aoa_rating: f14_aoa_rating,
+};
+
+static F14BU: AirplaneInfo = AirplaneInfo {
+    name: "F-14B(U) Tomcat",
+    hook: F14_HOOK,
+    glide_slope: 3.5,
+    aoa_rating: f14_aoa_rating,
 };
 
 static T45: AirplaneInfo = AirplaneInfo {
@@ -282,7 +303,9 @@ impl AirplaneInfo {
     pub fn by_type(t: &str) -> Option<&'static Self> {
         match t {
             "FA-18C_hornet" => Some(&FA18C),
-            "F-14A-135-GR" | "F-14A-135-GR-Early" | "F-14A-95-GR" | "F-14B" | "F-14A/B" | "F-14B(U)" | "F-14BU" => Some(&F14),
+            "F-14A-135-GR" | "F-14A-135-GR-Early" | "F-14A-95-GR" => Some(&F14A),
+            "F-14B" | "F-14A/B" => Some(&F14B),
+            "F-14B(U)" | "F-14BU" => Some(&F14BU),
             "T-45" => Some(&T45),
             _ => None,
         }

@@ -51,6 +51,20 @@ const GATE_HALF_NM: f64 = 926.0;
 /// ¼ nm gate — ramp / "in close"; dangerously low here triggers a Cut pass.
 const GATE_QUARTER_NM: f64 = 463.0;
 
+/// Exponential moving average (EMA) smoothing factor for the carrier position.
+///
+/// DCS updates the carrier's world position in discrete steps (~every 1.4 s at
+/// 15 kts) rather than every simulation frame.  When polled at 100 ms, ~13 out
+/// of 14 frames return the same stale position, then one frame jumps ahead by
+/// ~10 m.  This creates a sawtooth in the approach datum `x` coordinate
+/// (distance to landing point along the angled deck), which appears as periodic
+/// stairstep drops of 10–20 ft on the side-view chart.
+///
+/// α = 0.15 spreads each position step over ~18 frames, introducing ~0.6 s of
+/// positional lag (~4.6 m at 15 kts).  The resulting gate-distance error is
+/// < 0.5 %, well within acceptable tolerance for LSO grading.
+const CARRIER_POS_SMOOTH_ALPHA: f64 = 0.15;
+
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Datum {
     pub x: f64,
@@ -91,6 +105,10 @@ pub struct Track {
     dcs_grading: Option<String>,
     carrier_info: &'static CarrierInfo,
     plane_info: &'static AirplaneInfo,
+    /// Exponentially smoothed carrier position used for approach geometry.
+    /// Eliminates the sawtooth caused by DCS updating the carrier's world
+    /// position in discrete steps rather than every frame.
+    smoothed_carrier_pos: Option<DVec3>,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -161,6 +179,7 @@ impl Track {
             dcs_grading: None,
             carrier_info,
             plane_info,
+            smoothed_carrier_pos: None,
         }
     }
 
@@ -194,11 +213,28 @@ impl Track {
             });
         }
 
+        // Smooth carrier position to eliminate DCS quantisation sawtooth.
+        // The carrier's world position updates in discrete jumps (~every 1.4 s);
+        // between updates, the same stale position is returned.  EMA blends the
+        // raw position toward the smoothed estimate each frame, producing a
+        // steady progression instead of a stairstep.
+        let smoothed_pos = match self.smoothed_carrier_pos {
+            Some(prev) => {
+                let s = prev + (carrier.position - prev) * CARRIER_POS_SMOOTH_ALPHA;
+                self.smoothed_carrier_pos = Some(s);
+                s
+            }
+            None => {
+                self.smoothed_carrier_pos = Some(carrier.position);
+                carrier.position
+            }
+        };
+
         let landing_pos_offset = self
             .carrier_info
             .optimal_landing_offset(self.plane_info)
             .rotated_by(carrier.rotation);
-        let landing_pos = carrier.position + landing_pos_offset;
+        let landing_pos = smoothed_pos + landing_pos_offset;
 
         let ray_from_plane_to_carrier = DVec3::new(
             landing_pos.x - plane.position.x,
@@ -208,7 +244,7 @@ impl Track {
 
         // Stop once the plane leaves the wide pattern detection zone (RTB or go-around).
         // This prevents a recording from running forever when no landing is made.
-        let carrier_distance = (carrier.position - plane.position).mag();
+        let carrier_distance = (smoothed_pos - plane.position).mag();
         if m_to_nm(carrier_distance) > 3.5 || m_to_ft(plane.alt) > 1100.0 {
             tracing::debug!("stop: plane exited pattern detection zone");
             return false;
