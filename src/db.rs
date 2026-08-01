@@ -31,6 +31,8 @@ pub struct DbPass {
     pub grade_date: String,
     /// Numeric NAVAIR grade points (e.g. 4.0 for OK, 3.0 for (OK)).
     pub grade_points: f64,
+    /// In-mission date/time from DCS scenario clock (ISO-8601 string).
+    pub mission_datetime: String,
 }
 
 /// Pass record as returned from a database query (JSON-serialisable for the web API).
@@ -51,6 +53,8 @@ pub struct StoredPass {
     pub lso_notes: Option<String>,
     pub grade_date: String,
     pub grade_points: f64,
+    /// In-mission date/time from DCS scenario clock.
+    pub mission_datetime: String,
 }
 
 impl RecoveryDb {
@@ -69,8 +73,9 @@ impl RecoveryDb {
                 dcs_grading    TEXT,
                 aircraft_type  TEXT,
                 map_name       TEXT,
-                grade_date     TEXT    NOT NULL DEFAULT '',
-                grade_points   REAL    NOT NULL DEFAULT 0.0
+                grade_date         TEXT    NOT NULL DEFAULT '',
+                grade_points       REAL    NOT NULL DEFAULT 0.0,
+                mission_datetime   TEXT    NOT NULL DEFAULT ''
             );",
         )?;
         // Migrations: add columns to pre-existing databases that lack them.
@@ -82,6 +87,7 @@ impl RecoveryDb {
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN grade_points   REAL    NOT NULL DEFAULT 0.0;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN pilot_ucid     TEXT;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN aircraft_id    INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN mission_datetime TEXT NOT NULL DEFAULT '';");
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -93,8 +99,8 @@ impl RecoveryDb {
         conn.execute(
             "INSERT INTO passes \
                 (timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, dcs_grading, aircraft_type, \
-                 map_name, grade_date, grade_points) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 map_name, grade_date, grade_points, mission_datetime) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -107,6 +113,7 @@ impl RecoveryDb {
                 &pass.map_name,
                 &pass.grade_date,
                 pass.grade_points,
+                &pass.mission_datetime,
             ],
         )?;
         Ok(())
@@ -117,7 +124,7 @@ impl RecoveryDb {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, dcs_grading, aircraft_type, \
-                    map_name, grade_date, grade_points \
+                    map_name, grade_date, grade_points, mission_datetime \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -140,6 +147,7 @@ impl RecoveryDb {
                 lso_notes,
                 grade_date: row.get(10)?,
                 grade_points: row.get(11)?,
+                mission_datetime: row.get(12)?,
             })
         })?;
         rows.collect()

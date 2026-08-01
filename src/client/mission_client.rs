@@ -26,6 +26,15 @@ impl MissionClient {
         Ok(res.datetime)
     }
 
+    pub async fn get_scenario_current_time(&mut self) -> Result<String, Status> {
+        let res = self
+            .svc
+            .get_scenario_current_time(mission::v0::GetScenarioCurrentTimeRequest {})
+            .await?
+            .into_inner();
+        Ok(res.datetime)
+    }
+
     pub async fn stream_events(
         &mut self,
     ) -> Result<impl Stream<Item = Result<(f64, Event), Status>>, Status> {

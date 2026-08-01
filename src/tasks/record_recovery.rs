@@ -39,6 +39,9 @@ struct RecoveryReport<'a> {
     dcs_grading: Option<&'a str>,
     gate_deviations: &'a GateDeviations,
     datums: &'a [Datum],
+    /// In-mission date/time from the DCS scenario clock (ISO-8601).
+    #[serde(skip_serializing_if = "str::is_empty")]
+    mission_datetime: &'a str,
 }
 
 pub static FILENAME_DATETIME_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>> =
@@ -405,6 +408,15 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         return Ok(());
     }
 
+    // Query in-mission date/time from the DCS scenario clock (non-fatal).
+    let mission_datetime: String = match mission.get_scenario_current_time().await {
+        Ok(dt) => dt,
+        Err(err) => {
+            tracing::warn!(?err, "failed to query in-mission datetime");
+            String::new()
+        }
+    };
+
     // Write JSON report.
     let json_path = params.out_dir.join(&filename).with_extension("json");
     let report = RecoveryReport {
@@ -414,6 +426,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         dcs_grading: track.dcs_grading.as_deref(),
         gate_deviations: &track.gate_deviations,
         datums: &track.datums,
+        mission_datetime: &mission_datetime,
     };
     tokio::fs::write(&json_path, serde_json::to_vec_pretty(&report)?).await?;
 
@@ -477,6 +490,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 .format(&GRADE_DATE_FORMAT)
                 .unwrap_or_default(),
             grade_points: completed.pass_grade.points(),
+            mission_datetime: mission_datetime.clone(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -508,7 +522,11 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         let mut embed = CreateEmbed::new()
             .field("Aircraft", params.plane_info.name, false)
             .field("Map", if map_name.is_empty() { "-" } else { map_name.as_str() }, false)
-            .field("Date / Time (UTC)", recovery_timestamp.as_str(), false)
+            .field("Date / Time (UTC)", recovery_timestamp.as_str(), false);
+        if !mission_datetime.is_empty() {
+            embed = embed.field("Mission Date/Time", mission_datetime.as_str(), false);
+        }
+        embed = embed
             .field(
                 "Pilot",
                 params
