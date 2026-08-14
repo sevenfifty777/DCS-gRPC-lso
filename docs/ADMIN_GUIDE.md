@@ -258,9 +258,9 @@ Every saved recovery produces four files in `--out-dir`:
   "pass_grade": "Ok",
   "dcs_grading": "OK 3 WIRE# 3",
   "gate_deviations": {
-    "at_three_quarter_nm": { "gs_deviation_ft": 12.4, "lineup_ft": -3.1 },
-    "at_half_nm":          { "gs_deviation_ft":  8.0, "lineup_ft": -1.8 },
-    "at_quarter_nm":       { "gs_deviation_ft":  2.2, "lineup_ft":  0.5 }
+    "at_three_quarter_nm": { "gs_deviation_deg": 0.16, "lineup_deg": -0.05, "gs_deviation_ft": 12.4, "lineup_ft": -3.1 },
+    "at_half_nm":          { "gs_deviation_deg": 0.15, "lineup_deg": -0.03, "gs_deviation_ft":  8.0, "lineup_ft": -1.8 },
+    "at_quarter_nm":       { "gs_deviation_deg": 0.08, "lineup_deg":  0.02, "gs_deviation_ft":  2.2, "lineup_ft":  0.5 }
   },
   "datums": [
     { "x": 1389.2, "y": -3.1, "aoa": 8.1, "alt": 42.3 },
@@ -275,7 +275,7 @@ Every saved recovery produces four files in `--out-dir`:
 - `"WaveoffPilot"` — pilot climbed away from inside the groove
 - `{ "Recovered": { "cable": N, "cable_estimated": N } }` — caught wire N
 
-**`pass_grade` values:** `"Ok"`, `"OkParentheses"`, `"Fair"`, `"NoGrade"`, `"Cut"`, `"Bolter"`, `"WaveoffPilot"`
+**`pass_grade` values:** `"Unicorn"`, `"Ok"`, `"OkParentheses"`, `"NoGrade"`, `"Cut"`, `"Bolter"`, `"WaveoffPilot"`
 
 ---
 
@@ -292,7 +292,7 @@ Then open a browser: **http://localhost:8080**
 The page:
 - Shows all passes from the SQLite database, newest first
 - Auto-refreshes every 10 seconds
-- Colour-codes grades (green = OK, yellow = Fair, orange = NG, red = Cut)
+- Colour-codes grades (gold = _OK_, green = OK/(OK), yellow = --, red = C, gray = B/WO)
 
 ### Exposing to the network
 
@@ -343,7 +343,7 @@ lso.exe run -o C:\LSO\recordings `
 
 Each completed pass posts an embed containing:
 - Pilot name (optionally mentioned by Discord user ID)
-- NAVAIR pass grade (OK / Fair / NG etc.)
+- NAVAIR pass grade (_OK_ / OK / (OK) / -- / C / B / WO)
 - Outcome (Wire #N / Bolter / Waveoff)
 - Gate deviation table (GS and lineup at 3/4 nm, 1/2 nm, 1/4 nm)
 - Attached PNG chart
@@ -376,7 +376,7 @@ When LSO exits (Ctrl-C or clean shutdown) it prints a text greenie board to stdo
 ╠═══════════════════════╬══════╬══════╬════════════════════╣
 ║ Viper                 ║  3   ║ OK   ║ OK 3 WIRE# 3       ║
 ║ Ghost                 ║  -   ║ WO   ║ -                  ║
-║ Slider                ║  1   ║ NG   ║ NG 1 WIRE# 1       ║
+║ Slider                ║  1   ║ --   ║ -- 1 WIRE# 1       ║
 ╚═══════════════════════╩══════╩══════╩════════════════════╝
 ```
 
@@ -411,8 +411,10 @@ This reads the ACMI, re-runs the tracking and grading logic, and writes a fresh 
 | DCS Type Name | Aircraft | AoA On-Speed | Glide Slope |
 |---|---|---|---|
 | `FA-18C_hornet` | F/A-18C Hornet | 7.4° – 8.8° | 3.5° |
-| `F-14A-135-GR`, `F-14B`, `F-14A/B`, `F-14B(U)` | F-14A/B Tomcat | ~10.2° – 11.1° | 3.5° |
-| `T-45` | VNAO T-45C Goshawk | 7.0° – 7.5° | 3.5° |
+| `F-14A-135-GR`, `F-14A-135-GR-Early`, `F-14A-95-GR` | F-14A Tomcat | 10.2° – 11.1° | 3.5° |
+| `F-14B`, `F-14A/B` | F-14B Tomcat | 10.2° – 11.1° | 3.5° |
+| `F-14B(U)`, `F-14BU` | F-14B(U) Tomcat | 10.2° – 11.1° | 3.5° |
+| `T-45` | VNAO T-45C Goshawk | 6.5° – 7.5° | 3.5° |
 
 > Aircraft or carriers **not** in the tables above are silently ignored by the monitoring tasks. To add support, add entries to `src/data.rs`.
 
@@ -426,13 +428,13 @@ LSO uses a simplified NAVAIR 00-80T-104 grading algorithm based on gate deviatio
 
 | Grade | Label | Pts | Condition |
 |---|---|---|---|
-| OK | `OK` | 4 | All gates: GS deviation < ±40 ft AND lineup < ±25 ft |
-| OK (parentheses) | `(OK)` | 3 | Worst gate: GS < ±100 ft AND lineup < ±60 ft |
-| Fair | `Fair` | 2 | Worst gate: GS < ±200 ft AND lineup < ±120 ft |
-| No Grade | `NG` | 1 | Any gate: GS ≥ ±200 ft OR lineup ≥ ±120 ft |
-| Cut | `Cut` | 0 | GS < −150 ft at the 1/4-nm gate (dangerously low at the ramp) |
-| Bolter | `B` | — | Aircraft did not catch a wire |
-| Waveoff (Pilot) | `WO` | — | Pilot climbed away after entering the groove (inside 3/4 nm, ≤ 300 ft AGL) |
+| Unicorn | `_OK_` | 5.0 | All gates within OK margin, wire 3, groove time 15.0–18.99 s |
+| OK | `OK` | 4.0 | All gates: GS deviation < ±0.5° AND lineup < ±1.0° |
+| OK (parentheses) | `(OK)` | 3.0 | Worst gate: GS < ±1.0° AND lineup < ±2.0° |
+| No Grade | `--` | 2.0 | Any gate: GS ≥ ±1.0° OR lineup ≥ ±2.0° |
+| Cut | `C` | 0.0 | GS < −2.5° at the ¼-nm gate (dangerously low at the ramp) |
+| Bolter | `B` | 2.5 | Aircraft did not catch a wire |
+| Waveoff (Pilot) | `WO` | 1.0 | Pilot climbed away after entering the groove (inside ¾ nm, ≤ 300 ft AGL) |
 
 ### Waveoff detection
 
@@ -466,16 +468,19 @@ sqlite3 C:\LSO\recordings\lso.db "SELECT * FROM passes ORDER BY id DESC LIMIT 20
 
 ```sql
 CREATE TABLE passes (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp      TEXT    NOT NULL,   -- "LSO-YYYYMMDD-HHMMSS-Pilot"
-    pilot_name     TEXT    NOT NULL,
-    pass_grade     TEXT    NOT NULL,   -- "OK", "(OK)", "Fair", "NG", "Cut", "B", "WO"
-    wire           INTEGER,            -- NULL for bolter / waveoff
-    dcs_grading    TEXT,               -- raw DCS LandingQualityMark string, or NULL
-    aircraft_type  TEXT,               -- DCS type name, e.g. "FA-18C_hornet"
-    esf_pilot_name TEXT    NOT NULL,   -- duplicate of pilot_name for external dashboard use
-    grade_date     TEXT    NOT NULL,   -- UTC datetime of the recovery: "YYYY-MM-DD HH:MM:SS"
-    grade_points   REAL    NOT NULL    -- NAVAIR numeric score (5.0 OK_, 4.0 OK, 3.0 (OK), 2.0 --, 2.5 B, 1.0 WO, 0.0 C)
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp        TEXT    NOT NULL,   -- "LSO-YYYYMMDD-HHMMSS-Pilot"
+    pilot_name       TEXT    NOT NULL,
+    pilot_ucid       TEXT,               -- DCS player UCID, or NULL
+    aircraft_id      INTEGER,            -- internal aircraft ID, or NULL
+    pass_grade       TEXT    NOT NULL,   -- "_OK_", "OK", "(OK)", "--", "C", "B", "WO"
+    wire             INTEGER,            -- NULL for bolter / waveoff
+    dcs_grading      TEXT,               -- raw DCS LandingQualityMark string, or NULL
+    aircraft_type    TEXT,               -- DCS type name, e.g. "FA-18C_hornet"
+    map_name         TEXT,               -- DCS theatre name, e.g. "Caucasus"
+    grade_date       TEXT    NOT NULL,   -- UTC datetime: "YYYY-MM-DD HH:MM:SS"
+    grade_points     REAL    NOT NULL,   -- NAVAIR score (5.0 _OK_, 4.0 OK, 3.0 (OK), 2.0 --, 2.5 B, 1.0 WO, 0.0 C)
+    mission_datetime TEXT    NOT NULL    -- in-mission date/time from DCS scenario clock
 );
 ```
 
@@ -491,14 +496,14 @@ sqlite3 -csv -header C:\LSO\recordings\lso.db \
 ```sql
 SELECT
     pilot_name,
-    COUNT(*)                                              AS total,
-    SUM(CASE WHEN pass_grade = 'OK'   THEN 1 ELSE 0 END) AS ok,
-    SUM(CASE WHEN pass_grade = '(OK)' THEN 1 ELSE 0 END) AS ok_par,
-    SUM(CASE WHEN pass_grade = 'Fair' THEN 1 ELSE 0 END) AS fair,
-    SUM(CASE WHEN pass_grade = 'NG'   THEN 1 ELSE 0 END) AS ng,
-    SUM(CASE WHEN pass_grade = 'Cut'  THEN 1 ELSE 0 END) AS cut,
-    SUM(CASE WHEN pass_grade = 'B'    THEN 1 ELSE 0 END) AS bolter,
-    SUM(CASE WHEN pass_grade = 'WO'   THEN 1 ELSE 0 END) AS waveoff
+    COUNT(*)                                               AS total,
+    SUM(CASE WHEN pass_grade = '_OK_' THEN 1 ELSE 0 END)  AS unicorn,
+    SUM(CASE WHEN pass_grade = 'OK'   THEN 1 ELSE 0 END)  AS ok,
+    SUM(CASE WHEN pass_grade = '(OK)' THEN 1 ELSE 0 END)  AS ok_par,
+    SUM(CASE WHEN pass_grade = '--'   THEN 1 ELSE 0 END)  AS no_grade,
+    SUM(CASE WHEN pass_grade = 'C'    THEN 1 ELSE 0 END)  AS cut,
+    SUM(CASE WHEN pass_grade = 'B'    THEN 1 ELSE 0 END)  AS bolter,
+    SUM(CASE WHEN pass_grade = 'WO'   THEN 1 ELSE 0 END)  AS waveoff
 FROM passes
 GROUP BY pilot_name
 ORDER BY total DESC;

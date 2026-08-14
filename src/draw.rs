@@ -192,6 +192,7 @@ pub fn draw_top_view(
         .datums
         .iter()
         .map(|d| Datum {
+            time: d.time,
             x: m_to_nm(d.x),
             y: m_to_nm(d.y),
             aoa: d.aoa,
@@ -316,6 +317,7 @@ pub fn draw_side_view(
         .datums
         .iter()
         .map(|d| Datum {
+            time: d.time,
             x: m_to_nm(d.x),
             y: d.y,
             aoa: d.aoa,
@@ -573,6 +575,7 @@ pub fn draw_pattern_chart(
         .pattern_datums
         .iter()
         .map(|d| PatternDatum {
+            time: d.time,
             // chart coords: port on left (negate port_m), ahead at top (negate astern_m)
             astern_m: -m_to_nm(d.astern_m),  // chart_y = -astern_m
             port_m:   -m_to_nm(d.port_m),    // chart_x = -port_m

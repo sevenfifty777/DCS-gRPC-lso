@@ -67,6 +67,7 @@ const CARRIER_POS_SMOOTH_ALPHA: f64 = 0.15;
 
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Datum {
+    pub time: f64,
     pub x: f64,
     pub y: f64,
     pub aoa: f64,
@@ -79,6 +80,7 @@ pub struct Datum {
 /// ninety → final → touchdown).
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct PatternDatum {
+    pub time: f64,
     /// Distance astern of carrier along BRC (m). Positive = behind carrier (approach direction).
     pub astern_m: f64,
     /// Lateral distance from carrier BRC centerline (m). Positive = port (left) side.
@@ -92,6 +94,7 @@ pub struct PatternDatum {
 pub struct Track {
     pilot_name: String,
     previous_distance: f64,
+    previous_x: f64,
     datums: Vec<Datum>,
     pattern_datums: Vec<PatternDatum>,
     gate_deviations: GateDeviations,
@@ -169,6 +172,7 @@ impl Track {
         Self {
             pilot_name: pilot_name.into(),
             previous_distance: f64::MAX,
+            previous_x: f64::MAX,
             datums: Default::default(),
             pattern_datums: Default::default(),
             gate_deviations: GateDeviations::default(),
@@ -206,6 +210,7 @@ impl Track {
             let port_m = rel.dot(brc_stbd);
 
             self.pattern_datums.push(PatternDatum {
+                time: plane.time,
                 astern_m,
                 port_m,
                 alt_ft: m_to_ft(plane.alt),
@@ -314,6 +319,26 @@ impl Track {
         // (e.g., still in the break or flying the overhead pattern), and atan2 with a negative x
         // would produce a bogus ~177° deviation reading.
         if x > 0.0 {
+            // Robust reset: if the aircraft flies outbound (e.g., into the pattern after a bolter),
+            // clear any gates or groove entry that were captured so they can be freshly recorded
+            // on the real final approach inbound.
+            if x > GATE_THREE_QUARTER_NM {
+                self.gate_deviations.at_three_quarter_nm = None;
+                self.groove_entry_time = None;
+                self.entered_groove = false;
+            }
+            if x > GATE_HALF_NM {
+                self.gate_deviations.at_half_nm = None;
+            }
+            if x > GATE_QUARTER_NM {
+                self.gate_deviations.at_quarter_nm = None;
+            }
+
+            // Only sample gates if the aircraft is flying inbound (x is decreasing).
+            // This prevents capturing bogus ~90° deviations if the aircraft crosses the beam
+            // outbound (from front to back) during a tight low-altitude bolter pattern.
+            let is_inbound = x < self.previous_x;
+
             // Sample gate deviations at key distances on first crossing.
             let ideal_gs_alt = x * self.plane_info.glide_slope.to_radians().tan();
             let gs_deviation_m = alt - ideal_gs_alt;
@@ -326,7 +351,7 @@ impl Track {
             // ~400 ft at that distance.  500 ft cleanly rejects the 600–1000 ft overhead-pattern
             // crossing of x = 0 while still capturing all realistic final-approach deviations.
             let in_approach = m_to_ft(alt) <= 500.0;
-            if in_approach && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
+            if in_approach && is_inbound && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
                 self.gate_deviations.at_three_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -334,7 +359,7 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
+            if in_approach && is_inbound && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
                 self.gate_deviations.at_half_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -342,7 +367,7 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
+            if in_approach && is_inbound && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
                 self.gate_deviations.at_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -351,8 +376,10 @@ impl Track {
                 });
             }
 
-            // Mark groove entry: inside 3/4 nm and below 300 ft AGL.
-            if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 {
+            // Mark groove entry: inside 3/4 nm, below 300 ft AGL, and lined up (±10°).
+            // The lateral constraint prevents the timer from starting prematurely while the
+            // aircraft is still performing a wide turn to final on the base leg.
+            if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 && lineup_deg.abs() <= 10.0 {
                 if self.groove_entry_time.is_none() {
                     self.groove_entry_time = Some(plane.time);
                 }
@@ -361,11 +388,14 @@ impl Track {
         }
 
         self.datums.push(Datum {
+            time: plane.time,
             x,
             y,
             aoa: plane.aoa,
             alt: alt.max(0.0),
         });
+
+        self.previous_x = x;
 
         true
     }
