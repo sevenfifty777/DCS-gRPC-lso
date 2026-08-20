@@ -443,6 +443,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
     let wire = match track.grading {
         Grading::Recovered { cable, .. } => cable,
+        Grading::IntentionalBolter { cable_estimated } => cable_estimated,
         _ => None,
     };
     let aircraft_id = crate::data::get_aircraft_id(params.plane_type);
@@ -450,6 +451,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         Some(2) => "F-14A/B",
         Some(3) => "F-14B(U)",
         _ => params.plane_info.name,
+    };
+
+    let outcome_str = match track.grading {
+        Grading::Unknown => "unknown".to_string(),
+        Grading::Bolter => "Bolter".to_string(),
+        Grading::WaveoffPilot => "Waveoff".to_string(),
+        Grading::IntentionalBolter { .. } => "Qualif Bolter".to_string(),
+        Grading::Recovered { cable, .. } => cable
+            .map(|c| format!("Wire #{}", c))
+            .unwrap_or("Landed".to_string()),
     };
 
     let completed = CompletedPass {
@@ -461,6 +472,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         aircraft_type: display_type.to_string(),
         aircraft_id,
         map_name: map_name.clone(),
+        outcome: outcome_str.clone(),
     };
 
     // Append to in-memory session greenie board log.
@@ -502,6 +514,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 .unwrap_or_default(),
             grade_points: completed.pass_grade.points(),
             mission_datetime: mission_datetime.clone(),
+            outcome: completed.outcome.clone(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -554,15 +567,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             )
             .field(
                 "Outcome",
-                match track.grading {
-                    Grading::Unknown => Cow::Borrowed("unknown"),
-                    Grading::Bolter => Cow::Borrowed("Bolter"),
-                    Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-                    Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
-                    Grading::Recovered { cable, .. } => cable
-                        .map(|c| Cow::Owned(format!("Wire #{}", c)))
-                        .unwrap_or(Cow::Borrowed("Landed")),
-                },
+                outcome_str,
                 true,
             )
             .field(

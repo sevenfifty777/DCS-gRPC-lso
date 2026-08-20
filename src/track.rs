@@ -114,6 +114,8 @@ pub struct Track {
     /// Eliminates the sawtooth caused by DCS updating the carrier's world
     /// position in discrete steps rather than every frame.
     smoothed_carrier_pos: Option<DVec3>,
+    /// Tracks if the hook was ever detected as up (< 0.5) during the pass.
+    hook_was_up: bool,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -190,6 +192,7 @@ impl Track {
             plane_info,
             min_distance_state: None,
             smoothed_carrier_pos: None,
+            hook_was_up: false,
         }
     }
 
@@ -261,6 +264,10 @@ impl Track {
             return false;
         }
 
+        if hook_state < 0.5 {
+            self.hook_was_up = true;
+        }
+
         // Track the minimum distance to the touchdown point.
         let distance = ray_from_plane_to_carrier.mag();
         if distance < self.previous_distance {
@@ -270,8 +277,8 @@ impl Track {
             match &self.grading {
                 Some(Grading::Recovered { .. }) => {
                     // Landed and now moving away → bolter or touch-and-go.
-                    if let Some((min_carrier, min_plane, min_hook_state)) = &self.min_distance_state {
-                        if min_hook_state < &0.5 {
+                    if let Some((min_carrier, min_plane, _)) = &self.min_distance_state {
+                        if self.hook_was_up {
                             // Hook was up -> Intentional bolter / touch and go.
                             let estimated = self.estimate_cable(min_carrier, min_plane);
                             tracing::debug!(distance_in_m = distance, "intentional bolter detected after touchdown");
@@ -292,8 +299,8 @@ impl Track {
                     // Entered the groove but now moving away.
                     // This could be a bolter (if they flew over the deck) or a pilot waveoff.
                     // If they reached a point over the deck, they passed through minimum distance.
-                    if let Some((min_carrier, min_plane, min_hook_state)) = &self.min_distance_state {
-                        if min_hook_state < &0.5 {
+                    if let Some((min_carrier, min_plane, _)) = &self.min_distance_state {
+                        if self.hook_was_up {
                             // Hook was up -> Intentional bolter / touch and go.
                             let estimated = self.estimate_cable(min_carrier, min_plane);
                             tracing::debug!(distance_in_m = distance, "intentional bolter detected");

@@ -23,6 +23,7 @@ pub struct CompletedPass {
     pub aircraft_type: String,
     pub aircraft_id: Option<i64>,
     pub map_name: String,
+    pub outcome: String,
 }
 
 /// Shared log of all completed passes in this session.

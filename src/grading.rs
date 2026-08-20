@@ -103,6 +103,12 @@ pub fn compute_pass_grade(
         Grading::WaveoffPilot => PassGrade::WaveoffPilot,
         Grading::Bolter       => PassGrade::Bolter,
         Grading::Recovered { cable, .. } | Grading::IntentionalBolter { cable_estimated: cable } => {
+            if let Grading::IntentionalBolter { cable_estimated: None } = grading {
+                // For a qualification touch-and-go, if they miss the wires completely,
+                // it is graded as a Bolter (B), but the outcome still reflects it was a Qualif Bolter.
+                return PassGrade::Bolter;
+            }
+
             let base = grade_from_gates(gates);
             // Unicorn: zero deviations (base == Ok), wire 3, groove time in window.
             if base == PassGrade::Ok
