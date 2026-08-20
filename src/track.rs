@@ -108,6 +108,8 @@ pub struct Track {
     dcs_grading: Option<String>,
     carrier_info: &'static CarrierInfo,
     plane_info: &'static AirplaneInfo,
+    /// The carrier and plane transforms, and the hook state, at the point of minimum distance.
+    min_distance_state: Option<(Transform, Transform, f64)>,
     /// Exponentially smoothed carrier position used for approach geometry.
     /// Eliminates the sawtooth caused by DCS updating the carrier's world
     /// position in discrete steps rather than every frame.
@@ -141,6 +143,9 @@ pub struct GateDeviations {
 pub enum Grading {
     Unknown,
     Bolter,
+    IntentionalBolter {
+        cable_estimated: Option<u8>,
+    },
     /// Pilot broke off the approach after entering the groove (inside 3/4 nm, below 300 ft).
     WaveoffPilot,
     Recovered {
@@ -183,11 +188,12 @@ impl Track {
             dcs_grading: None,
             carrier_info,
             plane_info,
+            min_distance_state: None,
             smoothed_carrier_pos: None,
         }
     }
 
-    pub fn next(&mut self, carrier: &Transform, plane: &Transform) -> bool {
+    pub fn next(&mut self, carrier: &Transform, plane: &Transform, hook_state: f64) -> bool {
         // ---------------------------------------------------------------
         // Pattern datum — BRC frame, recorded every frame.
         // Origin = carrier position. x_chart = -port_m, y_chart = -astern_m
@@ -259,10 +265,20 @@ impl Track {
         let distance = ray_from_plane_to_carrier.mag();
         if distance < self.previous_distance {
             self.previous_distance = distance;
+            self.min_distance_state = Some((carrier.clone(), plane.clone(), hook_state));
         } else if distance - self.previous_distance > 150.0 {
             match &self.grading {
                 Some(Grading::Recovered { .. }) => {
-                    // Landed and now moving away → bolter.
+                    // Landed and now moving away → bolter or touch-and-go.
+                    if let Some((min_carrier, min_plane, min_hook_state)) = &self.min_distance_state {
+                        if min_hook_state < &0.5 {
+                            // Hook was up -> Intentional bolter / touch and go.
+                            let estimated = self.estimate_cable(min_carrier, min_plane);
+                            tracing::debug!(distance_in_m = distance, "intentional bolter detected after touchdown");
+                            self.grading = Some(Grading::IntentionalBolter { cable_estimated: estimated });
+                            return false;
+                        }
+                    }
                     tracing::debug!(distance_in_m = distance, "bolter detected");
                     self.grading = Some(Grading::Bolter);
                     return false;
@@ -273,7 +289,22 @@ impl Track {
                     return false;
                 }
                 None if self.entered_groove => {
-                    // Entered the groove but now moving away → pilot waveoff.
+                    // Entered the groove but now moving away.
+                    // This could be a bolter (if they flew over the deck) or a pilot waveoff.
+                    // If they reached a point over the deck, they passed through minimum distance.
+                    if let Some((min_carrier, min_plane, min_hook_state)) = &self.min_distance_state {
+                        if min_hook_state < &0.5 {
+                            // Hook was up -> Intentional bolter / touch and go.
+                            let estimated = self.estimate_cable(min_carrier, min_plane);
+                            tracing::debug!(distance_in_m = distance, "intentional bolter detected");
+                            self.grading = Some(Grading::IntentionalBolter { cable_estimated: estimated });
+                            return false;
+                        }
+                        // Otherwise, it was a normal bolter but they didn't touch down (or didn't register a Recovered event).
+                        tracing::debug!(distance_in_m = distance, "bolter detected (no touchdown)");
+                        self.grading = Some(Grading::Bolter);
+                        return false;
+                    }
                     tracing::debug!(distance_in_m = distance, "waveoff detected (entered groove, moving away)");
                     self.grading = Some(Grading::WaveoffPilot);
                     return false;

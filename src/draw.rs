@@ -91,6 +91,7 @@ pub fn draw_chart(
             Grading::Unknown => Cow::Borrowed(""),
             Grading::Bolter => Cow::Borrowed("Bolter"),
             Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
+            Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
             Grading::Recovered { cable, .. } => cable
                 .map(|c| Cow::Owned(format!("Cable {}", c)))
                 .unwrap_or(Cow::Borrowed("(failed to detect cable)")),

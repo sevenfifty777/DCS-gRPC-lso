@@ -63,4 +63,21 @@ impl UnitClient {
             .attributes;
         Ok(descriptor)
     }
+
+    pub async fn get_draw_argument_value(
+        &mut self,
+        unit_name: &str,
+        argument: u32,
+    ) -> Result<f64, Status> {
+        let value = self
+            .svc
+            .get_draw_argument_value(unit::v0::GetDrawArgumentValueRequest {
+                name: unit_name.to_string(),
+                argument,
+            })
+            .await?
+            .into_inner()
+            .value;
+        Ok(value)
+    }
 }

@@ -141,6 +141,10 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     client2.get_transform(params.plane_name),
                 )
                 .await?;
+                let hook_state = client2
+                    .get_draw_argument_value(params.plane_name, 25)
+                    .await
+                    .unwrap_or(1.0);
 
                 if !ref_written {
                     lat_ref = carrier.lat;
@@ -198,13 +202,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
-                if !datums.next(&carrier, &plane) {
-                    break;
-                }
-
-                if let Some(track_stopped) = track_stopped {
-                    if track_stopped.elapsed() > Duration::from_secs(10) {
-                        break;
+                if !datums.next(&carrier, &plane, hook_state) {
+                    if let Some(stop_time) = track_stopped {
+                        if stop_time.elapsed() > std::time::Duration::from_secs(10) {
+                            tracing::info!("stop (10s passed since pass completed)");
+                            break;
+                        }
+                    } else {
+                        // Track told us to stop but hasn't set `track_stopped` yet
+                        // (happens on Bolter or WaveoffPilot).
+                        track_stopped = Some(Instant::now());
                     }
                 }
             }
@@ -339,7 +346,11 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         text: None,
                     })?;
 
-                    datums.next(&carrier, &plane);
+                    let hook_state = client2
+                        .get_draw_argument_value(params.plane_name, 25)
+                        .await
+                        .unwrap_or(1.0);
+                    datums.next(&carrier, &plane, hook_state);
                     datums.landed(&carrier, &plane);
 
                     // don't stop right away, track a couple of more seconds
@@ -547,9 +558,10 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     Grading::Unknown => Cow::Borrowed("unknown"),
                     Grading::Bolter => Cow::Borrowed("Bolter"),
                     Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
+                    Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
                     Grading::Recovered { cable, .. } => cable
                         .map(|c| Cow::Owned(format!("Wire #{}", c)))
-                        .unwrap_or(Cow::Borrowed("-")),
+                        .unwrap_or(Cow::Borrowed("Landed")),
                 },
                 true,
             )

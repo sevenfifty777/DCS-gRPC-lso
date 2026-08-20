@@ -102,7 +102,7 @@ pub fn compute_pass_grade(
         Grading::Unknown      => PassGrade::NoGrade,
         Grading::WaveoffPilot => PassGrade::WaveoffPilot,
         Grading::Bolter       => PassGrade::Bolter,
-        Grading::Recovered { cable, .. } => {
+        Grading::Recovered { cable, .. } | Grading::IntentionalBolter { cable_estimated: cable } => {
             let base = grade_from_gates(gates);
             // Unicorn: zero deviations (base == Ok), wire 3, groove time in window.
             if base == PassGrade::Ok
