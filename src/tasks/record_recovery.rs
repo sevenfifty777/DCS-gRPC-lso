@@ -39,6 +39,9 @@ struct RecoveryReport<'a> {
     dcs_grading: Option<&'a str>,
     gate_deviations: &'a GateDeviations,
     datums: &'a [Datum],
+    /// In-mission date/time from the DCS scenario clock (ISO-8601).
+    #[serde(skip_serializing_if = "str::is_empty")]
+    mission_datetime: &'a str,
 }
 
 pub static FILENAME_DATETIME_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>> =
@@ -138,6 +141,10 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     client2.get_transform(params.plane_name),
                 )
                 .await?;
+                let hook_state = client2
+                    .get_draw_argument_value(params.plane_name, 25)
+                    .await
+                    .unwrap_or(1.0);
 
                 if !ref_written {
                     lat_ref = carrier.lat;
@@ -195,13 +202,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
-                if !datums.next(&carrier, &plane) {
-                    break;
-                }
-
-                if let Some(track_stopped) = track_stopped {
-                    if track_stopped.elapsed() > Duration::from_secs(10) {
-                        break;
+                if !datums.next(&carrier, &plane, hook_state) {
+                    if let Some(stop_time) = track_stopped {
+                        if stop_time.elapsed() > std::time::Duration::from_secs(10) {
+                            tracing::info!("stop (10s passed since pass completed)");
+                            break;
+                        }
+                    } else {
+                        // Track told us to stop but hasn't set `track_stopped` yet
+                        // (happens on Bolter or WaveoffPilot).
+                        track_stopped = Some(Instant::now());
                     }
                 }
             }
@@ -336,7 +346,11 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         text: None,
                     })?;
 
-                    datums.next(&carrier, &plane);
+                    let hook_state = client2
+                        .get_draw_argument_value(params.plane_name, 25)
+                        .await
+                        .unwrap_or(1.0);
+                    datums.next(&carrier, &plane, hook_state);
                     datums.landed(&carrier, &plane);
 
                     // don't stop right away, track a couple of more seconds
@@ -405,6 +419,15 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         return Ok(());
     }
 
+    // Query in-mission date/time from the DCS scenario clock (non-fatal).
+    let mission_datetime: String = match mission.get_scenario_current_time().await {
+        Ok(dt) => dt,
+        Err(err) => {
+            tracing::warn!(?err, "failed to query in-mission datetime");
+            String::new()
+        }
+    };
+
     // Write JSON report.
     let json_path = params.out_dir.join(&filename).with_extension("json");
     let report = RecoveryReport {
@@ -414,21 +437,42 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         dcs_grading: track.dcs_grading.as_deref(),
         gate_deviations: &track.gate_deviations,
         datums: &track.datums,
+        mission_datetime: &mission_datetime,
     };
     tokio::fs::write(&json_path, serde_json::to_vec_pretty(&report)?).await?;
 
     let wire = match track.grading {
         Grading::Recovered { cable, .. } => cable,
+        Grading::IntentionalBolter { cable_estimated } => cable_estimated,
         _ => None,
     };
+    let aircraft_id = crate::data::get_aircraft_id(params.plane_type);
+    let display_type = match aircraft_id {
+        Some(2) => "F-14A/B",
+        Some(3) => "F-14B(U)",
+        _ => params.plane_info.name,
+    };
+
+    let outcome_str = match track.grading {
+        Grading::Unknown => "unknown".to_string(),
+        Grading::Bolter => "Bolter".to_string(),
+        Grading::WaveoffPilot => "Waveoff".to_string(),
+        Grading::IntentionalBolter { .. } => "Qualif Bolter".to_string(),
+        Grading::Recovered { cable, .. } => cable
+            .map(|c| format!("Wire #{}", c))
+            .unwrap_or("Landed".to_string()),
+    };
+
     let completed = CompletedPass {
         timestamp: filename.clone(),
         pilot_name: track.pilot_name.clone(),
         pass_grade: track.pass_grade,
         wire,
         dcs_grading: track.dcs_grading.clone(),
-        aircraft_type: params.plane_info.name.to_string(),
+        aircraft_type: display_type.to_string(),
+        aircraft_id,
         map_name: map_name.clone(),
+        outcome: outcome_str.clone(),
     };
 
     // Append to in-memory session greenie board log.
@@ -436,22 +480,41 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         log.push(completed.clone());
     }
 
+    // Query pilot UCID
+    let pilot_ucid = {
+        let mut net = crate::client::NetClient::new(params.ch.clone());
+        match net.get_players().await {
+            Ok(players) => players
+                .into_iter()
+                .find(|p| p.name == track.pilot_name)
+                .map(|p| p.ucid)
+                .filter(|u| !u.is_empty()),
+            Err(err) => {
+                tracing::warn!(?err, "failed to query players for UCID");
+                None
+            }
+        }
+    };
+
     // Persist to SQLite database (non-fatal — a write failure must not abort the recovery).
     {
         let db = params.db.clone();
         let entry = crate::db::DbPass {
             timestamp: completed.timestamp.clone(),
             pilot_name: completed.pilot_name.clone(),
+            pilot_ucid,
+            aircraft_id: completed.aircraft_id,
             pass_grade_label: completed.pass_grade.label().to_string(),
             wire: completed.wire,
             dcs_grading: completed.dcs_grading.clone(),
             aircraft_type: Some(completed.aircraft_type.clone()),
             map_name: if completed.map_name.is_empty() { None } else { Some(completed.map_name.clone()) },
-            esf_pilot_name: completed.pilot_name.clone(),
             grade_date: now_utc
                 .format(&GRADE_DATE_FORMAT)
                 .unwrap_or_default(),
             grade_points: completed.pass_grade.points(),
+            mission_datetime: mission_datetime.clone(),
+            outcome: completed.outcome.clone(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -483,7 +546,11 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         let mut embed = CreateEmbed::new()
             .field("Aircraft", params.plane_info.name, false)
             .field("Map", if map_name.is_empty() { "-" } else { map_name.as_str() }, false)
-            .field("Date / Time (UTC)", recovery_timestamp.as_str(), false)
+            .field("Date / Time (UTC)", recovery_timestamp.as_str(), false);
+        if !mission_datetime.is_empty() {
+            embed = embed.field("Mission Date/Time", mission_datetime.as_str(), false);
+        }
+        embed = embed
             .field(
                 "Pilot",
                 params
@@ -500,14 +567,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             )
             .field(
                 "Outcome",
-                match track.grading {
-                    Grading::Unknown => Cow::Borrowed("unknown"),
-                    Grading::Bolter => Cow::Borrowed("Bolter"),
-                    Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-                    Grading::Recovered { cable, .. } => cable
-                        .map(|c| Cow::Owned(format!("Wire #{}", c)))
-                        .unwrap_or(Cow::Borrowed("-")),
-                },
+                outcome_str,
                 true,
             )
             .field(

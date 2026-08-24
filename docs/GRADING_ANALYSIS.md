@@ -1,5 +1,8 @@
 # LSO App — Grading Analysis & NAVAIR Alignment
 
+> [!IMPORTANT]
+> **This document is historical.** The code changes proposed in §5 have been fully implemented. Sections 3.2 and 4 describe the **pre-migration** state of the code (foot-based thresholds). The current code uses degree-based thresholds and NAVAIR-aligned labels — see [GRADING_REFERENCE.md](GRADING_REFERENCE.md) for the up-to-date specification.
+
 ## 1. Purpose
 
 This document compares the current LSO app grading system against:

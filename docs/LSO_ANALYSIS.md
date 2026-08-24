@@ -252,7 +252,7 @@ The DCS-reported wire takes precedence over the estimated wire in the final `Tra
 | DCS Type Name | AoA On-Speed Bracket | Hook Position (relative to origin) | Glide Slope |
 |---|---|---|---|
 | `FA-18C_hornet` | 7.5° – 8.8° | (0, −2.24, −7.24) m | 3.5° |
-| `F-14A-135-GR` / `F-14B` | 10.2° – 11.1° | (0, −1.98, −6.56) m | 3.5° |
+| `F-14A-135-GR` / `F-14B` / `F-14A/B` / `F-14B(U)` | 10.2° – 11.1° | (0, −1.98, −6.56) m | 3.5° |
 | `T-45` | 7.5° – 8.8° (borrows FA-18C values) | (0, −1.78, −4.78) m | 3.5° |
 
 AoA brackets per aircraft:

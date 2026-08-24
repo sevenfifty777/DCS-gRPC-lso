@@ -51,8 +51,23 @@ const GATE_HALF_NM: f64 = 926.0;
 /// ¼ nm gate — ramp / "in close"; dangerously low here triggers a Cut pass.
 const GATE_QUARTER_NM: f64 = 463.0;
 
+/// Exponential moving average (EMA) smoothing factor for the carrier position.
+///
+/// DCS updates the carrier's world position in discrete steps (~every 1.4 s at
+/// 15 kts) rather than every simulation frame.  When polled at 100 ms, ~13 out
+/// of 14 frames return the same stale position, then one frame jumps ahead by
+/// ~10 m.  This creates a sawtooth in the approach datum `x` coordinate
+/// (distance to landing point along the angled deck), which appears as periodic
+/// stairstep drops of 10–20 ft on the side-view chart.
+///
+/// α = 0.15 spreads each position step over ~18 frames, introducing ~0.6 s of
+/// positional lag (~4.6 m at 15 kts).  The resulting gate-distance error is
+/// < 0.5 %, well within acceptable tolerance for LSO grading.
+const CARRIER_POS_SMOOTH_ALPHA: f64 = 0.15;
+
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Datum {
+    pub time: f64,
     pub x: f64,
     pub y: f64,
     pub aoa: f64,
@@ -65,6 +80,7 @@ pub struct Datum {
 /// ninety → final → touchdown).
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct PatternDatum {
+    pub time: f64,
     /// Distance astern of carrier along BRC (m). Positive = behind carrier (approach direction).
     pub astern_m: f64,
     /// Lateral distance from carrier BRC centerline (m). Positive = port (left) side.
@@ -78,6 +94,7 @@ pub struct PatternDatum {
 pub struct Track {
     pilot_name: String,
     previous_distance: f64,
+    previous_x: f64,
     datums: Vec<Datum>,
     pattern_datums: Vec<PatternDatum>,
     gate_deviations: GateDeviations,
@@ -91,6 +108,14 @@ pub struct Track {
     dcs_grading: Option<String>,
     carrier_info: &'static CarrierInfo,
     plane_info: &'static AirplaneInfo,
+    /// The carrier and plane transforms, and the hook state, at the point of minimum distance.
+    min_distance_state: Option<(Transform, Transform, f64)>,
+    /// Exponentially smoothed carrier position used for approach geometry.
+    /// Eliminates the sawtooth caused by DCS updating the carrier's world
+    /// position in discrete steps rather than every frame.
+    smoothed_carrier_pos: Option<DVec3>,
+    /// Tracks if the hook was ever detected as up (< 0.5) during the pass.
+    hook_was_up: bool,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -120,6 +145,9 @@ pub struct GateDeviations {
 pub enum Grading {
     Unknown,
     Bolter,
+    IntentionalBolter {
+        cable_estimated: Option<u8>,
+    },
     /// Pilot broke off the approach after entering the groove (inside 3/4 nm, below 300 ft).
     WaveoffPilot,
     Recovered {
@@ -151,6 +179,7 @@ impl Track {
         Self {
             pilot_name: pilot_name.into(),
             previous_distance: f64::MAX,
+            previous_x: f64::MAX,
             datums: Default::default(),
             pattern_datums: Default::default(),
             gate_deviations: GateDeviations::default(),
@@ -161,10 +190,13 @@ impl Track {
             dcs_grading: None,
             carrier_info,
             plane_info,
+            min_distance_state: None,
+            smoothed_carrier_pos: None,
+            hook_was_up: false,
         }
     }
 
-    pub fn next(&mut self, carrier: &Transform, plane: &Transform) -> bool {
+    pub fn next(&mut self, carrier: &Transform, plane: &Transform, hook_state: f64) -> bool {
         // ---------------------------------------------------------------
         // Pattern datum — BRC frame, recorded every frame.
         // Origin = carrier position. x_chart = -port_m, y_chart = -astern_m
@@ -187,6 +219,7 @@ impl Track {
             let port_m = rel.dot(brc_stbd);
 
             self.pattern_datums.push(PatternDatum {
+                time: plane.time,
                 astern_m,
                 port_m,
                 alt_ft: m_to_ft(plane.alt),
@@ -194,11 +227,28 @@ impl Track {
             });
         }
 
+        // Smooth carrier position to eliminate DCS quantisation sawtooth.
+        // The carrier's world position updates in discrete jumps (~every 1.4 s);
+        // between updates, the same stale position is returned.  EMA blends the
+        // raw position toward the smoothed estimate each frame, producing a
+        // steady progression instead of a stairstep.
+        let smoothed_pos = match self.smoothed_carrier_pos {
+            Some(prev) => {
+                let s = prev + (carrier.position - prev) * CARRIER_POS_SMOOTH_ALPHA;
+                self.smoothed_carrier_pos = Some(s);
+                s
+            }
+            None => {
+                self.smoothed_carrier_pos = Some(carrier.position);
+                carrier.position
+            }
+        };
+
         let landing_pos_offset = self
             .carrier_info
             .optimal_landing_offset(self.plane_info)
             .rotated_by(carrier.rotation);
-        let landing_pos = carrier.position + landing_pos_offset;
+        let landing_pos = smoothed_pos + landing_pos_offset;
 
         let ray_from_plane_to_carrier = DVec3::new(
             landing_pos.x - plane.position.x,
@@ -208,20 +258,34 @@ impl Track {
 
         // Stop once the plane leaves the wide pattern detection zone (RTB or go-around).
         // This prevents a recording from running forever when no landing is made.
-        let carrier_distance = (carrier.position - plane.position).mag();
+        let carrier_distance = (smoothed_pos - plane.position).mag();
         if m_to_nm(carrier_distance) > 3.5 || m_to_ft(plane.alt) > 1100.0 {
             tracing::debug!("stop: plane exited pattern detection zone");
             return false;
+        }
+
+        if hook_state < 0.5 {
+            self.hook_was_up = true;
         }
 
         // Track the minimum distance to the touchdown point.
         let distance = ray_from_plane_to_carrier.mag();
         if distance < self.previous_distance {
             self.previous_distance = distance;
+            self.min_distance_state = Some((carrier.clone(), plane.clone(), hook_state));
         } else if distance - self.previous_distance > 150.0 {
             match &self.grading {
                 Some(Grading::Recovered { .. }) => {
-                    // Landed and now moving away → bolter.
+                    // Landed and now moving away → bolter or touch-and-go.
+                    if let Some((min_carrier, min_plane, _)) = &self.min_distance_state {
+                        if self.hook_was_up {
+                            // Hook was up -> Intentional bolter / touch and go.
+                            let estimated = self.estimate_cable(min_carrier, min_plane);
+                            tracing::debug!(distance_in_m = distance, "intentional bolter detected after touchdown");
+                            self.grading = Some(Grading::IntentionalBolter { cable_estimated: estimated });
+                            return false;
+                        }
+                    }
                     tracing::debug!(distance_in_m = distance, "bolter detected");
                     self.grading = Some(Grading::Bolter);
                     return false;
@@ -232,7 +296,22 @@ impl Track {
                     return false;
                 }
                 None if self.entered_groove => {
-                    // Entered the groove but now moving away → pilot waveoff.
+                    // Entered the groove but now moving away.
+                    // This could be a bolter (if they flew over the deck) or a pilot waveoff.
+                    // If they reached a point over the deck, they passed through minimum distance.
+                    if let Some((min_carrier, min_plane, _)) = &self.min_distance_state {
+                        if self.hook_was_up {
+                            // Hook was up -> Intentional bolter / touch and go.
+                            let estimated = self.estimate_cable(min_carrier, min_plane);
+                            tracing::debug!(distance_in_m = distance, "intentional bolter detected");
+                            self.grading = Some(Grading::IntentionalBolter { cable_estimated: estimated });
+                            return false;
+                        }
+                        // Otherwise, it was a normal bolter but they didn't touch down (or didn't register a Recovered event).
+                        tracing::debug!(distance_in_m = distance, "bolter detected (no touchdown)");
+                        self.grading = Some(Grading::Bolter);
+                        return false;
+                    }
                     tracing::debug!(distance_in_m = distance, "waveoff detected (entered groove, moving away)");
                     self.grading = Some(Grading::WaveoffPilot);
                     return false;
@@ -278,6 +357,26 @@ impl Track {
         // (e.g., still in the break or flying the overhead pattern), and atan2 with a negative x
         // would produce a bogus ~177° deviation reading.
         if x > 0.0 {
+            // Robust reset: if the aircraft flies outbound (e.g., into the pattern after a bolter),
+            // clear any gates or groove entry that were captured so they can be freshly recorded
+            // on the real final approach inbound.
+            if x > GATE_THREE_QUARTER_NM {
+                self.gate_deviations.at_three_quarter_nm = None;
+                self.groove_entry_time = None;
+                self.entered_groove = false;
+            }
+            if x > GATE_HALF_NM {
+                self.gate_deviations.at_half_nm = None;
+            }
+            if x > GATE_QUARTER_NM {
+                self.gate_deviations.at_quarter_nm = None;
+            }
+
+            // Only sample gates if the aircraft is flying inbound (x is decreasing).
+            // This prevents capturing bogus ~90° deviations if the aircraft crosses the beam
+            // outbound (from front to back) during a tight low-altitude bolter pattern.
+            let is_inbound = x < self.previous_x;
+
             // Sample gate deviations at key distances on first crossing.
             let ideal_gs_alt = x * self.plane_info.glide_slope.to_radians().tan();
             let gs_deviation_m = alt - ideal_gs_alt;
@@ -290,7 +389,7 @@ impl Track {
             // ~400 ft at that distance.  500 ft cleanly rejects the 600–1000 ft overhead-pattern
             // crossing of x = 0 while still capturing all realistic final-approach deviations.
             let in_approach = m_to_ft(alt) <= 500.0;
-            if in_approach && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
+            if in_approach && is_inbound && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
                 self.gate_deviations.at_three_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -298,7 +397,7 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
+            if in_approach && is_inbound && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
                 self.gate_deviations.at_half_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -306,7 +405,7 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
+            if in_approach && is_inbound && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
                 self.gate_deviations.at_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -315,8 +414,10 @@ impl Track {
                 });
             }
 
-            // Mark groove entry: inside 3/4 nm and below 300 ft AGL.
-            if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 {
+            // Mark groove entry: inside 3/4 nm, below 300 ft AGL, and lined up (±10°).
+            // The lateral constraint prevents the timer from starting prematurely while the
+            // aircraft is still performing a wide turn to final on the base leg.
+            if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 && lineup_deg.abs() <= 10.0 {
                 if self.groove_entry_time.is_none() {
                     self.groove_entry_time = Some(plane.time);
                 }
@@ -325,11 +426,14 @@ impl Track {
         }
 
         self.datums.push(Datum {
+            time: plane.time,
             x,
             y,
             aoa: plane.aoa,
             alt: alt.max(0.0),
         });
+
+        self.previous_x = x;
 
         true
     }

@@ -95,7 +95,7 @@ Foot values (`gs_deviation_ft`, `lineup_ft`) are also stored for the PNG chart l
 | `WO` | `PassGrade::WaveoffPilot` | **1.0** | Waveoff — broke off inside the groove | ✅ |
 
 > **`_OK_` vs `OK` — same deviation requirements, different procedure:**
-> Both grades require all gate deviations within the OK zone (GS `< +0.5°` high / `< −0.8°` low, LU `< ±1.0°`).
+> Both grades require all gate deviations within the OK zone (GS `< +0.5°` high / `< −0.5°` low, LU `< ±1.0°`).
 > `_OK_` additionally requires **wire 3** and **groove time 15.0–18.99 s**. If either condition fails the grade falls back to `OK` (4.0 pts).
 > In practice `_OK_` is extremely rare — it demands a zero-deviation approach **and** the correct wire **and** correct timing simultaneously.
 
@@ -112,12 +112,12 @@ All thresholds are in **degrees** (distance-invariant, matching MOOSE Airboss CV
 | Zone | Our code | MOOSE CVN | NAVAIR 00-80T-104 | Grade impact |
 |---|---|---|---|---|
 | Slight High `(H)` | `> +0.5°` | 🔵 `> +0.8°` | 🟢 `> +0.5°` | Caps at `(OK)` |
-| Significant High `H` | `> +1.0°` | 🟢 `> +1.5°` | 🟢 `> +1.0°` | Caps at `--` |
-| Slight Low `(L)` | `> −0.5°` | 🔴 `> −0.6°` | 🟢 `> −0.5°` | Caps at `(OK)` |
-| Significant Low `L` | `> −1.0°` | 🔴 `> −0.9°` | 🟢 `> −1.0°` | Caps at `--` |
+| Significant High `H` | `> +1.0°` | 🔵 `> +1.5°` | 🟢 `> +1.0°` | Caps at `--` |
+| Slight Low `(L)` | `> −0.5°` | 🔵 `> −0.8°` | 🟢 `> −0.5°` | Caps at `(OK)` |
+| Significant Low `L` | `> −1.0°` | 🔵 `> −1.5°` | 🟢 `> −1.0°` | Caps at `--` |
 | **Cut threshold** | `< −2.5°` at ¼ nm | 🟢 `< −2.5°` | 🟢 `< −2.5°` | Grade = `C` |
 
-> High side matches NAVAIR (🔵 more lenient than MOOSE). Low side is more lenient than both MOOSE and NAVAIR (🔴 both are tighter).
+> Both high and low sides match NAVAIR. MOOSE uses wider thresholds (🔵 more lenient) on all GS tiers — our code penalises at smaller deviations.
 
 ### Lineup (LU)
 
@@ -125,12 +125,10 @@ All thresholds are in **degrees** (distance-invariant, matching MOOSE Airboss CV
 
 | Zone | Our code | MOOSE CVN | NAVAIR 00-80T-104 | Grade impact |
 |---|---|---|---|---|
-| OK zone | `±0.5°` | 🟢 `±0.5°` | 🟢 `±0.5°` | No deviation |
 | Slight `(LUL)`/`(LUR)` | `> ±1.0°` | 🟢 `> ±1.0°` | 🟢 `> ±1.0°` | Caps at `(OK)` |
 | Medium `LUL`/`LUR` | `> ±2.0°` | 🟢 `> ±2.0°` | 🟢 `> ±2.0°` | Caps at `--` |
-| Large `LUL`/`LUR` | `> ±2.0°` | 🔴 `> ±3.0°` | 🟢 `> ±2.0°` | Caps at `--` |
 
-> Large lineup tier `> ±3.0°`: NAVAIR is 🔴 tighter at `> ±2.0°` (same threshold as Medium).
+> MOOSE has an additional Large tier at `> ±3.0°`, but our code caps at `--` from `> ±2.0°` (same as NAVAIR). The `LU_SIGNIFICANT = 3.0` constant is commented out in the code.
 
 ### Decision Logic
 
@@ -138,8 +136,8 @@ The grade is determined by the **worst single deviation** across all three gates
 
 ```
 if GS < −2.5° at 1/4 nm                          → C   (Cut)
-else if worst_gs_high ≥ 1.5° OR worst_gs_low ≥ 1.5° OR worst_lu ≥ 2.0°  → --  (No Grade)
-else if worst_gs_high ≥ 0.5° OR worst_gs_low ≥ 0.8° OR worst_lu ≥ 1.0°  → (OK) (Fair Pass)
+else if worst_gs_high ≥ 1.0° OR worst_gs_low ≥ 1.0° OR worst_lu ≥ 2.0°  → --  (No Grade)
+else if worst_gs_high ≥ 0.5° OR worst_gs_low ≥ 0.5° OR worst_lu ≥ 1.0°  → (OK) (Fair Pass)
 else                                               → OK  (Okay Pass)
 ```
 
@@ -157,9 +155,10 @@ Grading::Unknown       → --  (2.0 pts)
 
 | Aircraft | DCS Type | Glide Slope | AoA On-Speed |
 |---|---|---|---|
-| F/A-18C Hornet | `FA-18C_hornet` | 3.5° | 7.4–8.1° |
-| F/A-18E/F Super Hornet | `F-18E` / `F-18F` | 3.5° | 7.4–8.1° |
-| F-14A/B Tomcat | `F-14A` / `F-14B` | 3.5° | 10.2–11.1° |
+| F/A-18C Hornet | `FA-18C_hornet` | 3.5° | 7.4–8.8° |
+| F-14A Tomcat | `F-14A-135-GR` / `F-14A-135-GR-Early` / `F-14A-95-GR` | 3.5° | 10.2–11.1° |
+| F-14B Tomcat | `F-14B` / `F-14A/B` | 3.5° | 10.2–11.1° |
+| F-14B(U) Tomcat | `F-14B(U)` / `F-14BU` | 3.5° | 10.2–11.1° |
 | T-45C Goshawk | `T-45` | 3.5° | 6.5–7.5° |
 
 ## Supported Carriers
