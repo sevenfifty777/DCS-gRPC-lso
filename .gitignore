@@ -38,3 +38,6 @@ graphify-out/
 
 # ACMI files
 *.acmi
+
+# conception files
+/.ignore/
