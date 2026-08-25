@@ -54,6 +54,7 @@ struct RecoveryReport<'a> {
     /// In-mission date/time from the DCS scenario clock (ISO-8601).
     #[serde(skip_serializing_if = "str::is_empty")]
     mission_datetime: &'a str,
+    outcome: &'a str,
 }
 
 pub static FILENAME_DATETIME_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>> =
@@ -469,6 +470,19 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         }
     };
 
+    let outcome = match track.grading {
+        Grading::Unknown => "unknown".to_string(),
+        Grading::Bolter => "Bolter".to_string(),
+        Grading::IntentionalBolter { .. } => "Qualif Bolter".to_string(),
+        Grading::WaveoffPilot => "Waveoff".to_string(),
+        Grading::Recovered { .. } if track.carrier_info.is_vstol() => {
+            "Spot 7.5".to_string()
+        }
+        Grading::Recovered { cable, .. } => cable
+            .map(|wire| format!("Wire #{}", wire))
+            .unwrap_or_else(|| "Landed".to_string()),
+    };
+
     // Write JSON report.
     let json_path = params.out_dir.join(&filename).with_extension("json");
     let spot_label = track.carrier_info.is_vstol().then_some("7.5");
@@ -486,6 +500,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         gate_deviations: &track.gate_deviations,
         datums: &track.datums,
         mission_datetime: &mission_datetime,
+        outcome: &outcome,
     };
     tokio::fs::write(&json_path, serde_json::to_vec_pretty(&report)?).await?;
 
@@ -514,6 +529,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         aircraft_type: display_type.to_string(),
         aircraft_id,
         map_name: map_name.clone(),
+        outcome: outcome.clone(),
     };
 
     // Append to in-memory session greenie board log.
@@ -558,6 +574,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 .unwrap_or_default(),
             grade_points: completed.grade_points,
             mission_datetime: mission_datetime.clone(),
+            outcome: completed.outcome.clone(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -614,26 +631,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             )
             .field(
                 "Outcome",
-                if track.carrier_info.is_vstol() {
-                    match track.grading {
-                        Grading::Recovered { .. } => Cow::Borrowed("Spot 7.5"),
-                        Grading::Unknown => Cow::Borrowed("unknown"),
-                        Grading::Bolter | Grading::IntentionalBolter { .. } => {
-                            Cow::Borrowed("Bolter")
-                        }
-                        Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-                    }
-                } else {
-                    match track.grading {
-                        Grading::Unknown => Cow::Borrowed("unknown"),
-                        Grading::Bolter => Cow::Borrowed("Bolter"),
-                        Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
-                        Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-                        Grading::Recovered { cable, .. } => cable
-                            .map(|c| Cow::Owned(format!("Wire #{}", c)))
-                            .unwrap_or(Cow::Borrowed("-")),
-                    }
-                },
+                completed.outcome.clone(),
                 true,
             )
             .field(

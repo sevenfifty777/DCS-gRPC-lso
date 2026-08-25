@@ -133,6 +133,19 @@ compile against its pinned gRPC stubs because `Unit.type` is now `Option<String>
 
 Without these compatibility changes, `cargo test` fails before any grading test can run.
 
+### src/db.rs and src/web.rs
+
+- Restores the dedicated SQLite `outcome TEXT NOT NULL DEFAULT ''` column and migration for existing
+  databases.
+- Persists and reads the outcome alongside CATOBAR and V/STOL fields.
+- Restores an Outcome column on the web greenie board.
+- Adds an in-memory SQLite round-trip test for `Qualif Bolter`.
+
+### src/tasks/mod.rs
+
+- Restores `CompletedPass.outcome` so the live session, database write, JSON report, and web API use
+  one computed outcome value.
+
 ## Validation performed
 
 ```text
@@ -140,7 +153,7 @@ cargo test grading::tests --no-fail-fast
 34 passed; 0 failed
 
 cargo test --no-fail-fast
-51 passed; 0 failed
+52 passed; 0 failed
 
 git diff --check
 passed
@@ -151,9 +164,6 @@ detection.
 
 ## Known limitations and review points
 
-- Current `origin/main` no longer has a dedicated database `outcome` column. The restored
-  qualification outcome is present in the serialized `Grading` value, chart, Discord output, and
-  estimated wire, but is not stored as a separate SQLite outcome field in this branch.
 - Live arrested-recovery hook RPC failures produce `None`. This avoids false qualification-bolter
   classifications but can miss one if DCS-gRPC cannot supply the hook argument.
 - Offline ACMI extraction cannot distinguish hook-up qualification passes because the required draw
