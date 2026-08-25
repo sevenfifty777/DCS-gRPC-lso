@@ -1,0 +1,134 @@
+syntax = "proto3";
+package dcs.weapon.v0;
+import "dcs/common/v0/common.proto";
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Weapon";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/weapon";
+
+service WeaponService {
+  rpc GetLauncher(GetLauncherRequest) returns (GetLauncherResponse) {}
+  rpc GetTarget(GetTargetRequest) returns (GetTargetResponse) {}
+  rpc GetCategory(GetCategoryRequest) returns (GetCategoryResponse) {}
+  rpc GetDesc(GetDescRequest) returns (GetDescResponse) {}
+  rpc GetPosition(GetPositionRequest) returns (GetPositionResponse) {}
+  rpc GetVelocity(GetVelocityRequest) returns (GetVelocityResponse) {}
+  rpc InAir(InAirRequest) returns (InAirResponse) {}
+  rpc IsExist(IsExistRequest) returns (IsExistResponse) {}
+  rpc Destroy(DestroyRequest) returns (DestroyResponse) {}
+  rpc GetCoalition(GetCoalitionRequest) returns (GetCoalitionResponse) {}
+  rpc GetCountry(GetCountryRequest) returns (GetCountryResponse) {}
+  rpc GetName(GetNameRequest) returns (GetNameResponse) {}
+  rpc GetTypeName(GetTypeNameRequest) returns (GetTypeNameResponse) {}
+  rpc GetPoint(GetPointRequest) returns (GetPointResponse) {}
+}
+
+message GetLauncherRequest {
+  string name = 1;
+}
+
+message GetLauncherResponse {
+  string launcher_name = 1; // Name of the unit that launched it
+}
+
+message GetTargetRequest {
+  string name = 1;
+}
+
+message GetTargetResponse {
+  string target_name = 1; // Name of the unit targeted (if any)
+}
+
+message GetCategoryRequest {
+  string name = 1;
+}
+
+message GetCategoryResponse {
+  dcs.common.v0.ObjectCategory category = 1;
+}
+
+message GetDescRequest {
+  string name = 1;
+}
+
+message GetDescResponse {
+  // Serialized json of the weapon description table
+  string desc_json = 1; 
+}
+
+message GetPositionRequest {
+  string name = 1;
+}
+
+message GetPositionResponse {
+  dcs.common.v0.Orientation position = 1;
+}
+
+message GetVelocityRequest {
+  string name = 1;
+}
+
+message GetVelocityResponse {
+  dcs.common.v0.Velocity velocity = 1;
+}
+
+message InAirRequest {
+  string name = 1;
+}
+
+message InAirResponse {
+  bool in_air = 1;
+}
+
+message IsExistRequest {
+  string name = 1;
+}
+
+message IsExistResponse {
+  bool is_exist = 1;
+}
+
+message DestroyRequest {
+  string name = 1;
+}
+
+message DestroyResponse {
+}
+
+message GetCoalitionRequest {
+  string name = 1;
+}
+
+message GetCoalitionResponse {
+  dcs.common.v0.Coalition coalition = 1;
+}
+
+message GetCountryRequest {
+  string name = 1;
+}
+
+message GetCountryResponse {
+  dcs.common.v0.Country country = 1;
+}
+
+message GetNameRequest {
+  string name = 1;
+}
+
+message GetNameResponse {
+  string name = 1;
+}
+
+message GetTypeNameRequest {
+  string name = 1;
+}
+
+message GetTypeNameResponse {
+  string type_name = 1;
+}
+
+message GetPointRequest {
+  string name = 1;
+}
+
+message GetPointResponse {
+  dcs.common.v0.Position point = 1;
+}

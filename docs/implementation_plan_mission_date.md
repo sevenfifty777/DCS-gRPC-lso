@@ -1,115 +1,39 @@
-# Add In-Mission Date/Time to Recovery Records
+# Mission Date and Time - Implementation Record
 
-Currently, all timestamps in the system use the DCS **server's wall-clock time** (via `OffsetDateTime::now_local()`). The mission editor can set any date/time (e.g. a 1980s Cold War scenario at 0600 local), and that information is lost in the trapsheet.
+**Status:** Implemented across commits `3e50c67` and `4d74c8a`
 
-This change adds the **in-mission date/time** (the simulated clock from the DCS mission) alongside the existing server time, using the `GetScenarioCurrentTime` gRPC API that's already available in the v0.8.1 stubs.
+**Protocol baseline:** DCS-gRPC 0.9.0 at the currently pinned fork commit
 
-## Proposed Changes
+## Implemented flow
 
-### gRPC Client Layer
+At the end of a recognized pass, LSO calls `MissionService.GetScenarioCurrentTime` through
+[`src/client/mission_client.rs`](../src/client/mission_client.rs). Failure is non-fatal: LSO logs a
+warning and uses an empty string.
 
-#### [MODIFY] [mission_client.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/client/mission_client.rs)
+The value is then written to:
 
-Add a `get_scenario_current_time()` method, mirroring the existing `get_scenario_start_time()`:
+- `mission_datetime` in the recovery JSON when non-empty;
+- the SQLite `passes.mission_datetime` column;
+- the web board's Mission Time column and `/api/passes` payload; and
+- the Discord `Mission Date/Time` field when non-empty.
 
-```rust
-pub async fn get_scenario_current_time(&mut self) -> Result<String, Status> {
-    let res = self
-        .svc
-        .get_scenario_current_time(mission::v0::GetScenarioCurrentTimeRequest {})
-        .await?
-        .into_inner();
-    Ok(res.datetime)
-}
-```
+[`src/db.rs`](../src/db.rs) creates the column for new databases and applies an additive migration
+with an empty-string default for older databases.
 
----
+## Time fields are distinct
 
-### Database Layer
+| Field | Source | Format/use |
+|---|---|---|
+| Filename timestamp | Local wall clock at recording start | `YYYYMMDD-HHMMSS` |
+| Discord `Date / Time (UTC)` | UTC wall clock at recording start | RFC 3339 |
+| Database `grade_date` | UTC wall clock | `YYYY-MM-DD HH:MM:SS` |
+| `mission_datetime` | DCS scenario clock queried at completion | DCS-gRPC formatted string |
 
-#### [MODIFY] [db.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/db.rs)
+Mission time should not be treated as UTC and may intentionally represent another historical date
+or accelerated scenario time.
 
-- Add `mission_datetime: String` field to `DbPass` (the insertion struct)
-- Add `mission_datetime: String` field to `StoredPass` (the query/JSON struct)
-- Add `mission_datetime TEXT NOT NULL DEFAULT ''` to the `CREATE TABLE` schema
-- Add an `ALTER TABLE passes ADD COLUMN mission_datetime TEXT NOT NULL DEFAULT '';` migration for existing databases
-- Update the `INSERT` and `SELECT` statements to include the new column
+## Validation boundary
 
----
-
-### Recovery Recording
-
-#### [MODIFY] [record_recovery.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/record_recovery.rs)
-
-At pass completion (around line 463, after the track is finalised and just before the DB insert), call `mission.get_scenario_current_time()` to capture the in-mission datetime at the moment of recovery. This is a non-fatal query — if it fails, fall back to an empty string (same pattern as the wind query).
-
-```rust
-let mission_datetime: String = match mission.get_scenario_current_time().await {
-    Ok(dt) => dt,
-    Err(err) => {
-        tracing::warn!(?err, "failed to query in-mission datetime");
-        String::new()
-    }
-};
-```
-
-Pass the value into the `DbPass` struct.
-
-> [!NOTE]
-> We query `GetScenarioCurrentTime` at pass-completion rather than computing `scenario_start_time + plane.time`. The gRPC call accounts for any time acceleration the server might be running, and gives us the formatted ISO 8601 string directly.
-
----
-
-### Web Dashboard
-
-#### [MODIFY] [web.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/web.rs)
-
-- Add a `Mission Time` column to the `<thead>` (after `Grade Date`)
-- Render `p.mission_datetime` in the corresponding `<td>` row
-- Update the `colspan` on the empty/loading placeholder from `11` to `12`
-
----
-
-### Discord Embed
-
-#### [MODIFY] [record_recovery.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/record_recovery.rs)
-
-Add a `Mission Date/Time` field to the Discord embed (after the existing `Date / Time (UTC)` field), but only when the value is non-empty:
-
-```rust
-if !mission_datetime.is_empty() {
-    embed = embed.field("Mission Date/Time", mission_datetime.as_str(), false);
-}
-```
-
----
-
-### JSON Report
-
-#### [MODIFY] [record_recovery.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/record_recovery.rs)
-
-Add `mission_datetime` to the `RecoveryReport` struct so it's persisted in the `.json` sidecar file alongside the ACMI and PNG chart.
-
-## Summary of Touched Files
-
-| File | Change |
-|------|--------|
-| [mission_client.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/client/mission_client.rs) | Add `get_scenario_current_time()` |
-| [db.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/db.rs) | New column + migration |
-| [record_recovery.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/record_recovery.rs) | Query + pass to DB + Discord + JSON |
-| [web.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/web.rs) | New dashboard column |
-
-## Verification Plan
-
-### Automated Tests
-```bash
-cargo build
-cargo test
-```
-
-### Manual Verification
-- Run against a live DCS server and verify:
-  - The `Mission Time` column appears on the web dashboard
-  - The Discord embed shows the `Mission Date/Time` field
-  - The `.json` report includes `mission_datetime`
-  - The SQLite `passes` table has the `mission_datetime` column populated
+Compilation and unit tests validate the data path and schema types. Populating a meaningful mission
+time still requires a live DCS/DCS-gRPC integration test because the value originates in the running
+scenario.

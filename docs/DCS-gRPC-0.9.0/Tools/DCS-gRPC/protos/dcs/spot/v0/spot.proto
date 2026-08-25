@@ -1,0 +1,85 @@
+syntax = "proto3";
+package dcs.spot.v0;
+import "dcs/common/v0/common.proto";
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Spot";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/spot";
+
+// https://wiki.hoggitworld.com/view/DCS_singleton_spot
+service SpotService {
+  rpc CreateLaser(CreateLaserRequest) returns (CreateLaserResponse) {}
+  rpc CreateInfraRed(CreateInfraRedRequest) returns (CreateInfraRedResponse) {}
+  rpc Destroy(DestroyRequest) returns (DestroyResponse) {}
+  rpc GetPoint(GetPointRequest) returns (GetPointResponse) {}
+  rpc SetPoint(SetPointRequest) returns (SetPointResponse) {}
+  rpc GetCode(GetCodeRequest) returns (GetCodeResponse) {}
+  rpc SetCode(SetCodeRequest) returns (SetCodeResponse) {}
+  rpc GetCategory(GetCategoryRequest) returns (GetCategoryResponse) {}
+}
+
+message CreateLaserRequest {
+  string source_unit_name = 1;
+  dcs.common.v0.Vector offset = 2;
+  dcs.common.v0.Vector direction = 3;
+  uint32 code = 4;
+}
+
+message CreateLaserResponse {
+  uint32 spot_id = 1;
+}
+
+message CreateInfraRedRequest {
+  string source_unit_name = 1;
+  dcs.common.v0.Vector offset = 2;
+  dcs.common.v0.Vector direction = 3;
+}
+
+message CreateInfraRedResponse {
+  uint32 spot_id = 1;
+}
+
+message DestroyRequest {
+  uint32 spot_id = 1;
+}
+
+message DestroyResponse {
+}
+
+message GetPointRequest {
+  uint32 spot_id = 1;
+}
+
+message GetPointResponse {
+  dcs.common.v0.Position position = 1;
+}
+
+message SetCodeRequest {
+  uint32 spot_id = 1;
+  uint32 code = 2;
+}
+
+message SetCodeResponse {
+}
+
+message SetPointRequest {
+  uint32 spot_id = 1;
+  dcs.common.v0.Position position = 2;
+}
+
+message SetPointResponse {
+}
+
+message GetCodeRequest {
+  uint32 spot_id = 1;
+}
+
+message GetCodeResponse {
+  uint32 code = 1;
+}
+
+message GetCategoryRequest {
+  uint32 spot_id = 1;
+}
+
+message GetCategoryResponse {
+  uint32 category = 1;
+}

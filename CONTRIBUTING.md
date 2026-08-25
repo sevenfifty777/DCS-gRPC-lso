@@ -1,29 +1,68 @@
-# Contributing Guide
+# Contributing to DCS-gRPC LSO
 
-Please [report an issue](https://github.com/DCS-gRPC/lso/issues/new?assignees=&labels=&template=1_wrong_cable.yml) if the LSO did not detect the correct cable.
+Please report bugs and incorrect wire detections in the
+[sevenfifty777/DCS-gRPC-lso issue tracker](https://github.com/sevenfifty777/DCS-gRPC-lso/issues).
+For a wire-detection report, attach an LSO-generated `.zip.acmi` recording when it is safe to share
+and describe the expected and observed wire.
 
-## Development
+## Development setup
 
-To compile and run the code, execute:
+Install a stable Rust toolchain, clone the repository, and run from the repository root. Cargo
+fetches the DCS-gRPC stubs from the exact fork commit pinned in `Cargo.toml`.
 
-```bash
+```powershell
+cargo build
 cargo run -- run
 ```
 
-In development, it is useful to include verbose logging. Debug logs can be activated by adding `-v`, and trace logs by adding `-vv`, e.g.:
+Global logging flags must appear before the subcommand:
 
-```bash
-cargo run -- run -vv
+```powershell
+cargo run -- -v run
+cargo run -- -vv run
 ```
 
-If you have a recording you want to replay to test changes, you can run:
+Replay mode accepts only ACMI recordings created by LSO:
 
-```bash
-cargo run --file .\RECORDING_NAME.zip.acmi
+```powershell
+cargo run -- file .\tests\recordings\wire_3_01_T45.zip.acmi
 ```
 
-To run tests, execute:
+The regenerated approach image is written to the current working directory.
 
-```bash
+## Validation
+
+Run the smallest relevant test first, then the repository checks before opening a pull request:
+
+```powershell
+cargo test <test_name>
 cargo test
+cargo fmt -- --check
+cargo clippy -- -D warnings
 ```
+
+To regenerate visual test artifacts for manual inspection:
+
+```powershell
+cargo test generate_chart_images -- --nocapture
+```
+
+The images are written under `target/test-charts/` and are not source files.
+
+When dependencies change, also run `cargo audit` if `cargo-audit` is installed. Do not update the
+pinned DCS-gRPC commit without reviewing protobuf compatibility and updating the migration and
+administrator documentation.
+
+## Change guidelines
+
+- Keep live and ACMI replay geometry deterministic where the same input is available.
+- Add focused tests for grading, geometry, parsing, or supported-unit changes.
+- Update the README, administrator guide, grading reference, or technical analysis when behavior,
+  CLI flags, output fields, network binding, or supported units change.
+- Do not commit Discord webhook URLs, credentials, local databases, generated charts, logs, or
+  private recordings.
+- Preserve the bundled `docs/DCS-gRPC-0.9.0/` reference snapshot unless deliberately replacing the
+  pinned server version.
+
+This repository is licensed under the [GNU AGPL v3](LICENSE). Contributions are submitted under
+the same license.
