@@ -3,8 +3,8 @@ use std::str::FromStr;
 
 use ultraviolet::{DRotor3, DVec3};
 
-use crate::data::{AirplaneInfo, CarrierInfo};
-use crate::grading::{compute_pass_grade, PassGrade};
+use crate::data::{AirplaneInfo, CarrierInfo, CarrierRecovery};
+use crate::grading::{compute_pass_grade, compute_vstol_approach_grade_points, compute_vstol_final_grade_from_points, PassGrade, SpotGrade};
 use crate::transform::Transform;
 use crate::utils::{m_to_ft, m_to_nm};
 
@@ -106,16 +106,15 @@ pub struct Track {
     landing_time: Option<f64>,
     grading: Option<Grading>,
     dcs_grading: Option<String>,
+    /// Horizontal deck-plane distance (m) between the AV-8B pilot-ground
+    /// landing reference and the calibrated Tarawa spot 7.5 at the exact land event.
+    spot_distance_m: Option<f64>,
     carrier_info: &'static CarrierInfo,
     plane_info: &'static AirplaneInfo,
-    /// The carrier and plane transforms, and the hook state, at the point of minimum distance.
-    min_distance_state: Option<(Transform, Transform, f64)>,
     /// Exponentially smoothed carrier position used for approach geometry.
     /// Eliminates the sawtooth caused by DCS updating the carrier's world
     /// position in discrete steps rather than every frame.
     smoothed_carrier_pos: Option<DVec3>,
-    /// Tracks if the hook was ever detected as up (< 0.5) during the pass.
-    hook_was_up: bool,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -145,9 +144,6 @@ pub struct GateDeviations {
 pub enum Grading {
     Unknown,
     Bolter,
-    IntentionalBolter {
-        cable_estimated: Option<u8>,
-    },
     /// Pilot broke off the approach after entering the groove (inside 3/4 nm, below 300 ft).
     WaveoffPilot,
     Recovered {
@@ -160,12 +156,22 @@ pub enum Grading {
 pub struct TrackResult {
     pub pilot_name: String,
     pub grading: Grading,
+    /// Gate-only approach grade before any V/STOL touchdown bonus.
+    pub approach_grade: PassGrade,
+    /// Final display grade. For CATOBAR this is identical to approach_grade;
+    /// for V/STOL it includes the spot-7.5 bonus.
     pub pass_grade: PassGrade,
+    /// Final numeric score. Kept separately because V/STOL bonuses can produce
+    /// quarter-point values (e.g. 4.75) while reusing the CATOBAR labels.
+    pub grade_points: f64,
+    pub spot_grade: Option<SpotGrade>,
+    pub spot_distance_m: Option<f64>,
     pub dcs_grading: Option<String>,
     pub gate_deviations: GateDeviations,
     pub datums: Vec<Datum>,
     pub pattern_datums: Vec<PatternDatum>,
     pub plane_info: &'static AirplaneInfo,
+    pub carrier_info: &'static CarrierInfo,
     /// Time from groove entry to touchdown in seconds, if both were recorded.
     pub groove_time_secs: Option<f64>,
 }
@@ -188,15 +194,14 @@ impl Track {
             landing_time: None,
             grading: None,
             dcs_grading: None,
+            spot_distance_m: None,
             carrier_info,
             plane_info,
-            min_distance_state: None,
             smoothed_carrier_pos: None,
-            hook_was_up: false,
         }
     }
 
-    pub fn next(&mut self, carrier: &Transform, plane: &Transform, hook_state: f64) -> bool {
+    pub fn next(&mut self, carrier: &Transform, plane: &Transform) -> bool {
         // ---------------------------------------------------------------
         // Pattern datum — BRC frame, recorded every frame.
         // Origin = carrier position. x_chart = -port_m, y_chart = -astern_m
@@ -246,10 +251,15 @@ impl Track {
 
         let landing_pos_offset = self
             .carrier_info
-            .optimal_landing_offset(self.plane_info)
+            .approach_reference_offset(self.plane_info)
             .rotated_by(carrier.rotation);
         let landing_pos = smoothed_pos + landing_pos_offset;
 
+        // Horizontal V/STOL lineup is an aircraft-centerline measurement.
+        // The ideal axis itself is already positioned one AV-8B wingspan outside
+        // the Tarawa port deck edge by approach_reference_offset().  Do not add
+        // the touchdown reference here: the pilot-ground contact projection is
+        // retained for the later hover/touchdown phase, not for parallel-approach lineup.
         let ray_from_plane_to_carrier = DVec3::new(
             landing_pos.x - plane.position.x,
             0.0, // ignore altitude
@@ -264,28 +274,14 @@ impl Track {
             return false;
         }
 
-        if hook_state < 0.5 {
-            self.hook_was_up = true;
-        }
-
         // Track the minimum distance to the touchdown point.
         let distance = ray_from_plane_to_carrier.mag();
         if distance < self.previous_distance {
             self.previous_distance = distance;
-            self.min_distance_state = Some((carrier.clone(), plane.clone(), hook_state));
         } else if distance - self.previous_distance > 150.0 {
             match &self.grading {
                 Some(Grading::Recovered { .. }) => {
-                    // Landed and now moving away → bolter or touch-and-go.
-                    if let Some((min_carrier, min_plane, _)) = &self.min_distance_state {
-                        if self.hook_was_up {
-                            // Hook was up -> Intentional bolter / touch and go.
-                            let estimated = self.estimate_cable(min_carrier, min_plane);
-                            tracing::debug!(distance_in_m = distance, "intentional bolter detected after touchdown");
-                            self.grading = Some(Grading::IntentionalBolter { cable_estimated: estimated });
-                            return false;
-                        }
-                    }
+                    // Landed and now moving away → bolter.
                     tracing::debug!(distance_in_m = distance, "bolter detected");
                     self.grading = Some(Grading::Bolter);
                     return false;
@@ -296,22 +292,7 @@ impl Track {
                     return false;
                 }
                 None if self.entered_groove => {
-                    // Entered the groove but now moving away.
-                    // This could be a bolter (if they flew over the deck) or a pilot waveoff.
-                    // If they reached a point over the deck, they passed through minimum distance.
-                    if let Some((min_carrier, min_plane, _)) = &self.min_distance_state {
-                        if self.hook_was_up {
-                            // Hook was up -> Intentional bolter / touch and go.
-                            let estimated = self.estimate_cable(min_carrier, min_plane);
-                            tracing::debug!(distance_in_m = distance, "intentional bolter detected");
-                            self.grading = Some(Grading::IntentionalBolter { cable_estimated: estimated });
-                            return false;
-                        }
-                        // Otherwise, it was a normal bolter but they didn't touch down (or didn't register a Recovered event).
-                        tracing::debug!(distance_in_m = distance, "bolter detected (no touchdown)");
-                        self.grading = Some(Grading::Bolter);
-                        return false;
-                    }
+                    // Entered the groove but now moving away → pilot waveoff.
                     tracing::debug!(distance_in_m = distance, "waveoff detected (entered groove, moving away)");
                     self.grading = Some(Grading::WaveoffPilot);
                     return false;
@@ -349,8 +330,19 @@ impl Track {
             y = y.neg();
         }
 
-        let hook_offset = self.plane_info.hook.rotated_by(plane.rotation);
-        let alt = plane.alt - self.carrier_info.deck_altitude + hook_offset.y;
+        let alt = match &self.carrier_info.recovery {
+            CarrierRecovery::Arrested => {
+                let hook_offset = self.plane_info.hook.rotated_by(plane.rotation);
+                plane.alt - self.carrier_info.deck_altitude + hook_offset.y
+            }
+            CarrierRecovery::Vstol { .. } => {
+                // V/STOL V1 vertical chart is referenced to the water/sea level,
+                // matching the Harrier's 120 ft hover/approach altitude.
+                // DCS plane.alt is MSL, so keep it directly instead of subtracting
+                // the Tarawa deck height (which would shift the curve ~66 ft low).
+                plane.alt
+            }
+        };
 
         // Gate sampling and groove entry only apply when the aircraft is on the approach side of
         // the threshold (x > 0).  When x ≤ 0 the aircraft is ahead of the touchdown point
@@ -378,7 +370,16 @@ impl Track {
             let is_inbound = x < self.previous_x;
 
             // Sample gate deviations at key distances on first crossing.
-            let ideal_gs_alt = x * self.plane_info.glide_slope.to_radians().tan();
+            let ideal_gs_alt = match &self.carrier_info.recovery {
+                CarrierRecovery::Arrested => x * self.plane_info.glide_slope.to_radians().tan(),
+                CarrierRecovery::Vstol { target_altitude_ft, .. } => {
+                    // Same geometric principle as CATOBAR, but translated upward:
+                    // the ideal V/STOL approach reaches 120 ft MSL/above-water at
+                    // x = 0 (abeam the 7.5 longitudinal station).
+                    (*target_altitude_ft / 3.28084)
+                        + x * self.plane_info.glide_slope.to_radians().tan()
+                },
+            };
             let gs_deviation_m = alt - ideal_gs_alt;
             let gs_deviation_ft = m_to_ft(gs_deviation_m);
             let lineup_ft = m_to_ft(y);
@@ -389,7 +390,11 @@ impl Track {
             // ~400 ft at that distance.  500 ft cleanly rejects the 600–1000 ft overhead-pattern
             // crossing of x = 0 while still capturing all realistic final-approach deviations.
             let in_approach = m_to_ft(alt) <= 500.0;
-            if in_approach && is_inbound && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
+            // For V/STOL, do not capture a distance gate while the Harrier is
+            // still on base/turning toward the parallel axis.  This avoids
+            // bogus multi-thousand-foot LAT values from an earlier circuit pass.
+            let gate_lined_up = !self.carrier_info.is_vstol() || lineup_deg.abs() <= 10.0;
+            if in_approach && gate_lined_up && is_inbound && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
                 self.gate_deviations.at_three_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -397,7 +402,7 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && is_inbound && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
+            if in_approach && gate_lined_up && is_inbound && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
                 self.gate_deviations.at_half_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -405,7 +410,7 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && is_inbound && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
+            if in_approach && gate_lined_up && is_inbound && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
                 self.gate_deviations.at_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -439,7 +444,77 @@ impl Track {
     }
 
     pub fn landed(&mut self, carrier: &Transform, plane: &Transform) {
-        let cable = self.estimate_cable(carrier, plane);
+        // For V/STOL, the DCS land event contains the most accurate final
+        // aircraft/carrier transforms. The normal sampling loop can stop a few
+        // frames before that event, which made the terminal trace appear to end
+        // slightly before the actual touchdown point. Append one exact terminal
+        // datum from the land-event transforms so both V/STOL plots can finish
+        // at the real touchdown position.
+        if matches!(&self.carrier_info.recovery, CarrierRecovery::Vstol { .. }) {
+            // Exact touchdown accuracy relative to Tarawa spot 7.5.  The AV-8B
+            // pilot-ground reference is transformed into carrier-local coordinates,
+            // then compared to the calibrated landing point using only the deck
+            // plane axes (local X/Z).  Vertical compression/gear animation therefore
+            // cannot distort the touchdown accuracy score.
+            if let CarrierRecovery::Vstol { landing_point, .. } = &self.carrier_info.recovery {
+                let spot_ref_world = plane.position
+                    + self.plane_info.landing_reference.rotated_by(plane.rotation);
+                let spot_ref_local = (spot_ref_world - carrier.position)
+                    .rotated_by(carrier.rotation.reversed());
+                let dx = spot_ref_local.x - landing_point.x;
+                let dz = spot_ref_local.z - landing_point.z;
+                let spot_distance_m = (dx * dx + dz * dz).sqrt();
+                self.spot_distance_m = Some(spot_distance_m);
+            }
+
+            let landing_pos_offset = self
+                .carrier_info
+                .approach_reference_offset(self.plane_info)
+                .rotated_by(carrier.rotation);
+            let landing_pos = carrier.position + landing_pos_offset;
+
+            let ray_from_plane_to_carrier = DVec3::new(
+                landing_pos.x - plane.position.x,
+                0.0,
+                landing_pos.z - plane.position.z,
+            );
+
+            let fb_rot = DRotor3::from_rotation_xz(
+                (carrier.heading - self.carrier_info.deck_angle)
+                    .neg()
+                    .to_radians(),
+            );
+            let fb = DVec3::unit_z().rotated_by(fb_rot);
+            let distance = ray_from_plane_to_carrier.mag();
+            let x = ray_from_plane_to_carrier.dot(fb);
+            let mut y = (distance.powi(2) - x.powi(2)).max(0.0).sqrt();
+
+            let a = DVec3::unit_x().rotated_by(fb_rot);
+            if ray_from_plane_to_carrier.dot(a) > 0.0 {
+                y = y.neg();
+            }
+
+            let should_push = self
+                .datums
+                .last()
+                .map(|d| (plane.time - d.time).abs() > 1.0e-6)
+                .unwrap_or(true);
+
+            if should_push {
+                self.datums.push(Datum {
+                    time: plane.time,
+                    x,
+                    y,
+                    aoa: plane.aoa,
+                    alt: plane.alt.max(0.0),
+                });
+            }
+        }
+
+        let cable = match &self.carrier_info.recovery {
+            CarrierRecovery::Arrested => self.estimate_cable(carrier, plane),
+            CarrierRecovery::Vstol { .. } => None,
+        };
         self.grading = Some(Grading::Recovered {
             cable,
             cable_estimated: cable,
@@ -455,22 +530,26 @@ impl Track {
             self.grading = Some(Grading::WaveoffPilot);
         }
 
-        // If DCS grading is set, use its reported wire instead of the estimated one.
-        let grading = if let Some(dcs_wire) = self.dcs_grading.as_ref().and_then(|s| {
-            s.split_once("WIRE# ")
-                .and_then(|(_, w)| u8::from_str(&w[0..1]).ok())
-        }) {
-            match self.grading {
-                Some(Grading::Recovered {
-                    cable_estimated, ..
-                }) => Grading::Recovered {
-                    cable: Some(dcs_wire),
-                    cable_estimated,
-                },
-                _ => Grading::Recovered {
-                    cable: Some(dcs_wire),
-                    cable_estimated: None,
-                },
+        // If DCS grading is set, use its reported wire for arrested recoveries only.
+        let grading = if matches!(&self.carrier_info.recovery, CarrierRecovery::Arrested) {
+            if let Some(dcs_wire) = self.dcs_grading.as_ref().and_then(|s| {
+                s.split_once("WIRE# ")
+                    .and_then(|(_, w)| u8::from_str(&w[0..1]).ok())
+            }) {
+                match self.grading {
+                    Some(Grading::Recovered {
+                        cable_estimated, ..
+                    }) => Grading::Recovered {
+                        cable: Some(dcs_wire),
+                        cable_estimated,
+                    },
+                    _ => Grading::Recovered {
+                        cable: Some(dcs_wire),
+                        cable_estimated: None,
+                    },
+                }
+            } else {
+                self.grading.unwrap_or_default()
             }
         } else {
             self.grading.unwrap_or_default()
@@ -481,17 +560,46 @@ impl Track {
             _ => None,
         };
 
-        let pass_grade = compute_pass_grade(&grading, &self.gate_deviations, groove_time_secs);
+        // CATOBAR keeps the native wire/groove grading path.  AV-8B V/STOL
+        // deliberately reuses the same GS/LU gate tiers, referenced to its 3.0°
+        // glide slope, but excludes CATOBAR-only wire/groove bonuses.  AOA is
+        // visual information only and is not part of the points calculation.
+        let (approach_grade, approach_points) = if self.carrier_info.is_vstol() {
+            compute_vstol_approach_grade_points(&grading, &self.gate_deviations)
+        } else {
+            let grade = compute_pass_grade(&grading, &self.gate_deviations, groove_time_secs);
+            (grade, grade.points())
+        };
+        let spot_grade = self.spot_distance_m.map(SpotGrade::from_distance_m);
+
+        // CATOBAR is intentionally untouched. Only a successfully recovered V/STOL
+        // pass receives the spot-accuracy bonus and is then mapped back to the same
+        // greenie-board labels used by CATOBAR (_OK_/OK/(OK)/--/C).
+        let (pass_grade, grade_points) = if self.carrier_info.is_vstol()
+            && matches!(&grading, Grading::Recovered { .. })
+        {
+            match spot_grade {
+                Some(spot) => compute_vstol_final_grade_from_points(approach_points, spot),
+                None => (approach_grade, approach_points),
+            }
+        } else {
+            (approach_grade, approach_points)
+        };
 
         TrackResult {
             pilot_name: self.pilot_name,
             grading,
+            approach_grade,
             pass_grade,
+            grade_points,
+            spot_grade,
+            spot_distance_m: self.spot_distance_m,
             dcs_grading: self.dcs_grading,
             gate_deviations: self.gate_deviations,
             datums: self.datums,
             pattern_datums: self.pattern_datums,
             plane_info: self.plane_info,
+            carrier_info: self.carrier_info,
             groove_time_secs,
         }
     }

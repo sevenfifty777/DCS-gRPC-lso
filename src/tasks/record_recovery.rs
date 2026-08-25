@@ -21,8 +21,8 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tonic::Status;
 
-use crate::client::{HookClient, MissionClient, UnitClient};
-use crate::grading::PassGrade;
+use crate::client::{HookClient, MissionClient, NetClient, UnitClient};
+use crate::grading::{PassGrade, SpotGrade};
 use crate::track::{Datum, GateDeviations, Grading, Track};
 use crate::transform::Transform;
 
@@ -34,7 +34,19 @@ use super::{CompletedPass, TaskParams};
 struct RecoveryReport<'a> {
     pilot_name: &'a str,
     grading: &'a Grading,
+    /// Gate-only grade before the AV-8B touchdown-accuracy bonus.
+    approach_grade: PassGrade,
+    /// Final grade shown on the greenie board.
     pass_grade: PassGrade,
+    grade_points: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spot: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spot_grade: Option<SpotGrade>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spot_distance_m: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spot_bonus_points: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dcs_grading: Option<&'a str>,
     gate_deviations: &'a GateDeviations,
@@ -62,6 +74,31 @@ pub static GRADE_DATE_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>
 pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error::Error> {
     tracing::debug!("started recording");
 
+    // AV-8B/Tarawa only: DCS single-player can expose the logbook pilot label
+    // through Unit.player_name while NetService still has the actual player
+    // nickname. Resolve that nickname only for V/STOL recoveries so the native
+    // CATOBAR path keeps the original fork behaviour unchanged.
+    let pilot_name = if params.carrier_info.is_vstol() {
+        let mut net = NetClient::new(params.ch.clone());
+        match net.get_players().await {
+            Ok(players) => {
+                let plane_slot = params.plane_id.to_string();
+                players
+                    .iter()
+                    .find(|p| p.slot == plane_slot || p.slot == params.plane_name)
+                    .or_else(|| players.iter().find(|p| p.name == params.pilot_name))
+                    .or_else(|| (players.len() == 1).then(|| &players[0]))
+                    .map(|p| p.name.trim())
+                    .filter(|name| !name.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| params.pilot_name.to_string())
+            }
+            Err(_) => params.pilot_name.to_string(),
+        }
+    } else {
+        params.pilot_name.to_string()
+    };
+
     // Tacview-20211111-143727-DCS-grpc-lso.zip
     let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
     let now_utc = now.to_offset(time::UtcOffset::UTC);
@@ -69,8 +106,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let filename = format!(
         "LSO-{}-{}",
         now.format(&FILENAME_DATETIME_FORMAT).unwrap_or_default(),
-        params
-            .pilot_name
+        pilot_name
             .chars()
             .filter(|c| c.is_ascii_alphanumeric())
             .collect::<String>()
@@ -85,7 +121,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
     let mut acmi = Cursor::new(Vec::new());
     let mut recording = tacview::Writer::new_compressed(&mut acmi)?;
-    let mut datums = Track::new(params.pilot_name, params.carrier_info, params.plane_info);
+    let mut datums = Track::new(pilot_name.clone(), params.carrier_info, params.plane_info);
 
     let reference_time = mission.get_scenario_start_time().await?;
     recording.write(GlobalProperty::ReferenceTime(reference_time))?;
@@ -141,10 +177,6 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     client2.get_transform(params.plane_name),
                 )
                 .await?;
-                let hook_state = client2
-                    .get_draw_argument_value(params.plane_name, 25)
-                    .await
-                    .unwrap_or(1.0);
 
                 if !ref_written {
                     lat_ref = carrier.lat;
@@ -202,16 +234,13 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
-                if !datums.next(&carrier, &plane, hook_state) {
-                    if let Some(stop_time) = track_stopped {
-                        if stop_time.elapsed() > std::time::Duration::from_secs(10) {
-                            tracing::info!("stop (10s passed since pass completed)");
-                            break;
-                        }
-                    } else {
-                        // Track told us to stop but hasn't set `track_stopped` yet
-                        // (happens on Bolter or WaveoffPilot).
-                        track_stopped = Some(Instant::now());
+                if !datums.next(&carrier, &plane) {
+                    break;
+                }
+
+                if let Some(track_stopped) = track_stopped {
+                    if track_stopped.elapsed() > Duration::from_secs(10) {
+                        break;
                     }
                 }
             }
@@ -346,11 +375,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         text: None,
                     })?;
 
-                    let hook_state = client2
-                        .get_draw_argument_value(params.plane_name, 25)
-                        .await
-                        .unwrap_or(1.0);
-                    datums.next(&carrier, &plane, hook_state);
+                    datums.next(&carrier, &plane);
                     datums.landed(&carrier, &plane);
 
                     // don't stop right away, track a couple of more seconds
@@ -430,10 +455,17 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
     // Write JSON report.
     let json_path = params.out_dir.join(&filename).with_extension("json");
+    let spot_label = track.carrier_info.is_vstol().then_some("7.5");
     let report = RecoveryReport {
         pilot_name: &track.pilot_name,
         grading: &track.grading,
+        approach_grade: track.approach_grade,
         pass_grade: track.pass_grade,
+        grade_points: track.grade_points,
+        spot: spot_label,
+        spot_grade: track.spot_grade,
+        spot_distance_m: track.spot_distance_m,
+        spot_bonus_points: track.spot_grade.map(|g| g.bonus_points()),
         dcs_grading: track.dcs_grading.as_deref(),
         gate_deviations: &track.gate_deviations,
         datums: &track.datums,
@@ -443,7 +475,6 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
     let wire = match track.grading {
         Grading::Recovered { cable, .. } => cable,
-        Grading::IntentionalBolter { cable_estimated } => cable_estimated,
         _ => None,
     };
     let aircraft_id = crate::data::get_aircraft_id(params.plane_type);
@@ -453,26 +484,19 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         _ => params.plane_info.name,
     };
 
-    let outcome_str = match track.grading {
-        Grading::Unknown => "unknown".to_string(),
-        Grading::Bolter => "Bolter".to_string(),
-        Grading::WaveoffPilot => "Waveoff".to_string(),
-        Grading::IntentionalBolter { .. } => "Qualif Bolter".to_string(),
-        Grading::Recovered { cable, .. } => cable
-            .map(|c| format!("Wire #{}", c))
-            .unwrap_or("Landed".to_string()),
-    };
-
     let completed = CompletedPass {
         timestamp: filename.clone(),
         pilot_name: track.pilot_name.clone(),
         pass_grade: track.pass_grade,
+        grade_points: track.grade_points,
         wire,
+        spot: spot_label.map(|s| s.to_string()),
+        spot_grade: track.spot_grade,
+        spot_distance_m: track.spot_distance_m,
         dcs_grading: track.dcs_grading.clone(),
         aircraft_type: display_type.to_string(),
         aircraft_id,
         map_name: map_name.clone(),
-        outcome: outcome_str.clone(),
     };
 
     // Append to in-memory session greenie board log.
@@ -506,15 +530,17 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             aircraft_id: completed.aircraft_id,
             pass_grade_label: completed.pass_grade.label().to_string(),
             wire: completed.wire,
+            spot: completed.spot.clone(),
+            spot_grade: completed.spot_grade.map(|g| g.label().to_string()),
+            spot_distance_m: completed.spot_distance_m,
             dcs_grading: completed.dcs_grading.clone(),
             aircraft_type: Some(completed.aircraft_type.clone()),
             map_name: if completed.map_name.is_empty() { None } else { Some(completed.map_name.clone()) },
             grade_date: now_utc
                 .format(&GRADE_DATE_FORMAT)
                 .unwrap_or_default(),
-            grade_points: completed.pass_grade.points(),
+            grade_points: completed.grade_points,
             mission_datetime: mission_datetime.clone(),
-            outcome: completed.outcome.clone(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -555,19 +581,39 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 "Pilot",
                 params
                     .users
-                    .get(params.pilot_name)
+                    .get(track.pilot_name.as_str())
                     .map(|id| Cow::Owned(Mention::from(UserId::new(*id)).to_string()))
-                    .unwrap_or(Cow::Borrowed(params.pilot_name)),
+                    .unwrap_or(Cow::Borrowed(track.pilot_name.as_str())),
                 true,
             )
             .field(
                 "Grade",
-                format!("{} ({:.1} pts)", track.pass_grade.label(), track.pass_grade.points()),
+                if track.carrier_info.is_vstol() {
+                    format!("{} ({:.2} pts)", track.pass_grade.label(), track.grade_points)
+                } else {
+                    format!("{} ({:.1} pts)", track.pass_grade.label(), track.grade_points)
+                },
                 true,
             )
             .field(
                 "Outcome",
-                outcome_str,
+                if track.carrier_info.is_vstol() {
+                    match track.grading {
+                        Grading::Recovered { .. } => Cow::Borrowed("Spot 7.5"),
+                        Grading::Unknown => Cow::Borrowed("unknown"),
+                        Grading::Bolter => Cow::Borrowed("Bolter"),
+                        Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
+                    }
+                } else {
+                    match track.grading {
+                        Grading::Unknown => Cow::Borrowed("unknown"),
+                        Grading::Bolter => Cow::Borrowed("Bolter"),
+                        Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
+                        Grading::Recovered { cable, .. } => cable
+                            .map(|c| Cow::Owned(format!("Wire #{}", c)))
+                            .unwrap_or(Cow::Borrowed("-")),
+                    }
+                },
                 true,
             )
             .field(
@@ -586,6 +632,21 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 },
                 false,
             );
+
+        if track.carrier_info.is_vstol() {
+            if let (Some(spot_grade), Some(distance_m)) = (track.spot_grade, track.spot_distance_m) {
+                embed = embed.field(
+                    "Spot 7.5",
+                    format!(
+                        "{} — {:.2} m — +{:.2} pt",
+                        spot_grade.label(),
+                        distance_m,
+                        spot_grade.bonus_points()
+                    ),
+                    false,
+                );
+            }
+        }
 
         // LSO notation and plain-English notes from DCS grading string.
         if let Some(ref notation) = track.dcs_grading {
@@ -628,7 +689,7 @@ async fn create_initial_update(
     let coalition = Coalition::try_from(unit.coalition).unwrap_or(Coalition::Neutral);
     let mut props = vec![
         Property::Type(tags(attrs)),
-        Property::Name(unit.r#type.unwrap_or_else(|| unit.name.clone())),
+        Property::Name(unit.r#type),
         Property::Group(unit.group.unwrap_or_default().name),
         Property::Color(color(coalition)),
     ];

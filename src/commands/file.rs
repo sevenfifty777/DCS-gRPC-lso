@@ -340,7 +340,7 @@ impl CarrierPlanePair {
         }
 
         if self.is_recovery_attempt {
-            let mut should_continue = self.datums.next(&self.carrier, &self.plane, 1.0);
+            let mut should_continue = self.datums.next(&self.carrier, &self.plane);
             if self.landed {
                 self.datums.landed(&self.carrier, &self.plane);
                 should_continue = false;

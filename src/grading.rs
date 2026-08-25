@@ -8,7 +8,7 @@ use crate::track::{GateDeviations, Grading};
 /// Source: MOOSE Airboss `gle` table CVN defaults; NAVAIR 00-80T-104.
 /// Thresholds are asymmetric: being high is penalised slightly later than being low.
 const GS_SLIGHT_HIGH: f64 = 0.5;    // (H) — "slightly high"   NAVAIR ~+0.5°
-const GS_SLIGHT_LOW: f64 = 0.5;     // (L) — "slightly low"    MOOSE  −0.8° (symmetric kept)
+const GS_SLIGHT_LOW: f64 = 0.5;     // (L) — "slightly low"    symmetric V/STOL/CATOBAR threshold
 const GS_SIGNIFICANT: f64 = 1.0;    // H / L — "high/low"      symmetric
 /// Dangerously low at the 1/4-nm gate — triggers a Cut pass.
 const GS_CUT_LOW_DEG: f64 = -2.5;
@@ -80,6 +80,85 @@ impl PassGrade {
 }
 
 // ---------------------------------------------------------------------------
+// V/STOL spot accuracy
+// ---------------------------------------------------------------------------
+
+/// AV-8B touchdown accuracy grade relative to the calibrated Tarawa spot 7.5.
+///
+/// The distance is measured on the carrier deck plane from the AV-8B pilot-ground
+/// landing reference to the calibrated 7.5 point at the exact DCS land event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum SpotGrade {
+    A,
+    B,
+    C,
+    D,
+}
+
+impl SpotGrade {
+    /// Convert a touchdown distance (metres) into the V/STOL spot grade.
+    pub fn from_distance_m(distance_m: f64) -> Self {
+        if distance_m < 1.0 {
+            Self::A
+        } else if distance_m < 3.0 {
+            Self::B
+        } else if distance_m < 5.0 {
+            Self::C
+        } else {
+            Self::D
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::B => "B",
+            Self::C => "C",
+            Self::D => "D",
+        }
+    }
+
+    /// Bonus added to the approach score for a recovered AV-8B pass.
+    pub fn bonus_points(self) -> f64 {
+        match self {
+            Self::A => 1.00,
+            Self::B => 0.75,
+            Self::C => 0.50,
+            Self::D => 0.00,
+        }
+    }
+}
+
+/// Combine the CATOBAR-style approach grade with the AV-8B spot bonus.
+///
+/// The numeric result is capped at 5.0 and mapped back onto the same display
+/// labels used by the native CATOBAR greenie board.  This function is only
+/// called for a successfully recovered V/STOL pass; CATOBAR grading is left
+/// completely unchanged.
+/// Combine an arbitrary V/STOL approach point value with the spot bonus.
+///
+/// This variant is used by the averaged-gates V/STOL approach logic, where the
+/// approach score can be fractional before the spot bonus is added.
+pub fn compute_vstol_final_grade_from_points(
+    approach_points: f64,
+    spot_grade: SpotGrade,
+) -> (PassGrade, f64) {
+    let points = (approach_points + spot_grade.bonus_points()).min(5.0);
+    let final_grade = if points >= 5.0 {
+        PassGrade::Unicorn
+    } else if points >= 4.0 {
+        PassGrade::Ok
+    } else if points >= 3.0 {
+        PassGrade::OkParentheses
+    } else if points >= 2.0 {
+        PassGrade::NoGrade
+    } else {
+        PassGrade::Cut
+    };
+    (final_grade, points)
+}
+
+// ---------------------------------------------------------------------------
 // Grade computation
 // ---------------------------------------------------------------------------
 
@@ -102,13 +181,7 @@ pub fn compute_pass_grade(
         Grading::Unknown      => PassGrade::NoGrade,
         Grading::WaveoffPilot => PassGrade::WaveoffPilot,
         Grading::Bolter       => PassGrade::Bolter,
-        Grading::Recovered { cable, .. } | Grading::IntentionalBolter { cable_estimated: cable } => {
-            if let Grading::IntentionalBolter { cable_estimated: None } = grading {
-                // For a qualification touch-and-go, if they miss the wires completely,
-                // it is graded as a Bolter (B), but the outcome still reflects it was a Qualif Bolter.
-                return PassGrade::Bolter;
-            }
-
+        Grading::Recovered { cable, .. } => {
             let base = grade_from_gates(gates);
             // Unicorn: zero deviations (base == Ok), wire 3, groove time in window.
             if base == PassGrade::Ok
@@ -122,6 +195,83 @@ pub fn compute_pass_grade(
                 base
             }
         }
+    }
+}
+
+/// Compute the AV-8B V/STOL approach grade using the same gate-deviation
+/// thresholds as the CATOBAR grader, but without CATOBAR-only wire/groove
+/// bonuses.  `GateDeviations` are already measured in `track.rs` relative to
+/// the aircraft-specific ideal glide slope; for AV-8B that reference is 3.0°.
+///
+/// Deliberately NOT part of this score: AOA.  The AV-8B 10-12° target is used
+/// only by `aoa_rating` for trace colouring / indication.
+///
+/// The V/STOL final score is obtained later by adding the calibrated spot-7.5
+/// bonus to this approach grade.
+/// Compute the AV-8B V/STOL approach grade and its numeric point value.
+///
+/// Unlike CATOBAR, the V/STOL approach score is the arithmetic mean of the
+/// three gate grades (3/4 nm, 1/2 nm, 1/4 nm), each gate being assessed with
+/// the same GS/LU thresholds as the CATOBAR logic. This preserves the original
+/// severity per gate while avoiding a pure “worst gate wins” outcome for VTOL.
+pub fn compute_vstol_approach_grade_points(
+    grading: &Grading,
+    gates: &GateDeviations,
+) -> (PassGrade, f64) {
+    match grading {
+        Grading::Unknown => (PassGrade::NoGrade, PassGrade::NoGrade.points()),
+        Grading::WaveoffPilot => (PassGrade::WaveoffPilot, PassGrade::WaveoffPilot.points()),
+        Grading::Bolter => (PassGrade::Bolter, PassGrade::Bolter.points()),
+        Grading::Recovered { .. } => {
+            let mut gate_scores = Vec::with_capacity(3);
+            if let Some(g) = gates.at_three_quarter_nm.as_ref() {
+                gate_scores.push(grade_single_gate(g, false).points());
+            }
+            if let Some(g) = gates.at_half_nm.as_ref() {
+                gate_scores.push(grade_single_gate(g, false).points());
+            }
+            if let Some(g) = gates.at_quarter_nm.as_ref() {
+                gate_scores.push(grade_single_gate(g, true).points());
+            }
+
+            if gate_scores.is_empty() {
+                let fallback = grade_from_gates(gates);
+                (fallback, fallback.points())
+            } else {
+                let avg_points = gate_scores.iter().sum::<f64>() / gate_scores.len() as f64;
+                (map_vstol_approach_points_to_grade(avg_points), avg_points)
+            }
+        }
+    }
+}
+
+fn map_vstol_approach_points_to_grade(points: f64) -> PassGrade {
+    if points >= PassGrade::Ok.points() {
+        PassGrade::Ok
+    } else if points >= PassGrade::OkParentheses.points() {
+        PassGrade::OkParentheses
+    } else if points >= PassGrade::NoGrade.points() {
+        PassGrade::NoGrade
+    } else {
+        PassGrade::Cut
+    }
+}
+
+fn grade_single_gate(gate: &crate::track::GateDatum, quarter_nm: bool) -> PassGrade {
+    if quarter_nm && gate.gs_deviation_deg < GS_CUT_LOW_DEG {
+        return PassGrade::Cut;
+    }
+
+    let gs_high = gate.gs_deviation_deg.max(0.0);
+    let gs_low = gate.gs_deviation_deg.min(0.0).abs();
+    let lu = gate.lineup_deg.abs();
+
+    if gs_high >= GS_SIGNIFICANT || gs_low >= GS_SIGNIFICANT || lu >= LU_MEDIUM {
+        PassGrade::NoGrade
+    } else if gs_high >= GS_SLIGHT_HIGH || gs_low >= GS_SLIGHT_LOW || lu >= LU_SLIGHT {
+        PassGrade::OkParentheses
+    } else {
+        PassGrade::Ok
     }
 }
 
@@ -168,7 +318,7 @@ fn grade_from_gates(gates: &GateDeviations) -> PassGrade {
     .fold(0.0_f64, f64::max);
 
     // Apply NAVAIR/MOOSE grade tiers.
-    // GS is asymmetric: slight high at 0.5° (NAVAIR), slight low at 0.8° (MOOSE).
+    // GS uses the CATOBAR-derived tiers retained for both paths: slight at 0.5°, significant at 1.0°.
     // Lineup has three tiers: slight (1.0°) → (OK), medium (2.0°) → --, large (3.0°) → --
     if worst_gs_high >= GS_SIGNIFICANT || worst_gs_low >= GS_SIGNIFICANT || worst_lu >= LU_MEDIUM {
         PassGrade::NoGrade
@@ -230,9 +380,9 @@ mod tests {
     }
 
     #[test]
-    fn test_slight_gs_low_threshold_is_0_8() {
-        // 0.9° low GS: exceeds GS_SLIGHT_LOW (0.8°) → (OK).
-        let g = gates_deg(-0.9, 0.0, 0.0, 0.0, 0.0, 0.0);
+    fn test_slight_gs_low_threshold_is_0_5() {
+        // 0.6° low GS: exceeds GS_SLIGHT_LOW (0.5°) → (OK).
+        let g = gates_deg(-0.6, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(grade_from_gates(&g), PassGrade::OkParentheses);
     }
 
@@ -252,8 +402,8 @@ mod tests {
 
     #[test]
     fn test_significant_gs_deviation_is_no_grade() {
-        // 1.6° GS at 3/4 nm: exceeds GS_SIGNIFICANT (1.5°) → --.
-        let g = gates_deg(1.6, 0.3, 0.1, 0.2, 0.1, 0.1);
+        // 1.1° GS at 3/4 nm: exceeds GS_SIGNIFICANT (1.0°) → --.
+        let g = gates_deg(1.1, 0.3, 0.1, 0.2, 0.1, 0.1);
         assert_eq!(grade_from_gates(&g), PassGrade::NoGrade);
     }
 
@@ -366,4 +516,71 @@ mod tests {
     fn test_points_no_grade() {
         assert_eq!(PassGrade::NoGrade.points(), 2.0);
     }
+
+    #[test]
+    fn test_vstol_spot_thresholds() {
+        assert_eq!(SpotGrade::from_distance_m(0.99), SpotGrade::A);
+        assert_eq!(SpotGrade::from_distance_m(1.0), SpotGrade::B);
+        assert_eq!(SpotGrade::from_distance_m(2.99), SpotGrade::B);
+        assert_eq!(SpotGrade::from_distance_m(3.0), SpotGrade::C);
+        assert_eq!(SpotGrade::from_distance_m(4.99), SpotGrade::C);
+        assert_eq!(SpotGrade::from_distance_m(5.0), SpotGrade::D);
+    }
+
+    #[test]
+    fn test_vstol_bonus_maps_to_catobar_labels() {
+        assert_eq!(
+            compute_vstol_final_grade_from_points(PassGrade::Ok.points(), SpotGrade::A),
+            (PassGrade::Unicorn, 5.0)
+        );
+        assert_eq!(
+            compute_vstol_final_grade_from_points(PassGrade::Ok.points(), SpotGrade::B),
+            (PassGrade::Ok, 4.75)
+        );
+        assert_eq!(
+            compute_vstol_final_grade_from_points(PassGrade::OkParentheses.points(), SpotGrade::A),
+            (PassGrade::Ok, 4.0)
+        );
+        assert_eq!(
+            compute_vstol_final_grade_from_points(PassGrade::NoGrade.points(), SpotGrade::C),
+            (PassGrade::NoGrade, 2.5)
+        );
+    }
+
+    #[test]
+    fn test_vstol_approach_average_all_ok_is_ok() {
+        let grading = Grading::Recovered { cable: None, cable_estimated: None };
+        let ok = gates_deg(0.2, 0.3, -0.2, 0.4, 0.1, 0.2);
+        let (grade, points) = compute_vstol_approach_grade_points(&grading, &ok);
+        assert_eq!(grade, PassGrade::Ok);
+        assert!((points - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_vstol_approach_average_single_significant_gate_stays_ok_parentheses() {
+        let grading = Grading::Recovered { cable: None, cable_estimated: None };
+        // 3/4 nm = -- (2.0), other two gates = OK (4.0) => average = 10 / 3.
+        let mixed = gates_deg(1.1, 0.2, 0.1, 0.2, 0.1, 0.1);
+        let (grade, points) = compute_vstol_approach_grade_points(&grading, &mixed);
+        assert_eq!(grade, PassGrade::OkParentheses);
+        assert!((points - (10.0 / 3.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_vstol_approach_average_single_slight_gate_stays_ok() {
+        let grading = Grading::Recovered { cable: None, cable_estimated: None };
+        // 3/4 nm = (OK) (3.0), other two gates = OK (4.0) => average = 11 / 3.
+        let slight = gates_deg(0.6, 0.2, 0.1, 0.2, 0.1, 0.1);
+        let (grade, points) = compute_vstol_approach_grade_points(&grading, &slight);
+        assert_eq!(grade, PassGrade::Ok);
+        assert!((points - (11.0 / 3.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_vstol_final_grade_uses_averaged_approach_points() {
+        let (grade, points) = compute_vstol_final_grade_from_points(10.0 / 3.0, SpotGrade::B);
+        assert_eq!(grade, PassGrade::Ok);
+        assert!((points - ((10.0 / 3.0) + 0.75)).abs() < 1e-9);
+    }
+
 }
