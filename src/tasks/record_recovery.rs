@@ -178,12 +178,12 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 )
                 .await?;
                 let hook_state = if params.carrier_info.is_vstol() {
-                    1.0
+                    None
                 } else {
                     client2
                         .get_draw_argument_value(params.plane_name, 25)
                         .await
-                        .unwrap_or(1.0)
+                        .ok()
                 };
 
                 if !ref_written {
@@ -384,12 +384,12 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     })?;
 
                     let hook_state = if params.carrier_info.is_vstol() {
-                        1.0
+                        None
                     } else {
                         client2
                             .get_draw_argument_value(params.plane_name, 25)
                             .await
-                            .unwrap_or(1.0)
+                            .ok()
                     };
                     datums.next(&carrier, &plane, hook_state);
                     datums.landed(&carrier, &plane);
@@ -618,8 +618,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     match track.grading {
                         Grading::Recovered { .. } => Cow::Borrowed("Spot 7.5"),
                         Grading::Unknown => Cow::Borrowed("unknown"),
-                        Grading::Bolter => Cow::Borrowed("Bolter"),
-                        Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
+                        Grading::Bolter | Grading::IntentionalBolter { .. } => {
+                            Cow::Borrowed("Bolter")
+                        }
                         Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
                     }
                 } else {

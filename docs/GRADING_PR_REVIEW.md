@@ -24,14 +24,15 @@ V/STOL grading separate.
 
 | Recovery path | Hook handling | Approach grade | Final bonus | Display outcome |
 | --- | --- | --- | --- | --- |
-| CATOBAR recovered | Live hook state is sampled | Existing gate, wire, and groove-time logic | None | Wire or landed |
-| CATOBAR qualification touch-and-go | Raised hook is detected and the closest deck point is retained | Gate grade when a cable can be estimated; otherwise `B` | None | `Qualif Bolter` |
-| CATOBAR normal bolter | Hook is not raised | `B` | None | `Bolter` |
-| V/STOL recovered | Hook sampling is bypassed | Average of available gate points | Spot 7.5 bonus | `V/STOL recovery` / `Spot 7.5` |
-| V/STOL bolter or waveoff | Hook sampling is bypassed | Existing outcome points | None | Bolter or waveoff |
+| Arrested recovery (F-14, F/A-18, T-45, etc.) | Live hook state is sampled | Existing gate, wire, and groove-time logic | None | Wire or landed |
+| Arrested qualification touch-and-go | Raised hook is detected and the closest deck point is retained | Gate grade when a cable can be estimated; otherwise `B` | None | `Qualif Bolter` |
+| Arrested normal bolter | Hook is not raised | `B` | None | `Bolter` |
+| V/STOL recovered (AV-8B) | No hook value exists or is requested | Average of available gate points | Spot 7.5 bonus | `V/STOL recovery` / `Spot 7.5` |
+| V/STOL bolter or waveoff | No hook value exists or is requested | Existing outcome points | None | Bolter or waveoff |
 
-The `!carrier_info.is_vstol()` guards are important. Without them, an AV-8B hook/draw-argument value
-could incorrectly turn a valid V/STOL recovery into a qualification bolter.
+Hook state is represented as `Option<f64>`. V/STOL always supplies `None`; only live arrested
+recoveries can supply `Some(hook_state)`. A final normalization guard also converts any impossible
+V/STOL `IntentionalBolter` state into a normal `Bolter` before grading or display.
 
 ## File-by-file changes
 
@@ -43,8 +44,8 @@ CATOBAR recovery restoration:
 - A qualification pass with an estimated cable uses the normal CATOBAR gate grade.
 - A qualification pass without an estimated cable returns `PassGrade::Bolter` while retaining its
   `IntentionalBolter` outcome.
-- Treats `IntentionalBolter` as a bolter in the V/STOL approach function. This makes the match
-  exhaustive but does not route V/STOL recoveries through CATOBAR wire logic.
+- Contains an exhaustive defensive arm for `IntentionalBolter` in the V/STOL function, but normal
+  tracking converts that impossible state to `Bolter` before calling V/STOL grading.
 
 V/STOL grading correction:
 
@@ -82,11 +83,14 @@ Test changes:
 
 - Restores `Grading::IntentionalBolter { cable_estimated }`.
 - Restores closest-point transforms and raised-hook tracking for arrested recoveries.
-- Extends `Track::next` with a `hook_state` argument.
+- Extends `Track::next` with an optional `hook_state` argument.
 - Detects a raised-hook qualification touch-and-go after touchdown or after crossing the deck without
   a DCS touchdown event.
 - Preserves normal bolter detection when the hook was not raised.
-- Limits hook tracking and closest-point qualification detection to non-V/STOL carriers.
+- Limits hook tracking and closest-point qualification detection to `CarrierRecovery::Arrested`.
+- Normalizes any impossible V/STOL `IntentionalBolter` result to a normal `Bolter`.
+- Adds unit tests proving that intentional bolters are preserved for arrested recovery and never
+  exposed for V/STOL.
 - Keeps all upstream V/STOL gate, spot-distance, and final-bonus calculations.
 
 ### src/client/unit_client.rs
@@ -96,17 +100,18 @@ Test changes:
 ### src/tasks/record_recovery.rs
 
 - Samples draw argument 25 during live CATOBAR tracking and at the runway-touch event.
-- Bypasses the hook RPC for V/STOL and supplies the neutral hook-down value instead.
+- Bypasses the hook RPC for V/STOL and supplies `None`; there is no AV-8B hook value in this path.
 - Passes hook state into `Track::next`.
 - Reports the estimated cable for qualification passes.
-- Restores `Qualif Bolter` in both CATOBAR and V/STOL-safe Discord outcome matches.
+- Restores `Qualif Bolter` only in the arrested-recovery Discord outcome branch. The V/STOL branch
+  maps the impossible defensive variant to a normal `Bolter`.
 - Handles the current gRPC stub's optional unit type when generating the initial Tacview update.
 
 ### src/commands/file.rs
 
 - Updates offline ACMI processing for the new `Track::next` signature.
-- Uses hook-down (`1.0`) because recorded Tacview files do not include the live hook draw argument.
-  This prevents offline extraction from inventing qualification bolters.
+- Uses `None` because recorded Tacview files do not include the live hook draw argument. This
+  prevents offline extraction from inventing qualification bolters.
 
 ### src/draw.rs
 
@@ -135,7 +140,7 @@ cargo test grading::tests --no-fail-fast
 34 passed; 0 failed
 
 cargo test --no-fail-fast
-49 passed; 0 failed
+51 passed; 0 failed
 
 git diff --check
 passed
@@ -149,7 +154,7 @@ detection.
 - Current `origin/main` no longer has a dedicated database `outcome` column. The restored
   qualification outcome is present in the serialized `Grading` value, chart, Discord output, and
   estimated wire, but is not stored as a separate SQLite outcome field in this branch.
-- Live hook RPC failures default to `1.0` (hook down). This avoids false qualification-bolter
+- Live arrested-recovery hook RPC failures produce `None`. This avoids false qualification-bolter
   classifications but can miss one if DCS-gRPC cannot supply the hook argument.
 - Offline ACMI extraction cannot distinguish hook-up qualification passes because the required draw
   argument is not recorded.

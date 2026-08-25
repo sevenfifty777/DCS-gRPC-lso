@@ -210,7 +210,12 @@ impl Track {
         }
     }
 
-    pub fn next(&mut self, carrier: &Transform, plane: &Transform, hook_state: f64) -> bool {
+    pub fn next(
+        &mut self,
+        carrier: &Transform,
+        plane: &Transform,
+        hook_state: Option<f64>,
+    ) -> bool {
         // ---------------------------------------------------------------
         // Pattern datum — BRC frame, recorded every frame.
         // Origin = carrier position. x_chart = -port_m, y_chart = -astern_m
@@ -283,7 +288,11 @@ impl Track {
             return false;
         }
 
-        if !self.carrier_info.is_vstol() && hook_state < 0.5 {
+        let is_arrested_recovery = matches!(
+            &self.carrier_info.recovery,
+            CarrierRecovery::Arrested
+        );
+        if is_arrested_recovery && hook_state.is_some_and(|state| state < 0.5) {
             self.hook_was_up = true;
         }
 
@@ -291,7 +300,7 @@ impl Track {
         let distance = ray_from_plane_to_carrier.mag();
         if distance < self.previous_distance {
             self.previous_distance = distance;
-            if !self.carrier_info.is_vstol() {
+            if is_arrested_recovery {
                 self.min_distance_state = Some((carrier.clone(), plane.clone()));
             }
         } else if distance - self.previous_distance > 150.0 {
@@ -608,6 +617,7 @@ impl Track {
         } else {
             self.grading.unwrap_or_default()
         };
+        let grading = normalize_grading_for_recovery(grading, &self.carrier_info.recovery);
 
         let groove_time_secs = match (self.groove_entry_time, self.landing_time) {
             (Some(entry), Some(land)) if land > entry => Some(land - entry),
@@ -716,5 +726,53 @@ impl Track {
 impl Default for Grading {
     fn default() -> Self {
         Self::Unknown
+    }
+}
+
+fn normalize_grading_for_recovery(
+    grading: Grading,
+    recovery: &CarrierRecovery,
+) -> Grading {
+    match (recovery, grading) {
+        // Intentional bolters are hook-up qualification passes and only exist
+        // for arrested recoveries. Never expose this outcome on V/STOL.
+        (CarrierRecovery::Vstol { .. }, Grading::IntentionalBolter { .. }) => Grading::Bolter,
+        (_, grading) => grading,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intentional_bolter_is_preserved_for_arrested_recovery() {
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: Some(3),
+        };
+
+        assert_eq!(
+            normalize_grading_for_recovery(grading, &CarrierRecovery::Arrested),
+            Grading::IntentionalBolter {
+                cable_estimated: Some(3)
+            }
+        );
+    }
+
+    #[test]
+    fn intentional_bolter_is_never_exposed_for_vstol_recovery() {
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: Some(3),
+        };
+        let recovery = CarrierRecovery::Vstol {
+            landing_point: DVec3::zero(),
+            approach_axis_port_m: 27.24,
+            target_altitude_ft: 120.0,
+        };
+
+        assert_eq!(
+            normalize_grading_for_recovery(grading, &recovery),
+            Grading::Bolter
+        );
     }
 }

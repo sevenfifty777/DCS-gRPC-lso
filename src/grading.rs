@@ -212,9 +212,10 @@ pub fn compute_vstol_approach_grade_points(
     match grading {
         Grading::Unknown => (PassGrade::NoGrade, PassGrade::NoGrade.points()),
         Grading::WaveoffPilot => (PassGrade::WaveoffPilot, PassGrade::WaveoffPilot.points()),
-        Grading::Bolter | Grading::IntentionalBolter { .. } => {
-            (PassGrade::Bolter, PassGrade::Bolter.points())
-        }
+        Grading::Bolter => (PassGrade::Bolter, PassGrade::Bolter.points()),
+        // Defensive only: Track normalizes this arrested-recovery-only outcome
+        // before dispatching V/STOL grading.
+        Grading::IntentionalBolter { .. } => (PassGrade::Bolter, PassGrade::Bolter.points()),
         Grading::Recovered { .. } => {
             let mut gate_scores = Vec::with_capacity(3);
             if let Some(gate) = gates.at_three_quarter_nm.as_ref() {
@@ -666,12 +667,6 @@ mod tests {
             (Grading::Unknown, PassGrade::NoGrade),
             (Grading::WaveoffPilot, PassGrade::WaveoffPilot),
             (Grading::Bolter, PassGrade::Bolter),
-            (
-                Grading::IntentionalBolter {
-                    cable_estimated: Some(3),
-                },
-                PassGrade::Bolter,
-            ),
         ];
 
         for (grading, expected_grade) in cases {
