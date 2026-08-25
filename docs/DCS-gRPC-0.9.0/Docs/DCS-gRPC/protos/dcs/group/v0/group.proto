@@ -1,0 +1,93 @@
+syntax = "proto3";
+package dcs.group.v0;
+import "dcs/common/v0/common.proto";
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Group";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/group";
+
+// https://wiki.hoggitworld.com/view/DCS_Class_Group
+service GroupService {
+  // https://wiki.hoggitworld.com/view/DCS_func_getUnits
+  rpc GetUnits(GetUnitsRequest) returns (GetUnitsResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_activate
+  rpc Activate(ActivateRequest) returns (ActivateResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_destroy
+  rpc Destroy(DestroyRequest) returns (DestroyResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getSize
+  rpc GetSize(GetSizeRequest) returns (GetSizeResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_isExist
+  rpc Exists(ExistsRequest) returns (ExistsResponse) {}
+  rpc EnableEmission(EnableEmissionRequest) returns (EnableEmissionResponse) {}
+  rpc GetGroup(GetGroupRequest) returns (GetGroupResponse) {}
+  rpc GetUnit(GetUnitRequest) returns (GetUnitResponse) {}
+}
+
+message GetUnitsRequest {
+  string group_name = 1;
+  // Whether the response should include only active units (`true`), only
+  // inactive units (`false`), or all units (`nil`).
+  optional bool active = 2;
+}
+
+message GetUnitsResponse {
+  repeated dcs.common.v0.Unit units = 1;
+}
+
+message ActivateRequest {
+  string group_name = 1;
+}
+
+message ActivateResponse {
+}
+
+message DestroyRequest {
+  string group_name = 1;
+}
+
+message DestroyResponse {
+}
+
+message GetSizeRequest {
+  string group_name = 1;
+}
+
+message GetSizeResponse {
+  uint32 size = 1;
+  uint32 initial_size = 2;
+}
+
+message ExistsRequest {
+  string group_name = 1;
+}
+
+message ExistsResponse {
+  bool exists = 1;
+}
+
+message EnableEmissionRequest {
+  string group_name = 1;
+  bool enable = 2;
+}
+
+message EnableEmissionResponse {
+}
+
+message GetGroupRequest {
+  string group_name = 1;
+}
+
+message GetGroupResponse {
+  dcs.common.v0.Group group = 1;
+}
+
+message GetUnitRequest {
+  string group_name = 1;
+  uint32 index = 2;
+}
+
+message GetUnitResponse {
+  dcs.common.v0.Unit unit = 1;
+}

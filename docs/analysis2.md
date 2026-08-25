@@ -34,7 +34,7 @@ DCS World
   │
   ▼
 ┌─────────────────────────────────────────────┐
-│ DCS-gRPC Rust Server (v0.8.1)               │
+│ DCS-gRPC Rust Server (fork v0.9.0)           │
 │ Exposes: CoalitionService, GroupService,    │
 │          UnitService, MissionService,        │
 │          HookService                         │
@@ -94,8 +94,8 @@ lso/src/
 Key Dependencies
 Crate	Version	Purpose
 tokio	1.2	Async runtime (multi-thread, signals, fs, sync)
-tonic	0.11	gRPC client
-dcs-grpc-stubs	0.8.1	Generated protobuf stubs from rust-server
+tonic	0.13	gRPC client
+dcs-grpc-stubs	0.9.0 (`11aea348`)	Generated protobuf stubs from sevenfifty777/rust-server
 plotters / plotters-bitmap	0.3	PNG chart rendering
 tacview	0.2	ACMI file format read/write
 serde_json	1.0	Discord user mapping deserialization

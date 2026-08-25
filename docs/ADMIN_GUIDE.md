@@ -1,7 +1,7 @@
 # LSO — Installation & Administration Guide
 
 > **Applies to:** LSO v0.2.0 (post Tier 1/2/3 improvements)  
-> **Required:** DCS-gRPC server rev 0.8.1
+> **Required:** [sevenfifty777/DCS-gRPC](https://github.com/sevenfifty777/rust-server) server v0.9.0, commit `11aea348`
 
 ---
 
@@ -46,7 +46,7 @@ This is the machine running DCS World. Both the DCS-gRPC Lua module and `lso.exe
 | Requirement | Version | Notes |
 |---|---|---|
 | DCS World | 2.9+ | Server or client install |
-| DCS-gRPC Lua module | rev 0.8.1 | Installed inside DCS Saved Games — see [Section 3](#3-dcs-grpc-server-setup) |
+| DCS-gRPC Lua module | v0.9.0 (`11aea348`) | Installed inside DCS Saved Games — see [Section 3](#3-dcs-grpc-server-setup) |
 | `lso.exe` | built from source | Copy from build machine — the only file needed |
 
 ---
@@ -55,11 +55,11 @@ This is the machine running DCS World. Both the DCS-gRPC Lua module and `lso.exe
 
 Do this **on your build/dev PC**, not on the DCS server.
 
-LSO lives as a sub-crate inside the DCS-gRPC workspace repository. If you already have the repo cloned locally (e.g. at `C:\Users\<you>\Documents\GitHub\DCS-gRPC`), just build from there — no re-cloning needed.
+LSO is a standalone repository. If you already have it cloned locally, build from the repository root.
 
 ```powershell
-# Navigate to the lso sub-crate inside your existing local repo
-cd C:\Users\<you>\Documents\GitHub\DCS-gRPC\lso
+# Navigate to your existing LSO checkout
+cd C:\Users\<you>\Documents\GitHub\DCS-gRPC-lso
 
 # Build the lso binary (release mode — smaller, faster)
 cargo build --release
@@ -70,11 +70,11 @@ cargo build --release
 
 > **If you don't have the repo yet**, clone it first:
 > ```powershell
-> git clone https://github.com/DCS-gRPC/rust-server.git
-> cd rust-server\lso
+> git clone https://github.com/sevenfifty777/DCS-gRPC-lso.git
+> cd DCS-gRPC-lso
 > cargo build --release
 > ```
-> Note: this is the upstream public repo. If you plan to keep your changes, push to your own fork or remote instead.
+> Cargo resolves the required stubs from the pinned `sevenfifty777/rust-server` commit automatically.
 
 The build downloads and compiles all Rust dependencies automatically. Expect 3–5 minutes on first build.
 
@@ -105,8 +105,8 @@ LSO connects to DCS World via the DCS-gRPC Lua module, which runs inside the DCS
 
 ### 3.1 Install the DCS-gRPC Lua module
 
-1. Download the DCS-gRPC release matching `rev = 0.8.1` from:  
-   <https://github.com/DCS-gRPC/rust-server/releases>
+1. Build or download DCS-gRPC v0.9.0 from the pinned fork commit:
+   <https://github.com/sevenfifty777/rust-server/commit/11aea3484099c2dd21d41a53db2e510f6e5e84c5>
 
 2. Copy the files:
    ```

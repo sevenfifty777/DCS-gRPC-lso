@@ -1,0 +1,198 @@
+syntax = "proto3";
+package dcs.controller.v0;
+import "dcs/common/v0/common.proto";
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Controller";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/controller";
+
+service ControllerService {
+  // https://wiki.hoggitworld.com/view/DCS_option_alarmState
+  rpc SetAlarmState(SetAlarmStateRequest) returns (SetAlarmStateResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getDetectedTargets
+  rpc GetDetectedTargets(GetDetectedTargetsRequest) 
+    returns (GetDetectedTargetsResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_hasTask
+  rpc HasTask(HasTaskRequest) returns (HasTaskResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_setOnOff
+  rpc SetOnOff(SetOnOffRequest) returns (SetOnOffResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_setOption
+  rpc SetOption(SetOptionRequest) returns (SetOptionResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_isTargetDetected
+  rpc IsTargetDetected(IsTargetDetectedRequest) returns (IsTargetDetectedResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_knowTarget
+  rpc KnowTarget(KnowTargetRequest) returns (KnowTargetResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_setTask
+  rpc SetTask(SetTaskRequest) returns (SetTaskResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_pushTask
+  rpc PushTask(PushTaskRequest) returns (PushTaskResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_popTask
+  rpc PopTask(PopTaskRequest) returns (PopTaskResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_resetTask
+  rpc ResetTask(ResetTaskRequest) returns (ResetTaskResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_setCommand
+  rpc SetCommand(SetCommandRequest) returns (SetCommandResponse) {}
+}
+
+message SetAlarmStateRequest {
+  enum AlarmState {
+    ALARM_STATE_UNSPECIFIED = 0;
+    ALARM_STATE_AUTO = 1;
+    ALARM_STATE_GREEN = 2;
+    ALARM_STATE_RED = 3;
+  }
+
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  AlarmState alarm_state = 3;
+}
+
+message SetAlarmStateResponse {
+}
+
+message GetDetectedTargetsRequest {
+  enum DetectionType {
+    DETECTION_TYPE_UNSPECIFIED = 0;
+    DETECTION_TYPE_VISUAL = 1;
+    DETECTION_TYPE_OPTIC = 2;
+    DETECTION_TYPE_RADAR = 4;
+    DETECTION_TYPE_IRST = 8;
+    DETECTION_TYPE_RWR = 16;
+    DETECTION_TYPE_DLINK = 32;
+  }
+  string unit_name = 1;
+  optional bool include_object = 2;
+  optional DetectionType detection_type = 3;
+}
+
+message GetDetectedTargetsResponse {
+  repeated dcs.common.v0.Contact contacts = 1; 
+}
+
+message HasTaskRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+}
+
+message HasTaskResponse {
+  bool has_task = 1;
+}
+
+message SetOnOffRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  bool status = 3;
+}
+
+message SetOnOffResponse {
+}
+
+message SetOptionRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  int32 option_id = 3;
+  oneof value {
+    bool bool_value = 4;
+    int32 int_value = 5;
+    string string_value = 6;
+    double double_value = 7;
+  }
+}
+
+message SetOptionResponse {
+}
+
+message IsTargetDetectedRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  string target_name = 3;
+}
+
+message IsTargetDetectedResponse {
+  bool is_detected = 1;
+}
+
+message KnowTargetRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  string target_name = 3;
+  bool type = 4;
+  bool distance = 5;
+}
+
+message KnowTargetResponse {
+}
+
+message SetTaskRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  string task_json = 3;
+}
+
+message SetTaskResponse {
+}
+
+message PushTaskRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  string task_json = 3;
+}
+
+message PushTaskResponse {
+}
+
+message PopTaskRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+}
+
+message PopTaskResponse {
+}
+
+message ResetTaskRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+}
+
+message ResetTaskResponse {
+}
+
+message SetCommandRequest {
+  oneof name {
+    string group_name = 1;
+    string unit_name = 2;
+  }
+  string command_json = 3;
+}
+
+message SetCommandResponse {
+}

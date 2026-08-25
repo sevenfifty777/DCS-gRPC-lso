@@ -628,7 +628,7 @@ async fn create_initial_update(
     let coalition = Coalition::try_from(unit.coalition).unwrap_or(Coalition::Neutral);
     let mut props = vec![
         Property::Type(tags(attrs)),
-        Property::Name(unit.r#type),
+        Property::Name(unit.r#type.unwrap_or_else(|| unit.name.clone())),
         Property::Group(unit.group.unwrap_or_default().name),
         Property::Color(color(coalition)),
     ];

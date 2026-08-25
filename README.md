@@ -1,6 +1,6 @@
 # LSO
 
-LSO is a tool to analyze carrier recoveries in DCS. It connects to DCS via [DCS-gRPC](https://github.com/DCS-gRPC/rust-server) and generates reports for each attempted carrier recovery. The reports are saved to disk and optionally send to Discord.
+LSO is a tool to analyze carrier recoveries in DCS. It connects to DCS via the [sevenfifty777 DCS-gRPC fork](https://github.com/sevenfifty777/rust-server) and generates reports for each attempted carrier recovery. The reports are saved to disk and optionally send to Discord.
 
 ![LSO example report](docs/example.png)
 
@@ -12,7 +12,7 @@ LSO is a tool to analyze carrier recoveries in DCS. It connects to DCS via [DCS-
 
 ## Usage
 
-The DCS server the LSO should connect to must have [DCS-gRPC](https://github.com/DCS-gRPC/rust-server) version `0.81.` installed and running.
+The DCS server the LSO should connect to must have [sevenfifty777/DCS-gRPC](https://github.com/sevenfifty777/rust-server) version `0.9.0` (commit `11aea348`) installed and running.
 
 To run the LSO, just execute the CLI in your favorite terminal:
 

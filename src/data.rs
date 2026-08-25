@@ -249,10 +249,11 @@ pub struct CarrierInfo {
 impl CarrierInfo {
     /// Calculate the offset from the origin where the optimal glide path hits the deck.
     pub fn optimal_landing_offset(&self, plane: &AirplaneInfo) -> DVec3 {
-        // optimal hook touchdown point is halfway between the second and third cable
-        // (according to NAVAIR 00-80T-104 4.2.8)
-        let touchdown_at = (self.cable2.0 - self.cable3.1) / 2.0;
-        let touchdown_at = self.cable3.1 + touchdown_at;
+        // The optimal hook touchdown point is halfway between the second and third
+        // crossdeck pendants (NAVAIR 00-80T-104 4.2.8).
+        let cable2_midpoint = (self.cable2.0 + self.cable2.1) / 2.0;
+        let cable3_midpoint = (self.cable3.0 + self.cable3.1) / 2.0;
+        let touchdown_at = (cable2_midpoint + cable3_midpoint) / 2.0;
 
         let hook_offset = plane.hook.rotated_by(DRotor3::from_rotation_yz(
             plane.glide_slope.to_radians().neg(),
@@ -321,5 +322,33 @@ pub fn get_aircraft_id(t: &str) -> Option<i64> {
         "A-6E" => Some(5),
         "T-45" => Some(0),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optimal_landing_offset_uses_both_wire_midpoints() {
+        let carrier = CarrierInfo {
+            deck_angle: 0.0,
+            deck_altitude: 0.0,
+            cable1: (DVec3::zero(), DVec3::zero()),
+            cable2: (DVec3::new(0.0, 0.0, 0.0), DVec3::new(10.0, 0.0, 0.0)),
+            cable3: (DVec3::new(2.0, 0.0, 10.0), DVec3::new(6.0, 0.0, 10.0)),
+            cable4: (DVec3::zero(), DVec3::zero()),
+        };
+        let plane = AirplaneInfo {
+            name: "Test aircraft",
+            hook: DVec3::zero(),
+            glide_slope: 0.0,
+            aoa_rating: |_| Aoa::OnSpeed,
+        };
+
+        assert_eq!(
+            carrier.optimal_landing_offset(&plane),
+            DVec3::new(4.5, 0.0, 5.0)
+        );
     }
 }

@@ -1,0 +1,305 @@
+syntax = "proto3";
+package dcs.unit.v0;
+import "dcs/common/v0/common.proto";
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Unit";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/unit";
+
+// https://wiki.hoggitworld.com/view/DCS_Class_Unit
+service UnitService {
+  // https://wiki.hoggitworld.com/view/DCS_func_getRadar
+  rpc GetRadar(GetRadarRequest) returns (GetRadarResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getPoint
+  rpc GetPosition(GetPositionRequest) returns (GetPositionResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getPlayerName
+  rpc GetPlayerName(GetPlayerNameRequest) returns (GetPlayerNameResponse) {}
+
+  rpc GetDescriptor(GetDescriptorRequest) returns (GetDescriptorResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_enableEmission
+  rpc SetEmission(SetEmissionRequest) returns (SetEmissionResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getByName
+  rpc Get(GetRequest) returns (GetResponse) {}
+
+  /**
+   * Get information about the unit in 3D space, including its position,
+   * orientation and velocity.
+   */
+  rpc GetTransform(GetTransformRequest) returns (GetTransformResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_destroy
+  rpc Destroy(DestroyRequest) returns (DestroyResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getDrawArgumentValue
+  rpc GetDrawArgumentValue(GetDrawArgumentValueRequest) returns (GetDrawArgumentValueResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getSensors
+  rpc GetSensors(GetSensorsRequest) returns (GetSensorsResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getLife
+  rpc GetLife(GetLifeRequest) returns (GetLifeResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getFuel
+  rpc GetFuel(GetFuelRequest) returns (GetFuelResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getAmmo
+  rpc GetAmmo(GetAmmoRequest) returns (GetAmmoResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_inAir
+  rpc InAir(InAirRequest) returns (InAirResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_isActive
+  rpc IsActive(IsActiveRequest) returns (IsActiveResponse) {}
+
+  // https://wiki.hoggitworld.com/view/DCS_func_getCountry
+  rpc GetCountry(GetCountryRequest) returns (GetCountryResponse) {}
+
+  rpc GetNumber(GetNumberRequest) returns (GetNumberResponse) {}
+  rpc GetGroup(GetGroupRequest) returns (GetGroupResponse) {}
+  rpc GetLife0(GetLife0Request) returns (GetLife0Response) {}
+  rpc HasSensors(HasSensorsRequest) returns (HasSensorsResponse) {}
+  rpc GetNearestCargos(GetNearestCargosRequest) returns (GetNearestCargosResponse) {}
+  rpc GetDescentCapacity(GetDescentCapacityRequest) returns (GetDescentCapacityResponse) {}
+  rpc GetDescByName(GetDescByNameRequest) returns (GetDescByNameResponse) {}
+}
+
+message GetRadarRequest {
+  string name = 1;
+}
+
+message GetRadarResponse {
+  bool active = 1;
+  dcs.common.v0.Target target = 2;
+}
+
+message GetPositionRequest {
+  string name = 1;
+}
+
+message GetPositionResponse {
+  dcs.common.v0.Position position = 1;
+}
+
+message GetDrawArgumentValueRequest {
+  string name = 1;
+  uint32 argument = 2;
+}
+
+message GetDrawArgumentValueResponse {
+  double value = 1;
+}
+
+message GetTransformRequest {
+  string name = 1;
+}
+
+message GetTransformResponse {
+  // Time in seconds since the scenario started.
+  double time = 1;
+  // The position of the unit
+  dcs.common.v0.Position position = 2;
+  // The orientation of the unit in both 2D and 3D space
+  dcs.common.v0.Orientation orientation = 3;
+  // The velocity of the unit in both 2D and 3D space
+  dcs.common.v0.Velocity velocity = 4;
+}
+
+message GetPlayerNameRequest {
+  string name = 1;
+}
+
+message GetPlayerNameResponse {
+  optional string player_name = 1;
+}
+
+message GetDescriptorRequest {
+  string name = 1;
+}
+
+// TODO fill these in as and when we need em
+message GetDescriptorResponse {
+  repeated string attributes = 1;
+}
+
+message SetEmissionRequest {
+  string name = 1;
+  bool emitting = 2;
+}
+
+message SetEmissionResponse {
+}
+
+message GetRequest {
+  string name = 1;
+}
+
+message GetResponse {
+  dcs.common.v0.Unit unit = 1;
+}
+
+message DestroyRequest {
+  string name = 1;
+}
+
+message DestroyResponse {
+}
+
+// Sensors
+message GetSensorsRequest {
+  string name = 1;
+}
+
+message GetSensorsResponse {
+  repeated SensorCategory sensors = 1;
+}
+
+message SensorCategory {
+  // DCS’ outer sensor array index (1..n)
+  uint32 category = 1;
+  repeated Sensor sensors = 2;
+}
+
+message Sensor {
+  uint32 type = 1;
+  string type_name = 2;
+  oneof sensor {
+    RadarSensor radar = 3;
+    IrstSensor irst = 4;
+    RwrSensor rwr = 5;
+    OpticalSensor optical = 6;
+  }
+}
+
+message RadarSensor {
+  DetectionDistanceAir detection_distance_air = 1;
+}
+
+message DetectionDistanceAir {
+  Hemisphere upper_hemisphere = 1;
+  Hemisphere lower_hemisphere = 2;
+}
+
+message Hemisphere {
+  double tail_on = 1;
+  double head_on = 2;
+}
+
+message IrstSensor {
+  double detection_distance_idle = 1;
+  double detection_distance_afterburner = 2;
+  double detection_distance_maximal = 3;
+}
+
+message RwrSensor {
+}
+
+message OpticalSensor {
+}
+
+message GetLifeRequest {
+  string name = 1;
+}
+
+message GetLifeResponse {
+  float life = 1;
+  float life0 = 2;
+}
+
+message GetFuelRequest {
+  string name = 1;
+}
+
+message GetFuelResponse {
+  float fuel = 1;
+}
+
+message GetAmmoRequest {
+  string name = 1;
+}
+
+message GetAmmoResponse {
+  repeated AmmoItem ammo = 1;
+}
+
+message AmmoItem {
+  uint32 count = 1;
+  string type_name = 2;
+  string display_name = 3;
+  uint32 category = 4;
+  optional uint32 missile_category = 5;
+  optional uint32 guidance = 6;
+}
+
+message InAirRequest {
+  string name = 1;
+}
+
+message InAirResponse {
+  bool in_air = 1;
+}
+
+message IsActiveRequest {
+  string name = 1;
+}
+
+message IsActiveResponse {
+  bool is_active = 1;
+}
+
+message GetNumberRequest {
+  string name = 1;
+}
+message GetNumberResponse {
+  uint32 number = 1;
+}
+
+message GetGroupRequest {
+  string name = 1;
+}
+message GetGroupResponse {
+  dcs.common.v0.Group group = 1;
+}
+
+message GetLife0Request {
+  string name = 1;
+}
+message GetLife0Response {
+  int32 life0 = 1;
+}
+
+message HasSensorsRequest {
+  string name = 1;
+}
+message HasSensorsResponse {
+  bool has_sensors = 1;
+}
+
+message GetNearestCargosRequest {
+  string name = 1;
+}
+message GetNearestCargosResponse {
+  repeated dcs.common.v0.Cargo cargos = 1;
+}
+
+message GetDescentCapacityRequest {
+  string name = 1;
+}
+message GetDescentCapacityResponse {
+  uint32 capacity = 1;
+}
+
+message GetDescByNameRequest {
+  string type_name = 1;
+}
+message GetDescByNameResponse {
+  string desc_json = 1;
+}
+
+message GetCountryRequest {
+  string name = 1;
+}
+message GetCountryResponse {
+  dcs.common.v0.Country country = 1;
+}

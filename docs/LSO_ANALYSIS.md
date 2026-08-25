@@ -21,7 +21,7 @@
 
 ## 1. Overview
 
-**LSO** (Landing Signal Officer) is a standalone Rust CLI tool that connects to a running DCS World server via the [DCS-gRPC](https://github.com/DCS-gRPC/rust-server) server and automatically monitors every carrier recovery attempt.
+**LSO** (Landing Signal Officer) is a standalone Rust CLI tool that connects to a running DCS World server via the [sevenfifty777 DCS-gRPC fork](https://github.com/sevenfifty777/rust-server) and automatically monitors every carrier recovery attempt.
 
 For each approach it:
 - Detects when a carrier-capable aircraft is in a valid final approach posture.
@@ -32,7 +32,7 @@ For each approach it:
 - Optionally posts the report to **Discord** via webhook.
 
 **Current version:** `0.2.0`  
-**Required DCS-gRPC version:** `0.8.1`
+**Required DCS-gRPC version:** `0.9.0` (commit `11aea348`)
 
 ---
 
@@ -106,8 +106,8 @@ For each approach it:
 
 | Crate | Version | Role |
 |---|---|---|
-| `tonic` | 0.11 | gRPC client (connects to DCS-gRPC) |
-| `stubs` (dcs-grpc-stubs) | rev 0.8.1 | Proto-generated DCS service clients |
+| `tonic` | 0.13 | gRPC client (connects to DCS-gRPC) |
+| `stubs` (dcs-grpc-stubs) | v0.9.0, commit `11aea348` | Proto-generated DCS service clients from the sevenfifty777 fork |
 | `tokio` | 1.2 | Async runtime (multi-thread) |
 | `backoff` | 0.4 | Exponential back-off reconnect on gRPC errors |
 | `futures-util` | 0.3 | Async stream combinators (`select`, `StreamExt`) |
@@ -283,7 +283,9 @@ AoA brackets per aircraft:
 
 ```
 1. Compute the optimal landing offset from carrier origin:
-   touchdown = midpoint(cable2.left, cable3.right) - hook_offset_at_glide_slope
+   cable2_center = midpoint(cable2.left, cable2.right)
+   cable3_center = midpoint(cable3.left, cable3.right)
+   touchdown = midpoint(cable2_center, cable3_center) - hook_offset_at_glide_slope
 
 2. Compute ray from plane to ideal touchdown point (horizontal only, altitude ignored).
 
