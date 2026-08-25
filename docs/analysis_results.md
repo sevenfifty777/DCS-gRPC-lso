@@ -1,215 +1,91 @@
-# Code & Docs Review — Grading Timing & Recording Ranges
+# Documentation Audit Results
 
-## 1. When Does Grading Take Data Into Account?
+**Audit date:** 2026-08-25
 
-Grading is **not continuous** — it samples data at **three specific moments** during the approach, then evaluates the **worst single deviation** across those three samples.
+**Implementation baseline:** crate `0.2.0`, commit `b9ac263` before documentation changes
 
-### The Three Grading Gates (data sampling moments)
+**Excluded by request:** `docs/analys-codex-justice/`
 
-Each gate fires **exactly once**, on the **first 100ms frame** where the aircraft crosses that distance threshold while below 500 ft AGL (hook altitude above deck):
+## Scope
 
-| Gate | Trigger distance | When it typically fires |
+The audit compared first-party Markdown and HTML documentation with the Rust source, manifest,
+lockfile, CI workflow, test fixtures, generated CLI help, and the bundled DCS-gRPC 0.9.0 reference.
+The `docs/DCS-gRPC-0.9.0/` tree was treated as an immutable dependency snapshot rather than LSO
+documentation.
+
+## Main discrepancies found
+
+| Area | Outdated documentation | Verified implementation |
 |---|---|---|
-| **¾ nm** | x ≤ 1,389 m from touchdown | ~22 seconds before landing (at ~120 kts) — "start of the groove" |
-| **½ nm** | x ≤ 926 m from touchdown | ~15 seconds before landing — "in the middle" |
-| **¼ nm** | x ≤ 463 m from touchdown | ~7 seconds before landing — "at the ramp / in close" |
+| Product status | Early prototype that only reports wire/AoA | Gate grading, outcomes, two charts, JSON, SQLite, Discord, terminal and web boards |
+| Detection | 1.5 nm, 500 ft, behind carrier, nose aimed at carrier | 200 m to 3.5 nm, at or below 1,100 ft MSL, any heading/quadrant |
+| Saved artifacts | Two files | Two PNGs, JSON, optional ACMI, plus one row in shared `lso.db` |
+| Grading | Foot thresholds, `Fair`/`NG`, no points | Degree thresholds and `_OK_`/`OK`/`(OK)`/`--`/`C`/`B`/`WO` points |
+| Outcomes | Recovered or bolter only | Recovered, bolter, pilot waveoff, and hook-up qualification bolter |
+| Replay | Regenerates reports beside input | Regenerates only the approach PNG in the current working directory |
+| Pattern chart | Not present or clipped at old ranges | Separate 900x900 PNG, +/-2.5 nm port/starboard and +/-3 nm ahead/astern |
+| Web board | Planned | Implemented on `0.0.0.0:<port>`, unauthenticated, HTTP only |
+| Database | Minimal schema or planned | 14 columns including UCID, aircraft ID/display name, map, UTC/mission time, points, and outcome |
+| DCS-gRPC | Upstream 0.8.1 | sevenfifty777 fork 0.9.0 at commit `11aea348...` |
+| Links | Machine-local `file:///c:/...` links | Repository-relative links |
+| Development commands | `cargo run -- run -vv` and `cargo run --file ...` | `cargo run -- -vv run` and `cargo run -- file ...` |
 
-> [!IMPORTANT]
-> Grading uses **only** the deviation snapshot frozen at the exact frame each gate is crossed. All the 10 Hz data between gates is recorded for the chart but **does not influence the grade**.
+## Documents updated
 
-### Gate Sampling Guards
-
-Two guards prevent false gate captures:
-
-1. **x > 0 guard** ([track.rs:L316](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/track.rs#L316)): Gate sampling only runs when the aircraft is on the approach side of the touchdown point. This prevents bogus ~177° atan2 readings when the aircraft is ahead of the carrier (e.g., in the break).
-
-2. **500 ft altitude guard** ([track.rs:L328](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/track.rs#L328)): `m_to_ft(alt) <= 500.0`. This rejects the overhead-pattern crossing of x=0 at 600–1000 ft.
-
-### What Deviation Values Are Sampled
-
-At each gate, four values are frozen ([track.rs:L318-L324](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/track.rs#L318-L324)):
-
-```
-gs_deviation_deg = atan2(hook_alt − ideal_gs_alt, x)   [degrees, + = high, − = low]
-lineup_deg       = atan2(lateral_offset, x)             [degrees, + = right of CL]
-gs_deviation_ft  = (hook_alt − ideal_gs_alt) in feet    [for chart display only]
-lineup_ft        = lateral_offset in feet                [for chart display only]
-```
-
-> [!NOTE]
-> **Only the degree values** are used for grading. The foot values are kept solely for the PNG chart labels and Discord embed display.
-
-### Grade Decision Flow
-
-After the track finishes, the grade is computed in [grading.rs:L96-L120](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/grading.rs#L96-L120):
-
-```
-1. Special outcomes override everything:
-   - WaveoffPilot → WO (1.0 pts)
-   - Bolter → B (2.5 pts)
-   - Unknown → -- (2.0 pts)
-
-2. For Recovered landings, the worst deviation across all 3 gates determines the base grade:
-   - GS < −2.5° at ¼ nm only             → C  (Cut, 0.0 pts)
-   - worst_gs_high ≥ 1.0° OR
-     worst_gs_low ≥ 1.0° OR
-     worst_lu ≥ 2.0°                      → -- (No Grade, 2.0 pts)
-   - worst_gs_high ≥ 0.5° OR
-     worst_gs_low ≥ 0.5° OR
-     worst_lu ≥ 1.0°                      → (OK) (Fair, 3.0 pts)
-   - everything within margins             → OK (4.0 pts)
-
-3. Unicorn upgrade (only if base == OK):
-   - Wire 3 AND groove time 15.0–18.99 s  → _OK_ (5.0 pts)
-```
-
-### Groove Entry & Groove Time
-
-**Groove entry** is marked when the aircraft is inside ¾ nm AND below **300 ft AGL** ([track.rs:L354-L360](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/track.rs#L354-L360)). The DCS simulation time is recorded at that moment.
-
-**Groove time** = `landing_time − groove_entry_time`. This is used only for the Unicorn (_OK_) check (must be 15.0–18.99 s).
-
----
-
-## 2. Recording Ranges — Distance & Altitude
-
-### Phase 1: Detection (2-second polling)
-
-The detection task polls every 2 seconds to see if a recovery attempt should start:
-
-| Parameter | Range | Source |
-|---|---|---|
-| **Distance to carrier** | 200 m – 3.5 nm (6,482 m) | [detect_recovery_attempt.rs:L65](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/detect_recovery_attempt.rs#L65) and [L74](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/detect_recovery_attempt.rs#L74) |
-| **Altitude** | ≤ 1,100 ft MSL | [detect_recovery_attempt.rs:L56](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/detect_recovery_attempt.rs#L56) |
-| **Position** | Any quadrant (no rear-hemisphere check) | [detect_recovery_attempt.rs:L79-L81](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/detect_recovery_attempt.rs#L79-L81) |
-
-### Phase 2: Active Recording (100ms polling)
-
-Once detection triggers, the 10 Hz recording loop runs. It records **two parallel data streams**:
-
-#### A. Approach Datums (angled-deck frame)
-
-Recorded for every frame where the aircraft is on the approach side (x > 0) or near touchdown. Used for the side-view and top-down charts.
-
-| Field | Unit | Range/Notes |
-|---|---|---|
-| `x` | meters | ~1,400 m (¾ nm) down to 0 (touchdown) and below |
-| `y` | meters | lateral offset from angled-deck CL |
-| `alt` | meters | hook height above deck (clamped to ≥ 0) |
-| `aoa` | degrees | raw angle of attack |
-
-#### B. Pattern Datums (BRC frame)
-
-Recorded **every frame** regardless of x > 0 guard. Used for the overhead circuit chart.
-
-| Field | Unit | Range/Notes |
-|---|---|---|
-| `astern_m` | meters | distance behind carrier along BRC |
-| `port_m` | meters | lateral distance from BRC centerline (+ = port) |
-| `alt_ft` | feet MSL | raw altitude, not deck-relative |
-| `aoa` | degrees | raw angle of attack |
-
-**Pattern chart clipping** (in [draw.rs](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/draw.rs)): ±2.5 nm port/starboard, −4 nm to +1.5 nm ahead/astern.
-
-### Recording Termination Conditions
-
-The recording stops when ANY of these occurs:
-
-| Condition | Distance/Altitude | Effect | Source |
-|---|---|---|---|
-| **Exited pattern zone** | > 3.5 nm from carrier OR > 1,100 ft MSL | Recording stops | [track.rs:L248](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/track.rs#L248) |
-| **Moving away > 150 m** after entering groove | distance − min_distance > 150 m | **Waveoff** declared | [track.rs:L270-L274](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/track.rs#L270-L274) |
-| **Moving away > 150 m** after touchdown | distance − min_distance > 150 m | **Bolter** declared | [track.rs:L259-L263](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/track.rs#L259-L263) |
-| **DCS RunwayTouch event** | — | Cable estimated, 10s post-landing window starts | [record_recovery.rs:L280-L347](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/record_recovery.rs#L280-L347) |
-| **Crash / Dead / PlayerLeave** | — | Recording stops immediately | [record_recovery.rs:L349-L379](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/record_recovery.rs#L349-L379) |
-| **Post-discard: never below 100m MSL** | > 100 m MSL throughout | Recording **discarded** | [record_recovery.rs:L388](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/tasks/record_recovery.rs#L388) |
-
-### Gate Distance & Altitude Summary
-
-| Gate | Distance from touchdown | Typical on-glidepath altitude |
-|---|---|---|
-| **¾ nm** | 1,389 m | ~278 ft AGL |
-| **½ nm** | 926 m | ~185 ft AGL |
-| **¼ nm** | 463 m | ~93 ft AGL |
-
-> [!NOTE]
-> The "typical altitude" above assumes a 3.5° glide slope. Actual altitude at the gate depends on the aircraft's deviation from the ideal glidepath.
-
-### Altitude Guards at Different Phases
-
-| Phase | Altitude Guard | Purpose |
-|---|---|---|
-| Detection trigger | ≤ 1,100 ft MSL | Captures overhead break (~800 ft) |
-| Gate sampling | ≤ 500 ft AGL (deck-relative) | Rejects overhead crossing at altitude |
-| Groove entry | ≤ 300 ft AGL (deck-relative) | Marks start of the "groove" for waveoff detection and groove time |
-| Discard filter | never below 100 m (328 ft) MSL | Drops non-genuine attempts |
-
----
-
-## 3. Documentation Accuracy Issues Found
-
-### GRADING_REFERENCE.md
-
-| Line | Issue | Code Truth | Severity |
-|---|---|---|---|
-| L98 | States GS_SLIGHT_LOW threshold as `< −0.8°` | Code uses `GS_SLIGHT_LOW = 0.5` (symmetric, [grading.rs:L11](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/grading.rs#L11)) | 🔴 **Wrong** |
-| L114 | GS Significant High shown as `> +1.5°` | Code uses `GS_SIGNIFICANT = 1.0` ([grading.rs:L12](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/grading.rs#L12)) | 🔴 **Wrong** |
-| L117 | GS Significant Low shown as `> −1.0°` with 🟢 "same as code" | Code uses `GS_SIGNIFICANT = 1.0` but doc says 1.0 matches — yet the MOOSE column says `> −0.9°` 🔴 and doc says "same as code" 🟢 for NAVAIR. This is internally consistent for the code column. | ✅ OK |
-| L115 | GS Significant High — MOOSE column says 🟢 `> +1.5°` | But the code uses 1.0, and the doc's "Our code" column also says `> +1.0°`. The MOOSE 🟢 should actually be 🔴 (tighter from MOOSE's perspective, more lenient from our code). | 🟡 **Misleading legend** |
-| L128 | LU OK zone listed as `±0.5°` | There is no OK zone in the code — the code only checks `>= LU_SLIGHT (1.0°)` and `>= LU_MEDIUM (2.0°)`. Values 0–1.0° are all OK. | 🟡 **Misleading** |
-| L131-L133 | Shows separate "Large" LU tier at `> ±3.0°` | Code has no separate large tier — `LU_MEDIUM = 2.0` is the `NoGrade` threshold. The `LU_SIGNIFICANT = 3.0` constant is commented out in [grading.rs:L20](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/grading.rs#L20). | 🟡 **Stale** |
-| L141 | Decision logic shows `worst_gs_high ≥ 1.5°` | Code uses `GS_SIGNIFICANT = 1.0` | 🔴 **Wrong** |
-| L142 | Decision logic shows `worst_gs_low ≥ 0.8°` | Code uses `GS_SLIGHT_LOW = 0.5` | 🔴 **Wrong** |
-| L160-163 | F/A-18C AoA listed as `7.4–8.1°`, Super Hornet listed | Code says OnSpeed = `7.4 < aoa < 8.8` ([data.rs:L149](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/data.rs#L149)). No Super Hornet in code. | 🔴 **Wrong AoA range & phantom aircraft** |
-| L162 | F-14 DCS types listed as `F-14A / F-14B / F-14A/B / F-14B(U)` | Code uses `F-14A-135-GR`, `F-14A-135-GR-Early`, `F-14A-95-GR`, `F-14B`, `F-14A/B`, `F-14B(U)`, `F-14BU` | 🟡 **Incomplete** |
-
-### GRADING_ANALYSIS.md
-
-| Issue | Details | Severity |
-|---|---|---|
-| Section 3.2 describes old foot-based thresholds | Code now uses degree-based thresholds (this doc was written pre-migration) | 🔴 **Entirely stale** |
-| Section 5 "Code Changes Required" | All these changes have already been implemented | 🔴 **Stale — reads as TODO but is done** |
-| States `PassGrade` has no `points()` method | Code has `points()` returning `f64` | 🔴 **Stale** |
-| States no Unicorn grade | Code has `PassGrade::Unicorn` with 5.0 pts | 🔴 **Stale** |
-
-### ADMIN_GUIDE.md
-
-| Line | Issue | Code Truth | Severity |
-|---|---|---|---|
-| L278 | `pass_grade` values listed as `"Ok"`, `"OkParentheses"`, `"Fair"`, `"NoGrade"` | Code uses NAVAIR labels: `"_OK_"`, `"OK"`, `"(OK)"`, `"--"`, `"C"`, `"B"`, `"WO"` ([grading.rs:L56-L65](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/grading.rs#L56-L65)). The JSON stores the `PassGrade` enum variant name, but the DB stores `label()`. | 🟡 **Partially stale** — the JSON indeed serializes enum names like `"Ok"`, `"Unicorn"`, etc. but the list is incomplete (missing `"Unicorn"`) and `"Fair"` doesn't exist |
-| L295 | Web board color legend says "yellow = Fair, orange = NG" | Code CSS uses `g-NG` for `"--"` grade. No `"Fair"` exists. | 🟡 **Stale labels** |
-| L346 | Discord embed described as "NAVAIR pass grade (OK / Fair / NG etc.)" | No "Fair" or "NG" labels exist anymore | 🟡 **Stale** |
-| L379 | Session greenie board example shows `NG` | Should be `--` | 🟡 **Stale** |
-| L415 | T-45 AoA listed as `7.0° – 7.5°` | Code says OnSpeed = `6.5 < aoa < 7.5` ([data.rs:L222-L226](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/data.rs#L222-L226)) — lower bound is 6.5, not 7.0 | 🔴 **Wrong** |
-| L413 | F/A-18C AoA listed as `7.4° – 8.8°` | Correct ✅ (matches code [data.rs:L148-L150](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/data.rs#L148-L150)) | ✅ OK |
-| L429-L435 | Grade thresholds table still shows foot-based values | Code uses degree-based thresholds | 🔴 **Entirely stale** |
-| L472 | DB schema shows `pass_grade` examples including `"Fair"` and `"NG"` | Labels are now `"_OK_"`, `"OK"`, `"(OK)"`, `"--"`, `"C"`, `"B"`, `"WO"` | 🔴 **Stale** |
-| L478 | Schema shown is missing `pilot_ucid`, `aircraft_id`, `mission_datetime` columns | Code has all three ([db.rs:L69-L78](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/src/db.rs#L69-L78)) | 🔴 **Incomplete** |
-| L498 | SQL example counts `'Fair'` and `'NG'` grades | Should count `'--'` instead | 🔴 **Stale** |
-
----
-
-## 4. Summary
-
-### Grading Data Timing
-- Gate deviations are sampled at **3 discrete moments** (¾, ½, ¼ nm from touchdown)
-- The **first frame** crossing each distance threshold captures a snapshot — that single snapshot determines the grade for that gate
-- The **worst deviation** across all 3 gates drives the final grade
-- Groove time (for Unicorn) is measured from the first frame inside ¾ nm AND below 300 ft, to touchdown
-
-### Recording Range Summary
-
-| Parameter | Start Recording | Stop Recording |
-|---|---|---|
-| **Distance** | 200 m – 3.5 nm | > 3.5 nm or +150 m divergence |
-| **Altitude** | ≤ 1,100 ft MSL | > 1,100 ft MSL |
-| **Gate sampling** | ¾ nm (1,389 m) to ¼ nm (463 m) | only below 500 ft AGL |
-| **Groove detection** | ≤ ¾ nm AND ≤ 300 ft AGL | — |
-
-### Doc Accuracy
-
-| Document | Status |
+| Document | Result |
 |---|---|
-| [GRADING_REFERENCE.md](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/docs/GRADING_REFERENCE.md) | 🟡 Has 5 inaccuracies — threshold values and aircraft table need updating |
-| [GRADING_ANALYSIS.md](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/docs/GRADING_ANALYSIS.md) | 🔴 Entirely stale — describes pre-migration state as if it's current, §5 reads as TODO but all changes are done |
-| [ADMIN_GUIDE.md](file:///c:/Users/thierry/Documents/GitHub/sevenfifty777/DCS-gRPC-lso/docs/ADMIN_GUIDE.md) | 🟡 Section 12 grade thresholds are stale (foot-based), schema and labels outdated |
+| `README.md` | Rewritten as the current product overview and quick start |
+| `CONTRIBUTING.md` | Corrected commands, validation, security, and repository links |
+| `CHANGES.md` | Replaced stale feature-design detail with current unreleased changes |
+| `docs/ADMIN_GUIDE.md` | Reconciled installation, CLI, artifacts, JSON/API/schema, network, service, and troubleshooting guidance |
+| `docs/LSO_ANALYSIS.md` | Rewritten as the canonical code-level analysis |
+| `docs/GRADING_REFERENCE.md` | Reconciled trigger, gate, outcome, threshold, and support tables |
+| `docs/GRADING_REFERENCE.html` | Rebuilt as a lightweight companion pointing to the canonical Markdown specification |
+| `docs/GRADING_ANALYSIS.md` | Converted from a stale proposal to an implemented-design record |
+| `docs/analysis.md`, `docs/analysis2.md` | Retained as compatibility pages pointing to the canonical analysis |
+| Implementation plan/walkthrough files | Converted from proposals or stale validation notes to completed implementation records |
+| `docs/DCS_GRPC_FORK_MIGRATION.md` | Kept as the detailed dependency migration record; validation wording refreshed where needed |
+
+## Code review observations
+
+The documentation refresh did not modify runtime code.
+
+| Priority | Finding | Evidence and impact |
+|---|---|---|
+| High - verify | Cable estimation constructs `DRotor3::from_rotation_xz(-deck_angle)` without converting the degree-valued carrier angle to radians. Other rotation sites call `.to_radians()`, and Ultraviolet feeds this parameter to `sin_cos`. | The existing five ACMI wire fixtures all pass, so this needs a focused direction/angle test before changing behavior. If confirmed, the estimated deck-forward vector can be wrong. |
+| High - operations | The HTTP board is unauthenticated HTTP and binds to every interface. | Firewall/reverse-proxy isolation is required; direct internet exposure is unsafe. |
+| Medium | The web API converts a failed blocking task or database query to an empty list. | Operators can mistake a database failure for a genuinely empty board. |
+| Medium | Additive database migrations discard every `ALTER TABLE` error, not only duplicate-column errors. | A real migration failure can remain hidden until a later query or insert fails. |
+| Medium | Command execution errors are unwrapped in `main`. | Fatal errors produce panic-style output instead of a concise diagnostic and exit code path. |
+| Medium | Discord delivery occurs after files and the database row are written; webhook failure propagates to the outer retry loop. | A delivery failure can restart live monitoring after local persistence and deserves duplicate/operational testing. |
+| Low | `GS_SLIGHT_LOW` is `0.5`, but its nearby comment mentions MOOSE `0.8`, and a test is named `test_slight_gs_low_threshold_is_0_8` while using `-0.9`. | The test does not distinguish a 0.5 threshold from 0.8; documentation follows the executable 0.5 value. |
+| Coverage | No focused tests were found for `IntentionalBolter`, database migrations, HTTP error behavior, Discord delivery, or the deck-angle unit passed to cable estimation. | These paths remain dependent on broader or live integration behavior. |
+
+Additional documented limitations:
+
+- Grade computation does not use AoA, wind, trend, power, or sink rate.
+- All plane/carrier combinations are monitored; intended-carrier disambiguation is not implemented.
+- Offline replay reproduces only the approach chart.
+- JSON omits pattern datums and several values available in the database or Discord embed.
+
+## Validation results
+
+| Check | Result |
+|---|---|
+| `cargo test` | Passed: 39 passed, 0 failed |
+| Local Markdown/HTML link check | Passed: all repository-relative targets resolve |
+| `git diff --check` | Passed; Git reports only Windows LF-to-CRLF notices |
+| `cargo audit` | 0 vulnerabilities; one allowed unmaintained warning for `ttf-parser 0.20.0` (`RUSTSEC-2026-0192`) |
+| `cargo fmt -- --check` | Failed on pre-existing formatting drift across Rust sources; no source formatting was applied |
+| `cargo clippy -- -D warnings` | Failed with 7 pre-existing findings: three large error results, type complexity, drain/collect, manual range containment, and derivable `Default` |
+
+## Canonical documentation map
+
+- Operator overview: [README](../README.md)
+- Installation and administration: [ADMIN_GUIDE.md](ADMIN_GUIDE.md)
+- Architecture and limitations: [LSO_ANALYSIS.md](LSO_ANALYSIS.md)
+- Grade behavior: [GRADING_REFERENCE.md](GRADING_REFERENCE.md)
+- DCS-gRPC migration: [DCS_GRPC_FORK_MIGRATION.md](DCS_GRPC_FORK_MIGRATION.md)
+
+Historical design records are explicitly labelled and should not be used as current operating
+instructions.

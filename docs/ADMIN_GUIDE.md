@@ -1,357 +1,366 @@
-# LSO — Installation & Administration Guide
+# LSO Installation and Administration Guide
 
-> **Applies to:** LSO v0.2.0 (post Tier 1/2/3 improvements)  
-> **Required:** DCS-gRPC server rev 0.8.1
+**Applies to:** crate version `0.2.0` plus Unreleased changes through 2026-08-25
 
----
-
-## Table of Contents
-
-1. [Prerequisites](#1-prerequisites)
-2. [Building from Source](#2-building-from-source)
-3. [DCS-gRPC Server Setup](#3-dcs-grpc-server-setup)
-4. [First Run](#4-first-run)
-5. [All CLI Options](#5-all-cli-options)
-6. [Output Files](#6-output-files)
-7. [Web Greenie Board](#7-web-greenie-board)
-8. [Discord Integration](#8-discord-integration)
-9. [Session Greenie Board (Terminal)](#9-session-greenie-board-terminal)
-10. [Offline ACMI Replay](#10-offline-acmi-replay)
-11. [Supported Carriers & Aircraft](#11-supported-carriers--aircraft)
-12. [Pass Grading Reference](#12-pass-grading-reference)
-13. [Database Administration](#13-database-administration)
-14. [Logging & Diagnostics](#14-logging--diagnostics)
-15. [Running as a Windows Service](#15-running-as-a-windows-service)
-16. [Troubleshooting](#16-troubleshooting)
-
----
+**Required protocol:** sevenfifty777 DCS-gRPC `0.9.0`, commit
+`11aea3484099c2dd21d41a53db2e510f6e5e84c5`
 
 ## 1. Prerequisites
 
-### Build machine (your PC)
+### Runtime host
 
-You only need the Rust toolchain **to compile** LSO. Once you have `lso.exe` the Rust toolchain is no longer needed anywhere.
+The simplest deployment runs `lso.exe` on the DCS server host. It needs:
 
-| Requirement | Version | Notes |
-|---|---|---|
-| Rust toolchain | stable ≥ 1.75 | Install via [rustup.rs](https://rustup.rs) — build machine only |
-| Visual C++ Build Tools | 2019 or 2022 | Required by `rusqlite` bundled feature on Windows — build machine only |
-| Git | any | To clone the repo — build machine only |
+- DCS World or DCS Dedicated Server;
+- the pinned DCS-gRPC fork installed and running; and
+- write permission to the chosen LSO output directory.
 
-### DCS server machine
+Rust is not required to run a prebuilt `lso.exe`. SQLite is bundled into the binary.
 
-This is the machine running DCS World. Both the DCS-gRPC Lua module and `lso.exe` run here.
-**No Rust installation is required.** The compiled binary is fully self-contained — SQLite is statically linked inside it.
+### Build host
 
-| Requirement | Version | Notes |
-|---|---|---|
-| DCS World | 2.9+ | Server or client install |
-| DCS-gRPC Lua module | rev 0.8.1 | Installed inside DCS Saved Games — see [Section 3](#3-dcs-grpc-server-setup) |
-| `lso.exe` | built from source | Copy from build machine — the only file needed |
+Building from source requires Git, a stable Rust toolchain, and the native linker/toolchain expected
+by the Rust target. On Windows MSVC targets, install the C++ workload from Visual Studio Build Tools.
+The project does not declare a `rust-version`; use a current stable toolchain rather than relying on
+an undocumented minimum.
 
----
+## 2. Build LSO
 
-## 2. Building from Source
-
-Do this **on your build/dev PC**, not on the DCS server.
-
-LSO lives as a sub-crate inside the DCS-gRPC workspace repository. If you already have the repo cloned locally (e.g. at `C:\Users\<you>\Documents\GitHub\DCS-gRPC`), just build from there — no re-cloning needed.
+From the repository root:
 
 ```powershell
-# Navigate to the lso sub-crate inside your existing local repo
-cd C:\Users\<you>\Documents\GitHub\DCS-gRPC\lso
-
-# Build the lso binary (release mode — smaller, faster)
+rustc --version
 cargo build --release
-
-# The compiled binary is at:
-#   target\release\lso.exe
+cargo test
+cargo fmt -- --check
+cargo clippy -- -D warnings
 ```
 
-> **If you don't have the repo yet**, clone it first:
-> ```powershell
-> git clone https://github.com/DCS-gRPC/rust-server.git
-> cd rust-server\lso
-> cargo build --release
-> ```
-> Note: this is the upstream public repo. If you plan to keep your changes, push to your own fork or remote instead.
+The release binary is `target\release\lso.exe`. Cargo obtains `dcs-grpc-stubs` from the exact Git
+commit in `Cargo.toml`; do not replace it with an unpinned branch.
 
-The build downloads and compiles all Rust dependencies automatically. Expect 3–5 minutes on first build.
-
-### Transfer to the DCS server
-
-Copy only `lso.exe` to the DCS server — no other files from the build tree are needed:
+If dependencies changed and `cargo-audit` is already installed, also run:
 
 ```powershell
-# Example: copy to a dedicated folder on the DCS server
-Copy-Item target\release\lso.exe \\DCS-SERVER\C$\LSO\lso.exe
-```
-
-Or use any file transfer method (USB, SCP, shared folder, etc.).
-
-**Security audit (run after every build if dependencies changed):**
-```powershell
-cargo install cargo-audit
 cargo audit
 ```
 
----
+Copy the binary to a dedicated runtime directory, for example `C:\LSO`. The image assets are
+embedded at compile time, so the runtime does not need the repository's `img` directory.
 
-## 3. DCS-gRPC Server Setup
+## 3. Install and start DCS-gRPC
 
-Do this **on the DCS server machine**.
+Use the release package built from the pinned fork commit. Extract the package into the DCS Saved
+Games server directory. The resulting layout includes:
 
-LSO connects to DCS World via the DCS-gRPC Lua module, which runs inside the DCS process and exposes a gRPC endpoint on `localhost:50051`. LSO and DCS-gRPC must be on the **same machine** — LSO connects to `127.0.0.1:50051` by default.
+```text
+<Saved Games DCS>\
+|-- Mods\tech\DCS-gRPC\
+|-- Scripts\DCS-gRPC\
+`-- Scripts\Hooks\DCS-gRPC.lua
+```
 
-### 3.1 Install the DCS-gRPC Lua module
+The bundled reference copy at `docs/DCS-gRPC-0.9.0/Docs/DCS-gRPC/README.md` contains the full server
+instructions. In particular, DCS's installation `Scripts\MissionScripting.lua` must load:
 
-1. Download the DCS-gRPC release matching `rev = 0.8.1` from:  
-   <https://github.com/DCS-gRPC/rust-server/releases>
+```lua
+dofile(lfs.writedir()..[[Scripts\DCS-gRPC\grpc-mission.lua]])
+```
 
-2. Copy the files:
-   ```
-   DCS-gRPC/           → <DCS Saved Games>\Scripts\Hooks\
-   DCS-gRPC.lua        → <DCS Saved Games>\Scripts\Hooks\
-   ```
-   Where `<DCS Saved Games>` is typically:
-   ```
-   C:\Users\<you>\Saved Games\DCS\       (stable)
-   C:\Users\<you>\Saved Games\DCS.openbeta\  (open beta)
-   ```
+To start DCS-gRPC regardless of mission scripting, create
+`<Saved Games DCS>\Config\dcs-grpc.lua` with:
 
-3. Verify the `Config\options.lua` has `net` enabled (required for gRPC to bind its port).
+```lua
+autostart = true
+```
 
-### 3.2 Verify gRPC is listening
+The relevant defaults are:
 
-After loading a mission that contains a carrier:
+```lua
+host = "127.0.0.1"
+port = 50051
+```
+
+After DCS loads, check `<Saved Games DCS>\Logs\dcs.log` for `[GRPC]` entries or the DCS-gRPC log,
+then verify the TCP listener:
+
 ```powershell
-# Should return HTTP/2 response headers (not "connection refused")
 Test-NetConnection -ComputerName 127.0.0.1 -Port 50051
 ```
 
-DCS-gRPC logs its status in `<DCS Saved Games>\Logs\dcs.log`:
-```
-gRPC server started on 127.0.0.1:50051
-```
+This confirms TCP reachability, not API compatibility. A live LSO connection is the next check.
 
-### 3.3 Remote server access
+### Running LSO on another host
 
-If LSO runs on a different machine than DCS, change the bind address in the DCS-gRPC config and pass `--uri` to LSO:
-```powershell
-lso.exe run --uri http://192.168.1.50:50051 -o C:\LSO\recordings
-```
+Change DCS-gRPC's `host` only when remote access is required, then restrict port 50051 with a host
+firewall or private network/VPN. Avoid exposing an unauthenticated plaintext gRPC endpoint to the
+public internet.
 
----
-
-## 4. First Run
-
-Create an output directory and start LSO:
+Point LSO to it with:
 
 ```powershell
-mkdir C:\LSO\recordings
+.\lso.exe run --uri http://192.168.1.50:50051 -o C:\LSO\recordings
+```
+
+## 4. First run
+
+Create the output directory before starting LSO; the application creates `lso.db` but not a missing
+parent directory.
+
+```powershell
+New-Item -ItemType Directory -Force C:\LSO\recordings
 .\lso.exe run -o C:\LSO\recordings
 ```
 
-LSO will:
-1. Connect to DCS-gRPC at `http://127.0.0.1:50051` (retrying with exponential back-off until DCS is ready).
-2. Enumerate all active carriers and carrier-capable aircraft in the mission.
-3. Spawn a monitoring task for every (carrier, aircraft) pair.
-4. Record each qualifying recovery attempt as PNG chart + ACMI + JSON + SQLite row.
-5. On Ctrl-C: print the session greenie board to the terminal and exit cleanly.
+Live mode:
 
-Expected startup output:
-```
-INFO lso: Connecting to gRPC server uri=http://127.0.0.1:50051
-INFO lso: Connected
-INFO lso: Monitoring CVN_71 ↔ Hornet-1 (pilot: Viper)
-INFO lso: Monitoring CVN_71 ↔ Hornet-2 (pilot: Ghost)
-```
+1. Opens or migrates `C:\LSO\recordings\lso.db`.
+2. Connects to DCS-gRPC at `http://127.0.0.1:50051` and retries transient failures with exponential
+   backoff, never waiting more than 30 seconds between retries.
+3. Discovers supported active carriers and aircraft and listens for later Birth events.
+4. Monitors each carrier/aircraft pair and records recognized passes.
+5. Prints the current-session greenie board when Ctrl-C triggers graceful shutdown.
 
----
+The INFO log confirms connection. Per-pair task details are primarily visible at DEBUG/TRACE level.
 
-## 5. All CLI Options
+## 5. CLI reference
 
-```
-USAGE:
-    lso.exe [OPTIONS] <SUBCOMMAND>
-
-GLOBAL OPTIONS:
-    -v, --verbose     Increase log verbosity (repeat for DEBUG / TRACE)
-        --color       Enable coloured log output
-
-SUBCOMMANDS:
-    run     Connect to DCS-gRPC to track carrier recoveries
-    file    Replay recoveries from an existing LSO ACMI file
-    help    Print help for a subcommand
-```
-
-### `run` subcommand
-
-| Flag | Default | Description |
-|---|---|---|
-| `-o, --out-dir <PATH>` | `.` (current dir) | Directory where PNG, ACMI, JSON and `lso.db` are written |
-| `--uri <URI>` | `http://127.0.0.1:50051` | DCS-gRPC endpoint URI |
-| `--discord-webhook <URL>` | _(disabled)_ | Discord webhook URL for per-recovery posts |
-| `--discord-users <FILE>` | _(disabled)_ | JSON file mapping pilot names → Discord user IDs |
-| `--web-port <PORT>` | _(disabled)_ | Port to serve the web greenie board on (e.g. `8080`) |
-| `--ki` | false | Also record KI (AI-controlled) carrier landings |
-| `--no-acmi` | false | Skip saving TacView ACMI files (PNG chart and JSON report are still saved) |
-
-### `file` subcommand
-
-| Argument | Description |
-|---|---|
-| `<INPUT>` | Path to an `LSO-*.zip.acmi` file previously recorded by LSO |
-
-> Only ACMI files **created by LSO** are supported. Raw TacView recordings do not contain the LSO metadata required for re-grading.
-
-### Examples
+Generated help is authoritative:
 
 ```powershell
-# Minimal live mode
-lso.exe run -o C:\LSO\recordings
-
-# Live mode with web dashboard on port 8080
-lso.exe run -o C:\LSO\recordings --web-port 8080
-
-# Live mode with Discord and web dashboard
-lso.exe run `
-  -o C:\LSO\recordings `
-  --discord-webhook "https://discord.com/api/webhooks/…" `
-  --discord-users C:\LSO\users.json `
-  --web-port 8080
-
-# Live mode without ACMI files (PNG chart and JSON only)
-lso.exe run -o C:\LSO\recordings --no-acmi
-
-# Remote DCS server
-lso.exe run -o C:\LSO\recordings --uri http://192.168.1.50:50051
-
-# Replay an old recording
-lso.exe file C:\LSO\recordings\LSO-20260610-183042-Viper.zip.acmi
-
-# Debug verbosity
-lso.exe -vv run -o C:\LSO\recordings
+.\lso.exe --help
+.\lso.exe run --help
+.\lso.exe file --help
 ```
 
----
+Global options must precede the subcommand:
 
-## 6. Output Files
-
-Every saved recovery produces four files in `--out-dir`:
-
-| File | Description |
+| Option | Meaning |
 |---|---|
-| `LSO-<YYYYMMDD-HHMMSS>-<Pilot>.png` | PNG approach chart (side view + top-down view, AoA-coloured track, grade overlay) |
-| `LSO-<YYYYMMDD-HHMMSS>-<Pilot>.zip.acmi` | Compressed TacView ACMI recording (carrier + aircraft) — omitted when `--no-acmi` |
-| `LSO-<YYYYMMDD-HHMMSS>-<Pilot>.json` | Machine-readable recovery report (see schema below) |
-| `lso.db` | SQLite database accumulating all passes across all sessions |
+| `-v`, `--verbose...` | Increase logging: once for DEBUG, twice for TRACE |
+| `--color` | Enable ANSI-colored logging |
 
-> The pilot name in the filename is sanitised to ASCII alphanumeric characters only.
+### `run`
 
-### JSON report schema
+| Option | Default | Meaning |
+|---|---|---|
+| `-o, --out-dir <PATH>` | `.` | Output directory for charts, JSON, optional ACMI, and `lso.db` |
+| `--uri <URI>` | `http://127.0.0.1:50051` | DCS-gRPC endpoint |
+| `--discord-webhook <URL>` | disabled | Discord webhook for completed-pass posts |
+| `--discord-users <FILE>` | disabled | JSON map of DCS pilot names to Discord numeric user IDs |
+| `--ki` | false | Include AI-controlled aircraft |
+| `--no-acmi` | false | Do not save or attach ACMI; charts, JSON, and database remain enabled |
+| `--web-port <PORT>` | disabled | Start the HTTP greenie board on the selected port |
+
+Examples:
+
+```powershell
+# Normal live recording
+.\lso.exe run -o C:\LSO\recordings
+
+# Debug logging and no ACMI
+.\lso.exe -v run -o C:\LSO\recordings --no-acmi
+
+# HTTP board on port 8080
+.\lso.exe run -o C:\LSO\recordings --web-port 8080
+
+# Remote DCS-gRPC
+.\lso.exe run -o C:\LSO\recordings --uri http://192.168.1.50:50051
+```
+
+### `file`
+
+```powershell
+.\lso.exe file C:\LSO\recordings\LSO-20260825-031018-Pilot.zip.acmi
+```
+
+Only compressed ACMI files created by LSO contain the metadata expected by replay mode. Replay
+writes the final-approach PNG to the current working directory. It does not write the pattern PNG,
+JSON, database row, or Discord post, and it does not preserve the input file's directory as the
+output directory.
+
+## 6. Detection and pass lifecycle
+
+The detector samples every two seconds and begins recording when a supported aircraft is between
+200 m and 3.5 nm from the carrier and no higher than 1,100 ft MSL. It applies no heading/quadrant
+check so the overhead pattern can be captured.
+
+After detection, LSO samples at 100 ms and records both the BRC pattern and angled-deck final. Gate
+samples are captured inbound at 3/4, 1/2, and 1/4 nm below 500 ft above deck. Groove entry also
+requires no more than 300 ft above deck and lineup within 10 degrees.
+
+Recognized saved outcomes are recovered (`Wire #N` or `Landed`), bolter, pilot waveoff, and hook-up
+qualification bolter (`Qualif Bolter`). Tracks that never descend below 100 m MSL or finish with an
+Unknown outcome are discarded.
+
+## 7. Output artifacts
+
+Each saved live pass uses this base name:
+
+```text
+LSO-YYYYMMDD-HHMMSS-<PilotAsciiAlphanumeric>
+```
+
+| Artifact | Behavior |
+|---|---|
+| `<base>.png` | Final-approach side/top trap sheet with grade, outcome, and gate labels |
+| `<base>-pattern.png` | Overhead pattern chart in the carrier BRC frame |
+| `<base>.json` | Structured final-approach report |
+| `<base>.zip.acmi` | Compressed carrier/aircraft recording; omitted with `--no-acmi` |
+| `lso.db` | Shared persistent database; one row added per saved pass |
+
+### JSON shape
 
 ```json
 {
   "pilot_name": "Viper",
-  "grading": { "Recovered": { "cable": 3, "cable_estimated": 3 } },
+  "grading": {
+    "Recovered": {
+      "cable": 3,
+      "cable_estimated": 3
+    }
+  },
   "pass_grade": "Ok",
   "dcs_grading": "OK 3 WIRE# 3",
   "gate_deviations": {
-    "at_three_quarter_nm": { "gs_deviation_deg": 0.16, "lineup_deg": -0.05, "gs_deviation_ft": 12.4, "lineup_ft": -3.1 },
-    "at_half_nm":          { "gs_deviation_deg": 0.15, "lineup_deg": -0.03, "gs_deviation_ft":  8.0, "lineup_ft": -1.8 },
-    "at_quarter_nm":       { "gs_deviation_deg": 0.08, "lineup_deg":  0.02, "gs_deviation_ft":  2.2, "lineup_ft":  0.5 }
+    "at_three_quarter_nm": {
+      "gs_deviation_deg": 0.16,
+      "lineup_deg": -0.05,
+      "gs_deviation_ft": 12.4,
+      "lineup_ft": -3.1
+    },
+    "at_half_nm": null,
+    "at_quarter_nm": null
   },
   "datums": [
-    { "x": 1389.2, "y": -3.1, "aoa": 8.1, "alt": 42.3 },
-    ...
-  ]
+    { "time": 123.4, "x": 1389.2, "y": -3.1, "aoa": 8.1, "alt": 84.7 }
+  ],
+  "mission_datetime": "2024-06-15T18:25:04Z"
 }
 ```
 
-**`grading` variants:**
-- `"Unknown"` — outcome not determined (should not appear in saved files)
-- `"Bolter"` — aircraft did not catch a wire
-- `"WaveoffPilot"` — pilot climbed away from inside the groove
-- `{ "Recovered": { "cable": N, "cable_estimated": N } }` — caught wire N
+`dcs_grading` is omitted when absent. `mission_datetime` is omitted when its live gRPC query fails.
+`pass_grade` uses Rust enum names (`Unicorn`, `Ok`, `OkParentheses`, `NoGrade`, `Cut`, `Bolter`,
+`WaveoffPilot`), not display labels. `grading` may also be `"Bolter"`, `"WaveoffPilot"`, or an
+`IntentionalBolter` object. Saved live JSON does not include pattern datums, map, UCID, grade points,
+display outcome, wind, or groove time.
 
-**`pass_grade` values:** `"Unicorn"`, `"Ok"`, `"OkParentheses"`, `"NoGrade"`, `"Cut"`, `"Bolter"`, `"WaveoffPilot"`
+## 8. Grading
 
----
+The current display labels and points are:
 
-## 7. Web Greenie Board
+| Label | Points | Summary |
+|---|---:|---|
+| `_OK_` | 5.0 | Base `OK`, wire 3, groove time 15.0-18.99 s |
+| `OK` | 4.0 | GS magnitude below 0.5 degrees and lineup below 1 degree |
+| `(OK)` | 3.0 | GS reaches 0.5 degrees or lineup reaches 1 degree, below significant thresholds |
+| `--` | 2.0 | GS reaches 1 degree or lineup reaches 2 degrees |
+| `C` | 0.0 | Quarter-nm GS below -2.5 degrees |
+| `B` | 2.5 | Bolter |
+| `WO` | 1.0 | Pilot waveoff |
 
-Start with `--web-port`:
+Read [GRADING_REFERENCE.md](GRADING_REFERENCE.md) for exact inclusive boundaries, missing-gate
+behavior, qualification bolters, AoA bands, and limitations.
+
+## 9. Supported units
+
+### Aircraft
+
+| Display family | Accepted DCS type names | On-speed AoA interval |
+|---|---|---|
+| F/A-18C | `FA-18C_hornet` | `> 7.4` and `< 8.8` degrees |
+| F-14A | `F-14A-135-GR`, `F-14A-135-GR-Early`, `F-14A-95-GR` | `> 10.2` and `< 11.1` degrees |
+| F-14B | `F-14B`, `F-14A/B` | `> 10.2` and `< 11.1` degrees |
+| F-14B(U) | `F-14B(U)`, `F-14BU` | `> 10.2` and `< 11.1` degrees |
+| VNAO T-45C | `T-45` | `> 6.5` and `< 7.5` degrees |
+
+All use a nominal 3.5-degree glide slope.
+
+### Carriers
+
+| Geometry | Accepted DCS type names |
+|---|---|
+| Nimitz | `CVN_71`, `CVN_72`, `CVN_73`, `CVN_75`, `Stennis` |
+| Forrestal | `Forrestal` |
+
+`Stennis` is DCS's type name for CVN-74. Unsupported aircraft or ships are ignored. The presence of
+an internal numeric aircraft ID is not sufficient for support; the type also needs an
+`AirplaneInfo` entry.
+
+## 10. Web greenie board
+
+Start it with:
 
 ```powershell
-lso.exe run -o C:\LSO\recordings --web-port 8080
+.\lso.exe run -o C:\LSO\recordings --web-port 8080
 ```
 
-Then open a browser: **http://localhost:8080**
+Routes:
 
-The page:
-- Shows all passes from the SQLite database, newest first
-- Auto-refreshes every 10 seconds
-- Colour-codes grades (gold = _OK_, green = OK/(OK), yellow = --, red = C, gray = B/WO)
+| Route | Response |
+|---|---|
+| `GET /` | Self-contained HTML table, refreshed every 10 seconds |
+| `GET /api/passes` | All database rows newest first as JSON |
 
-### Exposing to the network
+The listener is `0.0.0.0:<port>`, not loopback-only. It has no authentication, authorization, TLS,
+pagination, or retention limit. Restrict it with Windows Firewall and do not expose it directly to
+the internet.
 
-By default the server binds to `0.0.0.0:<port>`, so it is reachable from other machines on the same network. To restrict access, configure your firewall:
-
-```powershell
-# Allow inbound on port 8080 from LAN only
-New-NetFirewallRule -DisplayName "LSO Web Board" `
-  -Direction Inbound -Protocol TCP -LocalPort 8080 `
-  -RemoteAddress 192.168.1.0/24 -Action Allow
-```
-
-> LSO does not implement authentication. Do not expose the web port to the public internet.
-
-### API endpoint
-
-`GET /api/passes` returns a JSON array:
+Example API object:
 
 ```json
-[
-  {
-    "id": 42,
-    "timestamp": "LSO-20260610-183042-Viper",
-    "pilot_name": "Viper",
-    "pass_grade": "Ok",
-    "wire": 3,
-    "dcs_grading": "OK 3 WIRE# 3"
-  },
-  ...
-]
+{
+  "id": 42,
+  "timestamp": "LSO-20260825-031018-Viper",
+  "pilot_name": "Viper",
+  "pilot_ucid": "0123456789abcdef",
+  "aircraft_id": 1,
+  "pass_grade": "OK",
+  "wire": 3,
+  "dcs_grading": "OK 3 WIRE# 3",
+  "aircraft_type": "F/A-18C Hornet",
+  "map_name": "Caucasus",
+  "lso_notes": "Wire 3",
+  "grade_date": "2026-08-25 01:10:18",
+  "grade_points": 4.0,
+  "mission_datetime": "2024-06-15T18:25:04Z",
+  "outcome": "Wire #3"
+}
 ```
 
----
+Nullable fields can be `null`; migrated historical rows may have empty strings or zero defaults.
+The API currently turns database/task failures into `[]`, so an unexpectedly empty result should be
+checked against application logs and the database itself.
 
-## 8. Discord Integration
+### Reverse proxy topology
 
-### 8.1 Create a webhook
+The proxy and LSO cannot own the same host port. A normal same-host topology is:
 
-1. In Discord, go to the target channel → **Edit Channel** → **Integrations** → **Webhooks**.
-2. Click **New Webhook**, copy the URL.
+```text
+HTTPS proxy :443 -> LSO HTTP 127.0.0.1:8080
+```
 
-### 8.2 Start LSO with the webhook
+LSO currently binds `0.0.0.0`, so use the firewall to limit direct access. If a proxy must listen on
+port 8080, give LSO another port such as 8081 and proxy to that. Changing only a bind address cannot
+resolve two processes competing for one port.
+
+## 11. Discord
+
+Start Discord delivery with a webhook URL:
 
 ```powershell
-lso.exe run -o C:\LSO\recordings `
-  --discord-webhook "https://discord.com/api/webhooks/123456789/XXXXXXXXXX"
+.\lso.exe run -o C:\LSO\recordings `
+  --discord-webhook "https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"
 ```
 
-Each completed pass posts an embed containing:
-- Pilot name (optionally mentioned by Discord user ID)
-- NAVAIR pass grade (_OK_ / OK / (OK) / -- / C / B / WO)
-- Outcome (Wire #N / Bolter / Waveoff)
-- Gate deviation table (GS and lineup at 3/4 nm, 1/2 nm, 1/4 nm)
-- Attached PNG chart
-- Attached ACMI file
+Treat the full URL as a secret: do not commit it, paste it into issue reports, or expose service
+configuration/logs containing it. Rotate it in Discord if disclosed.
 
-### 8.3 User ID mapping (optional)
+The embed includes aircraft, map, UTC time, optional mission time, pilot, grade/points, outcome,
+gate deviations, DCS LSO notation and its English translation, optional wind, and optional groove
+time. It attaches both PNGs and, unless `--no-acmi` is used, the ACMI. It does not attach JSON.
 
-Create a JSON file that maps DCS pilot names to Discord snowflake user IDs so Discord mentions the correct user:
+For mentions, create a local JSON file:
 
 ```json
 {
@@ -360,267 +369,148 @@ Create a JSON file that maps DCS pilot names to Discord snowflake user IDs so Di
 }
 ```
 
-Pass it with `--discord-users C:\LSO\users.json`. Pilots not in the file are shown by their DCS name instead.
+Pass it with `--discord-users C:\LSO\users.json`. Names not present in the map remain plain text.
 
----
+## 12. SQLite administration
 
-## 9. Session Greenie Board (Terminal)
-
-When LSO exits (Ctrl-C or clean shutdown) it prints a text greenie board to stdout:
-
-```
-╔══════════════════════════════════════════════════════════╗
-║              SESSION GREENIE BOARD                       ║
-╠═══════════════════════╦══════╦══════╦════════════════════╣
-║ Pilot                 ║ Wire ║ Grd  ║ DCS Grade          ║
-╠═══════════════════════╬══════╬══════╬════════════════════╣
-║ Viper                 ║  3   ║ OK   ║ OK 3 WIRE# 3       ║
-║ Ghost                 ║  -   ║ WO   ║ -                  ║
-║ Slider                ║  1   ║ --   ║ -- 1 WIRE# 1       ║
-╚═══════════════════════╩══════╩══════╩════════════════════╝
-```
-
-> This board covers only the current session. Historical data is in the SQLite database.
-
----
-
-## 10. Offline ACMI Replay
-
-Re-generate PNG charts from previously recorded ACMI files:
-
-```powershell
-lso.exe file C:\LSO\recordings\LSO-20260610-183042-Viper.zip.acmi
-```
-
-This reads the ACMI, re-runs the tracking and grading logic, and writes a fresh PNG into the same directory. Useful if chart rendering was updated.
-
----
-
-## 11. Supported Carriers & Aircraft
-
-### Carriers
-
-| DCS Type Name(s) | Ship | Notes |
-|---|---|---|
-| `CVN_71`, `CVN_72`, `CVN_73`, `CVN_75` | USS Nimitz-class (CVN-71 to CVN-75) | Uses Nimitz cable geometry |
-| `Stennis` | USS John C. Stennis (CVN-74) | Same as Nimitz (DCS type name is `"Stennis"`) |
-| `Forrestal` | USS Forrestal | Different cable positions |
-
-### Aircraft
-
-| DCS Type Name | Aircraft | AoA On-Speed | Glide Slope |
-|---|---|---|---|
-| `FA-18C_hornet` | F/A-18C Hornet | 7.4° – 8.8° | 3.5° |
-| `F-14A-135-GR`, `F-14A-135-GR-Early`, `F-14A-95-GR` | F-14A Tomcat | 10.2° – 11.1° | 3.5° |
-| `F-14B`, `F-14A/B` | F-14B Tomcat | 10.2° – 11.1° | 3.5° |
-| `F-14B(U)`, `F-14BU` | F-14B(U) Tomcat | 10.2° – 11.1° | 3.5° |
-| `T-45` | VNAO T-45C Goshawk | 6.5° – 7.5° | 3.5° |
-
-> Aircraft or carriers **not** in the tables above are silently ignored by the monitoring tasks. To add support, add entries to `src/data.rs`.
-
----
-
-## 12. Pass Grading Reference
-
-LSO uses a simplified NAVAIR 00-80T-104 grading algorithm based on gate deviations sampled at 3/4 nm, 1/2 nm, and 1/4 nm from the carrier.
-
-### Grade thresholds
-
-| Grade | Label | Pts | Condition |
-|---|---|---|---|
-| Unicorn | `_OK_` | 5.0 | All gates within OK margin, wire 3, groove time 15.0–18.99 s |
-| OK | `OK` | 4.0 | All gates: GS deviation < ±0.5° AND lineup < ±1.0° |
-| OK (parentheses) | `(OK)` | 3.0 | Worst gate: GS < ±1.0° AND lineup < ±2.0° |
-| No Grade | `--` | 2.0 | Any gate: GS ≥ ±1.0° OR lineup ≥ ±2.0° |
-| Cut | `C` | 0.0 | GS < −2.5° at the ¼-nm gate (dangerously low at the ramp) |
-| Bolter | `B` | 2.5 | Aircraft did not catch a wire |
-| Waveoff (Pilot) | `WO` | 1.0 | Pilot climbed away after entering the groove (inside ¾ nm, ≤ 300 ft AGL) |
-
-### Waveoff detection
-
-A waveoff is recorded when:
-1. The aircraft enters the groove (x ≤ 1,389 m from the carrier AND altitude ≤ 300 ft AGL), **and**
-2. No `RunwayTouch` event is received before tracking ends.
-
----
-
-## 13. Database Administration
-
-The SQLite database lives at `<out-dir>/lso.db`.
-
-### Inspect Database with a GUI (Optional)
-
-If you prefer a graphical interface over the command line to inspect or query the database, you can use **[DB Browser for SQLite](https://sqlitebrowser.org/)**.
-
-1. Download and install DB Browser for SQLite from their website.
-2. Open the application.
-3. Click **Open Database** and select your `lso.db` file (e.g., in `C:\LSO\recordings\lso.db`).
-4. Switch to the **Browse Data** tab and select the `passes` table to view all recorded recoveries in a spreadsheet-like view.
-
-### View all passes via CLI
-
-```powershell
-# Using the sqlite3 CLI (download from https://www.sqlite.org/download.html)
-sqlite3 C:\LSO\recordings\lso.db "SELECT * FROM passes ORDER BY id DESC LIMIT 20;"
-```
-
-### Schema
+The database path is `<out-dir>\lso.db`. Current schema:
 
 ```sql
 CREATE TABLE passes (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp        TEXT    NOT NULL,   -- "LSO-YYYYMMDD-HHMMSS-Pilot"
-    pilot_name       TEXT    NOT NULL,
-    pilot_ucid       TEXT,               -- DCS player UCID, or NULL
-    aircraft_id      INTEGER,            -- internal aircraft ID, or NULL
-    pass_grade       TEXT    NOT NULL,   -- "_OK_", "OK", "(OK)", "--", "C", "B", "WO"
-    wire             INTEGER,            -- NULL for bolter / waveoff
-    dcs_grading      TEXT,               -- raw DCS LandingQualityMark string, or NULL
-    aircraft_type    TEXT,               -- DCS type name, e.g. "FA-18C_hornet"
-    map_name         TEXT,               -- DCS theatre name, e.g. "Caucasus"
-    grade_date       TEXT    NOT NULL,   -- UTC datetime: "YYYY-MM-DD HH:MM:SS"
-    grade_points     REAL    NOT NULL,   -- NAVAIR score (5.0 _OK_, 4.0 OK, 3.0 (OK), 2.0 --, 2.5 B, 1.0 WO, 0.0 C)
-    mission_datetime TEXT    NOT NULL    -- in-mission date/time from DCS scenario clock
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp          TEXT    NOT NULL,
+    pilot_name         TEXT    NOT NULL,
+    pilot_ucid         TEXT,
+    aircraft_id        INTEGER,
+    pass_grade         TEXT    NOT NULL,
+    wire               INTEGER,
+    dcs_grading        TEXT,
+    aircraft_type      TEXT,
+    map_name           TEXT,
+    grade_date         TEXT    NOT NULL DEFAULT '',
+    grade_points       REAL    NOT NULL DEFAULT 0.0,
+    mission_datetime   TEXT    NOT NULL DEFAULT '',
+    outcome            TEXT    NOT NULL DEFAULT ''
 );
 ```
 
-### Export to CSV
+`pass_grade` stores display labels such as `OK` and `(OK)`. `aircraft_type` stores a display name
+such as `F/A-18C Hornet`, `F-14A/B`, or `F-14B(U)`, not necessarily the raw DCS type name.
+
+Inspect recent rows with an installed SQLite CLI:
 
 ```powershell
-sqlite3 -csv -header C:\LSO\recordings\lso.db \
-  "SELECT * FROM passes ORDER BY id;" > passes.csv
+sqlite3 C:\LSO\recordings\lso.db "SELECT * FROM passes ORDER BY id DESC LIMIT 20;"
 ```
 
-### Per-pilot statistics
-
-```sql
-SELECT
-    pilot_name,
-    COUNT(*)                                               AS total,
-    SUM(CASE WHEN pass_grade = '_OK_' THEN 1 ELSE 0 END)  AS unicorn,
-    SUM(CASE WHEN pass_grade = 'OK'   THEN 1 ELSE 0 END)  AS ok,
-    SUM(CASE WHEN pass_grade = '(OK)' THEN 1 ELSE 0 END)  AS ok_par,
-    SUM(CASE WHEN pass_grade = '--'   THEN 1 ELSE 0 END)  AS no_grade,
-    SUM(CASE WHEN pass_grade = 'C'    THEN 1 ELSE 0 END)  AS cut,
-    SUM(CASE WHEN pass_grade = 'B'    THEN 1 ELSE 0 END)  AS bolter,
-    SUM(CASE WHEN pass_grade = 'WO'   THEN 1 ELSE 0 END)  AS waveoff
-FROM passes
-GROUP BY pilot_name
-ORDER BY total DESC;
-```
-
-### Backup
+Export in PowerShell without Bash line-continuation syntax:
 
 ```powershell
-Copy-Item C:\LSO\recordings\lso.db C:\LSO\backup\lso-$(Get-Date -Format yyyyMMdd).db
+sqlite3 -csv -header C:\LSO\recordings\lso.db "SELECT * FROM passes ORDER BY id;" |
+  Set-Content -Encoding utf8 .\passes.csv
 ```
 
----
-
-## 14. Logging & Diagnostics
-
-Log verbosity is controlled by the `-v` global flag:
-
-| Flag | Level | Shows |
-|---|---|---|
-| _(none)_ | INFO | Connections, recoveries saved, errors |
-| `-v` | DEBUG | Task start/stop, bolter detection, grading decisions |
-| `-vv` | TRACE | Every 100 ms poll, cable candidate scores |
-
-Redirect logs to a file:
+Back up the database while LSO is stopped, or use SQLite's backup command for a live database:
 
 ```powershell
-lso.exe run -o C:\LSO\recordings 2> C:\LSO\lso.log
+New-Item -ItemType Directory -Force C:\LSO\backup
+sqlite3 C:\LSO\recordings\lso.db ".backup 'C:/LSO/backup/lso-backup.db'"
 ```
 
-Or combine stdout and stderr:
+Existing databases are migrated additively at startup. Review historical rows because new columns
+use empty/zero defaults rather than reconstructed values.
+
+## 13. Logging and diagnostics
 
 ```powershell
-lso.exe run -o C:\LSO\recordings *> C:\LSO\lso.log
+# DEBUG
+.\lso.exe -v run -o C:\LSO\recordings
+
+# TRACE
+.\lso.exe -vv run -o C:\LSO\recordings
+
+# PowerShell combined stream capture
+.\lso.exe run -o C:\LSO\recordings *> C:\LSO\lso.log
 ```
 
-Enable colour with `--color` when running in a terminal that supports ANSI:
+Do not publish logs without checking them for pilot names, UCIDs, paths, network addresses, DCS
+grading text, and command-line configuration. The code does not intentionally log the webhook URL,
+but process/service configuration may expose it separately.
+
+## 14. Windows service example
+
+NSSM is one possible service wrapper. Install it separately, then configure the executable,
+parameters, working directory, and logs:
 
 ```powershell
-lso.exe --color run -o C:\LSO\recordings
-```
-
----
-
-## 15. Running as a Windows Service
-
-Use [NSSM (Non-Sucking Service Manager)](https://nssm.cc) to run LSO as a background Windows service that starts automatically with the server.
-
-```powershell
-# Install NSSM (or use winget)
-winget install NSSM.NSSM
-
-# Create the service
 nssm install LSO "C:\LSO\lso.exe"
 nssm set LSO AppParameters "run -o C:\LSO\recordings --web-port 8080"
 nssm set LSO AppDirectory "C:\LSO"
-
-# Optional: add Discord webhook (pilots appear by their DCS name if --discord-users is omitted)
-nssm set LSO AppParameters "run -o C:\LSO\recordings --web-port 8080 --discord-webhook ""https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"""
-
-# Optional: also enable Discord @mentions by passing the user ID map
-nssm set LSO AppParameters "run -o C:\LSO\recordings --web-port 8080 --discord-webhook ""https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN"" --discord-users C:\LSO\users.json"
 nssm set LSO AppStdout "C:\LSO\lso.log"
 nssm set LSO AppStderr "C:\LSO\lso.log"
 nssm set LSO AppRotateFiles 1
-nssm set LSO AppRotateBytes 10485760   # 10 MB per log file
-
-# Start the service
+nssm set LSO AppRotateBytes 10485760
 nssm start LSO
-
-# Check status
 nssm status LSO
-
-# Stop and remove the service
-nssm stop LSO
-nssm remove LSO confirm
 ```
 
-> LSO connects to DCS-gRPC with exponential back-off, so it is safe to start the service before DCS loads the mission. It will keep retrying until gRPC becomes available.
+If you add a Discord webhook to service parameters, restrict access to the service configuration
+and rotate the webhook after any disclosure. Starting LSO before the mission is acceptable because
+gRPC failures are retried.
 
----
+## 15. Troubleshooting
 
-## 16. Troubleshooting
+### DCS-gRPC connection failures
 
-### LSO exits immediately with "connection refused"
+- Confirm DCS and the mission environment are running.
+- Confirm DCS-gRPC autostart or mission startup is configured.
+- Check DCS `[GRPC]` logs and `Test-NetConnection` to the same host/port used in `--uri`.
+- Confirm the deployed server matches the pinned 0.9.0 fork commit.
+- Use `-v` to see retry reasons; LSO normally keeps retrying rather than exiting.
 
-DCS is not running or DCS-gRPC is not installed. LSO retries automatically with back-off — check the logs for the retry messages. If it exits immediately, check `--uri`.
+### No saved passes
 
-### "discard as plane was never below 100 m MSL"
+- Confirm both aircraft and carrier type strings are supported.
+- Add `--ki` for AI aircraft.
+- Use TRACE logging to see candidate and detector decisions.
+- A pass is intentionally discarded if it never goes below 100 m MSL or never resolves beyond
+  `Unknown`.
+- The output directory must already exist and be writable.
 
-The aircraft was in the pattern area but never descended to a landing altitude. This is normal for overhead patterns or missed approaches that don't enter the groove.
+### Unexpected waveoff or bolter
 
-### "discard: no recovery outcome (Unknown grading)"
+The outcome uses groove entry, minimum distance, hook state, touchdown events, and a 150 m moving-away
+threshold. Inspect the LSO ACMI and trace log; replay can validate geometry but does not reproduce all
+live gRPC events or outputs.
 
-The aircraft briefly entered the tracking zone but never entered the groove (inside 3/4 nm AND below 300 ft). Not a valid pass.
+### Web page stays on Loading
 
-### No recordings being created
+Open `http://localhost:<port>/api/passes`. If it returns `[]`, inspect `lso.db` and logs; the handler
+also returns an empty array on database/task failure. If the endpoint is unreachable, check the
+listener and firewall.
 
-1. Verify the carrier type is supported (see [Section 11](#11-supported-carriers--aircraft)).
-2. Verify the aircraft type is supported.
-3. Check `--ki` is set if monitoring AI aircraft.
-4. Use `-vv` to see all tracking decisions in the log.
+### Port bind error on Windows
 
-### PNG chart is blank or missing the track
+The log line saying the dashboard is listening is emitted immediately before the actual bind and is
+not proof that binding succeeded. Find the owner of the selected port:
 
-The recording loop captured fewer than 2 data points (approach was very brief). The ACMI and JSON are still saved.
-
-### Web dashboard shows "Loading…" indefinitely
-
-The `lso.db` file may not have been created yet (no passes saved). Open `GET /api/passes` directly — it returns `[]` for an empty database, which the page correctly displays as "No passes recorded yet."
-
-### Discord posts are missing the chart image
-
-Discord webhooks have a 25 MB attachment limit. Very long approaches (>15 min) may produce oversized ACMI files. The PNG is always ≤ 1 MB and should always attach successfully.
-
-### Port 8080 already in use
-
-Choose a different `--web-port` value, or find and stop the conflicting process:
 ```powershell
-Get-Process -Id (Get-NetTCPConnection -LocalPort 8080).OwningProcess
+netstat -ano | findstr :8080
+Get-Process -Id <PID>
 ```
+
+If no process appears, inspect excluded TCP port ranges. Give LSO and any reverse proxy separate
+ports; switching between `0.0.0.0` and `127.0.0.1` alone does not solve a same-port collision.
+
+### Discord post fails
+
+- Verify the webhook has not been deleted or rotated.
+- Check attachment sizes; live posts may contain two PNGs and one ACMI.
+- Retry with `--no-acmi` to isolate an oversized ACMI attachment.
+- Check wind/UCID/mission-time warnings separately; those lookups are non-fatal, while webhook
+  execution failure is fatal to the recording task and then retried by the outer run loop.
+
+### Replay output is not beside the ACMI
+
+This is expected. `lso file` writes the approach PNG to the current working directory. Change to the
+desired directory before invoking it.

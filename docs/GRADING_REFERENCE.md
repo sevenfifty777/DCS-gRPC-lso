@@ -1,169 +1,165 @@
 # LSO Grading Reference
 
-## Data Collection
+This document specifies the behavior implemented by `src/track.rs`, `src/grading.rs`, and
+`src/data.rs`. LSO's grading is a simplified geometric model inspired by NAVAIR/MOOSE conventions;
+it is not a complete reproduction of a human LSO grade.
 
-### Detection
+## Detection and recording
 
-Every **carrier × plane** pair is polled every **2 seconds**. A recovery attempt is triggered when **all** conditions are met:
+Every supported carrier/aircraft pair is checked every two seconds. Live recording starts when all
+of these conditions hold:
 
-| Condition | Value |
+| Condition | Implemented value |
 |---|---|
-| Plane altitude | < 1 100 ft MSL |
-| Distance to carrier | 200 m – 3.5 nm |
-| Plane is behind the carrier | dot(carrier\_forward, ray\_to\_plane) > 0 |
+| Plane altitude | At or below 1,100 ft MSL |
+| Distance to carrier | 200 m through 3.5 nm, inclusive |
+| Heading or quadrant | None; the full overhead pattern is eligible |
 
-> The nose-pointing check was removed — during the break the aircraft is abeam the carrier with its nose perpendicular to the BRC. The wider trigger (3.5 nm / 1 100 ft) captures the full Case I circuit from the break. False positives (planes that never enter the groove) are discarded at termination because `Grading::Unknown` recordings are dropped.
+Recording switches to 100 ms transform polling and tracks mission events. It stops when the plane
+leaves the 3.5 nm / 1,100 ft envelope, a relevant unit disappears, or an outcome completes and the
+plane moves away. A recording that never goes below 100 m MSL is discarded. A finished live track
+with `Grading::Unknown` is also discarded.
 
-### Recording
+## Coordinate streams
 
-Once detected, the app switches to **10 Hz** (100 ms) polling via DCS-gRPC `UnitService.GetTransform()`.
+### Final approach
 
-Each frame computes a **carrier-relative datum** in the angled-deck frame:
+`Datum` is calculated in the angled-deck frame from the aircraft-specific optimal touchdown point:
 
-| Field | Description |
+| Field | Meaning |
 |---|---|
-| `x` | Forward distance along the angled-deck centerline from optimal touchdown (m) |
-| `y` | Lateral offset from centerline (m, +right / −left) |
-| `aoa` | Angle of Attack (degrees) |
-| `alt` | Hook altitude above carrier deck (m) — corrected for the aircraft-specific hook arm position, rotated by the plane's attitude |
+| `time` | DCS scenario seconds |
+| `x` | Along-deck distance to optimal touchdown in meters; positive on the approach side |
+| `y` | Lateral displacement in meters; positive is right of centerline |
+| `alt` | Hook altitude above deck in meters, clamped to zero |
+| `aoa` | Calculated angle of attack in degrees |
 
-The **angled deck** axis (not the ship heading) is used for all geometry.  
-Optimal touchdown is the midpoint between wire 2 and wire 3.
+The carrier position used for this geometry is smoothed with an EMA (`alpha = 0.15`).
 
-### Pattern Tracking
+### Pattern
 
-In addition to the groove datum (angled-deck frame), every frame also records a **`PatternDatum`** in the **carrier BRC frame** (ship heading, no deck angle offset). This covers the full circuit from the break through the entire landing.
+`PatternDatum` uses raw carrier position and the ship's BRC frame:
 
-Recording starts on the **first detection frame** — same trigger as the overall recording (3.5 nm / 1 100 ft / behind carrier). There is no separate start condition for the pattern.
-
-| Field | Description |
+| Field | Meaning |
 |---|---|
-| `astern_m` | Distance behind the carrier along BRC (m). Positive = plane is astern of the carrier |
-| `port_m` | Lateral distance from BRC centerline (m). Positive = plane is on the port (left) side |
-| `alt_ft` | Altitude MSL in feet |
-| `aoa` | Angle of Attack (degrees) |
+| `time` | DCS scenario seconds |
+| `astern_m` | Positive behind the carrier along BRC |
+| `port_m` | Positive to port of BRC centerline |
+| `alt_ft` | Aircraft altitude MSL in feet |
+| `aoa` | Calculated angle of attack in degrees |
 
-The pattern data is used to render a **separate overhead circuit PNG** (`<filename>-pattern.png`) showing the full Case I oval: break → abeam → ninety → final → touchdown. The track is coloured by AoA using the same scheme as the approach chart. The chart clips data to ±2.5 nm port/starboard and −4 nm to +1.5 nm ahead/astern.
+The pattern PNG displays +/-2.5 nm port/starboard and +/-3 nm ahead/astern.
 
-### Gate Sampling
+## Gate sampling
 
-On the **first frame** the aircraft crosses each gate, a `GateDatum` is frozen:
+On the first inbound frame at or inside each gate, LSO freezes a `GateDatum` if `x > 0` and the
+hook is no higher than 500 ft above the deck:
 
-| Gate | Distance from touchdown |
-|---|---|
-| **3/4 nm** | 1 389 m |
-| **1/2 nm** | 926 m |
-| **1/4 nm** | 463 m |
+| Gate | Along-deck distance |
+|---|---:|
+| 3/4 nm | 1,389 m |
+| 1/2 nm | 926 m |
+| 1/4 nm | 463 m |
 
-Each `GateDatum` stores:
+When an aircraft flies outbound beyond a gate, the corresponding captured gate is cleared so a
+later real final can resample it.
 
-```
-gs_deviation_deg = atan2(hook_alt − ideal_gs_alt, x)  [degrees, + = high]
-lineup_deg       = atan2(y, x)                         [degrees, + = right / LUL]
+Each sample contains:
 
-ideal_gs_alt = x × tan(glide_slope°)   (glide slope = 3.5° for CVN aircraft)
-```
-
-Foot values (`gs_deviation_ft`, `lineup_ft`) are also stored for the PNG chart label but are **not used** in grading.
-
-### Landing Events (from DCS)
-
-| DCS Event | Action |
-|---|---|
-| `LandingQualityMark` | Stores the DCS grading string; wire number extracted from it takes precedence over the estimated wire |
-| `RunwayTouch` | Calls `Track::landed()` — cable estimation runs, 10-second post-landing window begins |
-| `Crash / Dead / PlayerLeaveUnit` | Recording stops immediately |
-
-### Termination
-
-- Aircraft never went below 100 m MSL → recording discarded (not a genuine recovery attempt).
-- Distance to landing position increases by > 150 m after the minimum reached → **bolter** declared.
-- Aircraft entered the groove (inside 3/4 nm, below 300 ft) then climbed away without touching → **waveoff** declared.
-
----
-
-## Pass Grade Scale (NAVAIR 00-80T-104)
-
-| Label | Enum | Points | Meaning | Implemented |
-|---|---|---|---|---|
-| `_OK_` | `PassGrade::Unicorn` | **5.0** | Unicorn — zero deviations, groove time 15–18.99 s, wire 3 | ✅ |
-| `OK` | `PassGrade::Ok` | **4.0** | Okay pass — all deviations within the OK margin | ✅ |
-| `(OK)` | `PassGrade::OkParentheses` | **3.0** | Fair pass — slight deviations only | ✅ |
-| `--` | `PassGrade::NoGrade` | **2.0** | No grade — significant deviations | ✅ |
-| `C` | `PassGrade::Cut` | **0.0** | Cut pass — dangerously low at the ramp (GS < −2.5° at 1/4 nm) | ✅ |
-| `B` | `PassGrade::Bolter` | **2.5** | Bolter — missed all wires | ✅ |
-| `WO` | `PassGrade::WaveoffPilot` | **1.0** | Waveoff — broke off inside the groove | ✅ |
-
-> **`_OK_` vs `OK` — same deviation requirements, different procedure:**
-> Both grades require all gate deviations within the OK zone (GS `< +0.5°` high / `< −0.5°` low, LU `< ±1.0°`).
-> `_OK_` additionally requires **wire 3** and **groove time 15.0–18.99 s**. If either condition fails the grade falls back to `OK` (4.0 pts).
-> In practice `_OK_` is extremely rare — it demands a zero-deviation approach **and** the correct wire **and** correct timing simultaneously.
-
----
-
-## Grading Thresholds
-
-All thresholds are in **degrees** (distance-invariant, matching MOOSE Airboss CVN defaults).
-
-### Glideslope (GS)
-
-> Legend: 🟢 same as our code · 🔴 tighter (penalises earlier) · 🔵 more lenient (penalises later)
-
-| Zone | Our code | MOOSE CVN | NAVAIR 00-80T-104 | Grade impact |
-|---|---|---|---|---|
-| Slight High `(H)` | `> +0.5°` | 🔵 `> +0.8°` | 🟢 `> +0.5°` | Caps at `(OK)` |
-| Significant High `H` | `> +1.0°` | 🔵 `> +1.5°` | 🟢 `> +1.0°` | Caps at `--` |
-| Slight Low `(L)` | `> −0.5°` | 🔵 `> −0.8°` | 🟢 `> −0.5°` | Caps at `(OK)` |
-| Significant Low `L` | `> −1.0°` | 🔵 `> −1.5°` | 🟢 `> −1.0°` | Caps at `--` |
-| **Cut threshold** | `< −2.5°` at ¼ nm | 🟢 `< −2.5°` | 🟢 `< −2.5°` | Grade = `C` |
-
-> Both high and low sides match NAVAIR. MOOSE uses wider thresholds (🔵 more lenient) on all GS tiers — our code penalises at smaller deviations.
-
-### Lineup (LU)
-
-> Legend: 🟢 same as our code · 🔴 tighter (penalises earlier) · 🔵 more lenient (penalises later)
-
-| Zone | Our code | MOOSE CVN | NAVAIR 00-80T-104 | Grade impact |
-|---|---|---|---|---|
-| Slight `(LUL)`/`(LUR)` | `> ±1.0°` | 🟢 `> ±1.0°` | 🟢 `> ±1.0°` | Caps at `(OK)` |
-| Medium `LUL`/`LUR` | `> ±2.0°` | 🟢 `> ±2.0°` | 🟢 `> ±2.0°` | Caps at `--` |
-
-> MOOSE has an additional Large tier at `> ±3.0°`, but our code caps at `--` from `> ±2.0°` (same as NAVAIR). The `LU_SIGNIFICANT = 3.0` constant is commented out in the code.
-
-### Decision Logic
-
-The grade is determined by the **worst single deviation** across all three gates:
-
-```
-if GS < −2.5° at 1/4 nm                          → C   (Cut)
-else if worst_gs_high ≥ 1.0° OR worst_gs_low ≥ 1.0° OR worst_lu ≥ 2.0°  → --  (No Grade)
-else if worst_gs_high ≥ 0.5° OR worst_gs_low ≥ 0.5° OR worst_lu ≥ 1.0°  → (OK) (Fair Pass)
-else                                               → OK  (Okay Pass)
+```text
+ideal_gs_alt     = x * tan(aircraft_glide_slope)
+gs_deviation_deg = atan2(hook_alt - ideal_gs_alt, x)
+lineup_deg       = atan2(y, x)
 ```
 
-Special outcomes override the gate logic:
+Positive GS is high; negative GS is low. Positive lineup is right of centerline. Equivalent feet
+are stored for presentation only and do not determine the grade.
 
-```
-Grading::WaveoffPilot  → WO  (1.0 pts)
-Grading::Bolter        → B   (2.5 pts)
-Grading::Unknown       → --  (2.0 pts)
-```
+Groove entry is recorded when `x <= 1,389 m`, hook altitude is at or below 300 ft above the deck,
+and absolute lineup is at most 10 degrees. Groove time is touchdown time minus this entry time.
 
----
+## Outcome model
 
-## Supported Aircraft & Glide Slopes
+| Internal outcome | Detection | Saved display outcome |
+|---|---|---|
+| `Recovered` | Matching `RunwayTouch` event | `Wire #N` or `Landed` |
+| `IntentionalBolter` | Aircraft moves away after the hook was observed up | `Qualif Bolter` |
+| `Bolter` | Aircraft reaches/passes the deck area and moves more than 150 m away without arresting | `Bolter` |
+| `WaveoffPilot` | Aircraft entered the groove and moves away without reaching the deck | `Waveoff` |
+| `Unknown` | No recognized outcome | Discarded by live mode |
 
-| Aircraft | DCS Type | Glide Slope | AoA On-Speed |
+The hook-up test uses DCS draw argument 25. On a recovered pass, a wire parsed from DCS
+`LandingQualityMark` text takes precedence over the connector-based geometric estimate.
+
+## Grade labels and points
+
+| Enum | Label | Points | Implemented rule |
+|---|---|---:|---|
+| `Unicorn` | `_OK_` | 5.0 | Base `OK`, wire 3, and groove time from 15.0 through 18.99 seconds |
+| `Ok` | `OK` | 4.0 | All available gate deviations remain below the slight thresholds |
+| `OkParentheses` | `(OK)` | 3.0 | At least one slight deviation, with no significant deviation |
+| `NoGrade` | `--` | 2.0 | At least one significant deviation, or internal `Unknown` |
+| `Cut` | `C` | 0.0 | Quarter-nm GS is strictly below -2.5 degrees |
+| `Bolter` | `B` | 2.5 | Bolter outcome |
+| `WaveoffPilot` | `WO` | 1.0 | Pilot waveoff outcome |
+
+### Thresholds
+
+The worst available sample across the three gates is used:
+
+| Axis | `OK` range | `(OK)` threshold | `--` threshold |
 |---|---|---|---|
-| F/A-18C Hornet | `FA-18C_hornet` | 3.5° | 7.4–8.8° |
-| F-14A Tomcat | `F-14A-135-GR` / `F-14A-135-GR-Early` / `F-14A-95-GR` | 3.5° | 10.2–11.1° |
-| F-14B Tomcat | `F-14B` / `F-14A/B` | 3.5° | 10.2–11.1° |
-| F-14B(U) Tomcat | `F-14B(U)` / `F-14BU` | 3.5° | 10.2–11.1° |
-| T-45C Goshawk | `T-45` | 3.5° | 6.5–7.5° |
+| Glideslope high | `< +0.5 deg` | `>= +0.5 deg` | `>= +1.0 deg` |
+| Glideslope low magnitude | `< 0.5 deg` | `>= 0.5 deg` | `>= 1.0 deg` |
+| Absolute lineup | `< 1.0 deg` | `>= 1.0 deg` | `>= 2.0 deg` |
 
-## Supported Carriers
+Cut is checked first and only from the quarter-nm sample. At exact threshold values, the `>=`
+branch applies; the Cut test is strict `< -2.5 deg`.
 
-| DCS Type | Class | Deck Angle | Deck Alt |
-|---|---|---|---|
-| `CVN_71` / `72` / `73` / `75` / `Stennis` | Nimitz | 9.14° | 20.15 m |
-| `Forrestal` | Forrestal | 9.42° | 18.46 m |
+Special outcomes override normal gate grading:
+
+```text
+WaveoffPilot -> WO
+Bolter        -> B
+Unknown       -> -- (but live mode discards Unknown before saving)
+```
+
+`IntentionalBolter` is handled with recovered gate logic when a cable can be estimated. Without an
+estimated cable, it is graded `B` while retaining the `Qualif Bolter` outcome.
+
+Missing gate samples are skipped rather than treated as automatic deviations. Consequently, a pass
+with incomplete samples can still receive a favorable base grade; this is an implementation
+limitation.
+
+## AoA visualization
+
+AoA selects track colors but does not change the grade.
+
+| Aircraft | DCS type names | On-speed interval |
+|---|---|---|
+| F/A-18C | `FA-18C_hornet` | `> 7.4 deg` and `< 8.8 deg` |
+| F-14A | `F-14A-135-GR`, `F-14A-135-GR-Early`, `F-14A-95-GR` | `> 10.2 deg` and `< 11.1 deg` |
+| F-14B | `F-14B`, `F-14A/B` | `> 10.2 deg` and `< 11.1 deg` |
+| F-14B(U) | `F-14B(U)`, `F-14BU` | `> 10.2 deg` and `< 11.1 deg` |
+| VNAO T-45C | `T-45` | `> 6.5 deg` and `< 7.5 deg` |
+
+All supported aircraft use a nominal 3.5-degree glide slope.
+
+## Carrier geometry
+
+| DCS type names | Geometry | Deck angle | Deck altitude |
+|---|---|---:|---:|
+| `CVN_71`, `CVN_72`, `CVN_73`, `CVN_75`, `Stennis` | Nimitz | 9.1359 deg | 20.1494 m |
+| `Forrestal` | Forrestal | 9.42 deg | 18.46 m |
+
+The optimal hook touchdown point is midway between the midpoint of wire 2 and the midpoint of wire
+3, corrected for the aircraft's rotated hook offset.
+
+## What the grade does not evaluate
+
+- AoA, airspeed, sink rate, throttle/power, wind-over-deck, fuel/weight, or aircraft configuration.
+- Deviation duration, corrections between gates, or accumulated LSO calls.
+- Human LSO waveoff commands or landing after an LSO-commanded waveoff.
+- Case-specific groove-time windows beyond the single `_OK_` interval.
+
+Treat the result as a training aid and code-defined score, not an authoritative real-world grade.

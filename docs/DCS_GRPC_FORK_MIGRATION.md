@@ -1,0 +1,274 @@
+# DCS-gRPC Fork Migration
+
+**Date:** 2026-08-25  
+**Status:** Implemented and validated  
+**LSO version:** 0.2.0  
+**Server/stubs version:** 0.9.0  
+**Pinned server commit:** [`11aea3484099c2dd21d41a53db2e510f6e5e84c5`](https://github.com/sevenfifty777/rust-server/commit/11aea3484099c2dd21d41a53db2e510f6e5e84c5)
+
+## 1. Purpose
+
+This migration changes LSO from the upstream DCS-gRPC 0.8.1 Rust stubs to the customized
+[`sevenfifty777/rust-server`](https://github.com/sevenfifty777/rust-server) fork. The fork is based
+on DCS-gRPC 0.9.0 and contains additional APIs and server fixes required for future development.
+
+The migration covers more than changing a Git URL. DCS-gRPC 0.9.0 uses a newer gRPC toolchain and
+contains a protobuf compatibility change that makes `dcs.common.v0.Unit.type` optional. LSO was
+updated to compile against that interface and to behave safely when DCS does not supply a unit type.
+
+## 2. Dependency Change
+
+### Before
+
+```toml
+tonic = "0.11"
+
+[dependencies.stubs]
+package = "dcs-grpc-stubs"
+git = "https://github.com/DCS-gRPC/rust-server.git"
+rev = "0.8.1"
+features = ["client"]
+```
+
+The `0.8.1` revision resolved to upstream commit
+`803b06035887cd558a8b9bade68d240c1b705df1`.
+
+### After
+
+```toml
+tonic = "0.13"
+
+[dependencies.stubs]
+package = "dcs-grpc-stubs"
+git = "https://github.com/sevenfifty777/rust-server.git"
+rev = "11aea3484099c2dd21d41a53db2e510f6e5e84c5"
+features = ["client"]
+```
+
+The full commit SHA is used instead of `main`. This prevents a future push to the branch from
+silently changing the generated Rust API or the compiled LSO binary. At migration time, the fork
+had no version tag or GitHub release for 0.9.0, so an immutable commit was the reproducible choice.
+
+## 3. Why `tonic` Was Upgraded
+
+The fork's `dcs-grpc-stubs` crate declares `tonic = "0.13"`, `prost = "0.13"`, and
+`prost-types = "0.13"`. Generated service clients are parameterized by the transport types from
+their version of `tonic`. LSO therefore must use the same major/minor `tonic` API when it passes a
+`tonic::transport::Channel` to clients such as `MissionServiceClient`, `UnitServiceClient`, and
+`WorldServiceClient`.
+
+The direct LSO dependency was upgraded from `tonic 0.11` to `tonic 0.13`. Cargo resolved the exact
+version to `tonic 0.13.1`. This also updated the associated `prost`, `hyper`, `h2`, `tower`, and Axum
+transport dependencies in `Cargo.lock`.
+
+## 4. DCS API Compatibility Change
+
+### Changed protobuf field
+
+In the 0.9.0 generated API, the DCS unit type is optional:
+
+```text
+dcs.common.v0.Unit.type: optional string
+```
+
+The generated Rust representation consequently changed from:
+
+```rust
+pub r#type: String
+```
+
+to:
+
+```rust
+pub r#type: Option<String>
+```
+
+The field is optional because DCS does not guarantee that every exported object supplies a type.
+The first compatibility build identified five locations that still expected a mandatory `String`.
+
+### Candidate discovery behavior
+
+`src/commands/run.rs` now checks `Unit.type` before attempting to match an aircraft or carrier:
+
+- A unit without a DCS type is ignored as a recovery candidate.
+- The condition is logged at `debug` level with the unit ID and unit name.
+- No `unwrap()` or panic is used.
+- A valid aircraft type is stored in the `Candidate::Plane` value so later recovery-task creation
+  receives a guaranteed `String`.
+- Both initial mission discovery and later `Birth` events use the same validated value.
+
+Ignoring an untyped unit is necessary because LSO selects aircraft and carrier geometry through
+`AirplaneInfo::by_type()` and `CarrierInfo::by_type()`. Without a type, LSO cannot safely choose the
+correct hook offset, cable positions, glideslope, or carrier dimensions.
+
+### ACMI object-name fallback
+
+`src/tasks/record_recovery.rs` previously used `Unit.type` directly as the Tacview object name.
+It now uses the DCS unit name when the optional type is absent:
+
+```rust
+Property::Name(unit.r#type.unwrap_or_else(|| unit.name.clone()))
+```
+
+This preserves useful ACMI output for an object that can be queried but has no exported DCS type.
+
+## 5. Lockfile and Security Updates
+
+`Cargo.lock` was regenerated from the forked stubs and the `tonic 0.13` dependency graph. The
+resulting stubs entry is:
+
+```text
+dcs-grpc-stubs 0.9.0
+git+https://github.com/sevenfifty777/rust-server.git
+rev 11aea3484099c2dd21d41a53db2e510f6e5e84c5
+```
+
+The initial RustSec scan found two vulnerable transitive packages and one unsound package warning.
+They were updated to their verified patched versions:
+
+| Package | Previous | Updated | Reason |
+|---|---:|---:|---|
+| `crossbeam-epoch` | 0.9.18 | 0.9.20 | Fixes [RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204.html), an invalid pointer dereference in pointer formatting |
+| `quinn-proto` | 0.11.14 | 0.11.15 | Fixes high-severity [RUSTSEC-2026-0185](https://rustsec.org/advisories/RUSTSEC-2026-0185.html), remote memory exhaustion during out-of-order stream reassembly |
+| `anyhow` | 1.0.102 | 1.0.103 | Fixes [RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190.html), unsoundness in `Error::downcast_mut()` |
+
+The final audit reported zero known vulnerabilities. It retained one allowed maintenance warning:
+
+- `ttf-parser 0.20.0` is marked unmaintained by
+  [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192.html).
+- It is pulled in through `plotters 0.3.7` and is not a direct LSO dependency.
+- The warning does not describe a known exploitable vulnerability, but it should be reviewed when
+  Plotters or the chart-rendering stack is next upgraded.
+
+## 6. Files Changed
+
+| File | Change |
+|---|---|
+| `Cargo.toml` | Points `dcs-grpc-stubs` to the fork commit and upgrades `tonic` to 0.13 |
+| `Cargo.lock` | Records stubs 0.9.0, the new gRPC stack, and patched transitive packages |
+| `src/commands/run.rs` | Handles optional `Unit.type` during initial discovery and `Birth` events |
+| `src/tasks/record_recovery.rs` | Adds a safe ACMI name fallback when `Unit.type` is absent |
+| `README.md` | States that the forked DCS-gRPC 0.9.0 server is required |
+| `docs/ADMIN_GUIDE.md` | Updates installation requirements, repository instructions, and the pinned server reference |
+| `docs/LSO_ANALYSIS.md` | Updates the architecture and dependency descriptions |
+| `docs/analysis2.md` | Updates the recorded server, stubs, and `tonic` versions |
+
+The supplied 0.9.0 server documentation under `docs/DCS-gRPC-0.9.0/` remains a reference copy and
+was not rewritten as part of this migration.
+
+## 7. Validation Performed
+
+### Dependency resolution
+
+```powershell
+cargo update -p dcs-grpc-stubs
+```
+
+Result: the fork was fetched successfully and `Cargo.lock` resolved `dcs-grpc-stubs 0.9.0` at the
+exact pinned commit.
+
+### Full test suite
+
+```powershell
+cargo test
+```
+
+Result:
+
+```text
+39 passed; 0 failed; 0 ignored
+```
+
+This validates compilation of the generated 0.9.0 clients and all existing unit tests, including
+carrier cable geometry and grading tests. It does not replace a live integration test against a
+running DCS World server.
+
+### Security audit
+
+```powershell
+cargo audit
+```
+
+Final result:
+
+```text
+0 vulnerabilities
+1 allowed warning: ttf-parser 0.20.0 is unmaintained
+```
+
+### Reference and whitespace checks
+
+The active manifest and project documentation were scanned for the former upstream URL and 0.8.1
+requirement. No active reference remains, except historical text that explicitly discusses the old
+version. `git diff --check` also completed successfully.
+
+The repository-wide `cargo fmt -- --check` command still reports formatting drift in pre-existing
+source files. Broad automatic formatting was deliberately not applied because it would create
+unrelated runtime-code changes. During the 2026-08-25 documentation refresh,
+`cargo clippy -- -D warnings` also reported seven existing code-quality findings; see
+`docs/analysis_results.md` for the current validation summary.
+
+## 8. Runtime Deployment Requirement
+
+The Rust client stubs and the DCS server installation should describe the same protocol version.
+Deploy the server built from the pinned fork commit together with the LSO binary built from this
+lockfile:
+
+```text
+https://github.com/sevenfifty777/rust-server
+commit 11aea3484099c2dd21d41a53db2e510f6e5e84c5
+```
+
+Using upstream DCS-gRPC 0.8.1 with this LSO build is no longer the supported configuration. A
+server/client mismatch may result in unimplemented RPCs, incompatible message fields, or different
+runtime behavior even when the TCP connection itself succeeds.
+
+## 9. Future Fork Upgrade Procedure
+
+When a newer fork commit is ready:
+
+1. Review the fork history and identify the exact tested commit SHA.
+2. Review `Cargo.toml`, `stubs/Cargo.toml`, protobuf changes, build dependencies, and the changelog
+   in the server repository.
+3. Update only the `rev` value in the LSO `[dependencies.stubs]` section unless the fork also changes
+   its required `tonic` version.
+4. Regenerate the lockfile:
+
+   ```powershell
+   cargo update -p dcs-grpc-stubs
+   ```
+
+5. Compile and run all tests:
+
+   ```powershell
+   cargo test
+   ```
+
+6. Run the dependency audit:
+
+   ```powershell
+   cargo audit
+   ```
+
+7. Confirm that `Cargo.lock` records the intended full commit SHA.
+8. Update the version and commit references in `README.md`, `docs/ADMIN_GUIDE.md`, and the analysis
+   documentation.
+9. Perform a live smoke test against DCS World before deploying the new LSO binary to the server.
+
+## 10. Rollback Reference
+
+If a temporary rollback to the former upstream stubs is required, restore these manifest values:
+
+```toml
+tonic = "0.11"
+
+[dependencies.stubs]
+package = "dcs-grpc-stubs"
+git = "https://github.com/DCS-gRPC/rust-server.git"
+rev = "0.8.1"
+features = ["client"]
+```
+
+Then regenerate `Cargo.lock`, revert the optional-`Unit.type` compatibility code only if the old
+generated structs require it, and run `cargo test` plus `cargo audit`. This rollback is documented
+for recovery purposes; the supported target after this migration is the pinned 0.9.0 fork.

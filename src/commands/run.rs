@@ -178,13 +178,16 @@ async fn run(
     for units in group_units {
         for unit in units {
             match check_candidate(&mut unit_svc, &unit, opts.include_ki).await? {
-                Some(Candidate::Plane(plane_info)) => {
+                Some(Candidate::Plane {
+                    info: plane_info,
+                    unit_type,
+                }) => {
                     planes.insert(
                         unit.name.clone(),
                         (
                             unit.id,
                             unit.player_name.unwrap_or_else(|| String::from("KI")),
-                            unit.r#type.clone(),
+                            unit_type,
                             plane_info,
                         ),
                     );
@@ -313,7 +316,10 @@ async fn run(
             }) = event
             {
                 match check_candidate(&mut unit_svc, &unit, include_ki).await {
-                    Ok(Some(Candidate::Plane(plane_info))) => {
+                    Ok(Some(Candidate::Plane {
+                        info: plane_info,
+                        unit_type,
+                    })) => {
                         for (carrier_name, (carrier_id, carrier_info)) in &carriers {
                             spawn_detect_recovery_attempt(
                                 *carrier_id,
@@ -321,7 +327,7 @@ async fn run(
                                 carrier_info,
                                 unit.id,
                                 unit.name.clone(),
-                                unit.r#type.clone(),
+                                unit_type.clone(),
                                 plane_info,
                                 unit.player_name
                                     .clone()
@@ -370,7 +376,10 @@ async fn run(
 #[derive(Debug)]
 enum Candidate {
     Carrier(&'static CarrierInfo),
-    Plane(&'static AirplaneInfo),
+    Plane {
+        info: &'static AirplaneInfo,
+        unit_type: String,
+    },
 }
 
 async fn check_candidate(
@@ -378,9 +387,23 @@ async fn check_candidate(
     unit: &common::v0::Unit,
     include_ki: bool,
 ) -> Result<Option<Candidate>, Status> {
+    let Some(unit_type) = unit.r#type.as_deref() else {
+        tracing::debug!(
+            unit_id = unit.id,
+            unit_name = %unit.name,
+            "ignoring unit without a DCS type"
+        );
+        return Ok(None);
+    };
+
     match GroupCategory::try_from(unit.group.as_ref().map(|g| g.category).unwrap_or(-1)) {
         Ok(GroupCategory::Airplane) if unit.player_name.is_some() || include_ki => {
-            return Ok(AirplaneInfo::by_type(&unit.r#type).map(Candidate::Plane))
+            return Ok(
+                AirplaneInfo::by_type(unit_type).map(|info| Candidate::Plane {
+                    info,
+                    unit_type: unit_type.to_owned(),
+                }),
+            );
         }
         Ok(GroupCategory::Ship) => {
             let attrs = svc
@@ -395,7 +418,7 @@ async fn check_candidate(
                 .iter()
                 .any(|a| a.as_str() == "AircraftCarrier With Arresting Gear")
             {
-                return Ok(CarrierInfo::by_type(&unit.r#type).map(Candidate::Carrier));
+                return Ok(CarrierInfo::by_type(unit_type).map(Candidate::Carrier));
             }
         }
         _ => {}

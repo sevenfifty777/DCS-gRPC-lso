@@ -39,5 +39,7 @@ graphify-out/
 # ACMI files
 *.acmi
 
-# conception files
-/.ignore/
+# custom ignore rules
+modelviewer/
+trap_records/
+docs/analys-codex-justice/
