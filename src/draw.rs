@@ -419,6 +419,7 @@ pub fn draw_chart(
             Grading::Unknown => Cow::Borrowed(""),
             Grading::Bolter => Cow::Borrowed("Bolter"),
             Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
+            Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
             Grading::Recovered { cable, .. } => {
                 if track.carrier_info.is_vstol() {
                     Cow::Borrowed("V/STOL recovery")

@@ -129,16 +129,11 @@ impl SpotGrade {
     }
 }
 
-/// Combine the CATOBAR-style approach grade with the AV-8B spot bonus.
-///
-/// The numeric result is capped at 5.0 and mapped back onto the same display
-/// labels used by the native CATOBAR greenie board.  This function is only
-/// called for a successfully recovered V/STOL pass; CATOBAR grading is left
-/// completely unchanged.
 /// Combine an arbitrary V/STOL approach point value with the spot bonus.
 ///
-/// This variant is used by the averaged-gates V/STOL approach logic, where the
-/// approach score can be fractional before the spot bonus is added.
+/// The numeric result is capped at 5.0 and mapped onto the display labels used
+/// by the CATOBAR greenie board. This function is only for a successfully
+/// recovered V/STOL pass; CATOBAR grading remains in `compute_pass_grade`.
 pub fn compute_vstol_final_grade_from_points(
     approach_points: f64,
     spot_grade: SpotGrade,
@@ -181,7 +176,13 @@ pub fn compute_pass_grade(
         Grading::Unknown      => PassGrade::NoGrade,
         Grading::WaveoffPilot => PassGrade::WaveoffPilot,
         Grading::Bolter       => PassGrade::Bolter,
-        Grading::Recovered { cable, .. } => {
+        Grading::Recovered { cable, .. } | Grading::IntentionalBolter { cable_estimated: cable } => {
+            if let Grading::IntentionalBolter { cable_estimated: None } = grading {
+                // For a qualification touch-and-go, if they miss the wires completely,
+                // it is graded as a Bolter (B), but the outcome still reflects it was a Qualif Bolter.
+                return PassGrade::Bolter;
+            }
+
             let base = grade_from_gates(gates);
             // Unicorn: zero deviations (base == Ok), wire 3, groove time in window.
             if base == PassGrade::Ok
@@ -198,22 +199,12 @@ pub fn compute_pass_grade(
     }
 }
 
-/// Compute the AV-8B V/STOL approach grade using the same gate-deviation
-/// thresholds as the CATOBAR grader, but without CATOBAR-only wire/groove
-/// bonuses.  `GateDeviations` are already measured in `track.rs` relative to
-/// the aircraft-specific ideal glide slope; for AV-8B that reference is 3.0°.
-///
-/// Deliberately NOT part of this score: AOA.  The AV-8B 10-12° target is used
-/// only by `aoa_rating` for trace colouring / indication.
-///
-/// The V/STOL final score is obtained later by adding the calibrated spot-7.5
-/// bonus to this approach grade.
 /// Compute the AV-8B V/STOL approach grade and its numeric point value.
 ///
 /// Unlike CATOBAR, the V/STOL approach score is the arithmetic mean of the
-/// three gate grades (3/4 nm, 1/2 nm, 1/4 nm), each gate being assessed with
-/// the same GS/LU thresholds as the CATOBAR logic. This preserves the original
-/// severity per gate while avoiding a pure “worst gate wins” outcome for VTOL.
+/// available 3/4-nm, 1/2-nm, and 1/4-nm gate grades. Each gate uses the same
+/// deviation thresholds as CATOBAR, but wire and groove-time bonuses do not
+/// apply. AOA is handled separately by `aoa_rating` for trace presentation.
 pub fn compute_vstol_approach_grade_points(
     grading: &Grading,
     gates: &GateDeviations,
@@ -221,36 +212,48 @@ pub fn compute_vstol_approach_grade_points(
     match grading {
         Grading::Unknown => (PassGrade::NoGrade, PassGrade::NoGrade.points()),
         Grading::WaveoffPilot => (PassGrade::WaveoffPilot, PassGrade::WaveoffPilot.points()),
-        Grading::Bolter => (PassGrade::Bolter, PassGrade::Bolter.points()),
+        Grading::Bolter | Grading::IntentionalBolter { .. } => {
+            (PassGrade::Bolter, PassGrade::Bolter.points())
+        }
         Grading::Recovered { .. } => {
             let mut gate_scores = Vec::with_capacity(3);
-            if let Some(g) = gates.at_three_quarter_nm.as_ref() {
-                gate_scores.push(grade_single_gate(g, false).points());
+            if let Some(gate) = gates.at_three_quarter_nm.as_ref() {
+                gate_scores.push(grade_single_gate(gate, false).points());
             }
-            if let Some(g) = gates.at_half_nm.as_ref() {
-                gate_scores.push(grade_single_gate(g, false).points());
+            if let Some(gate) = gates.at_half_nm.as_ref() {
+                gate_scores.push(grade_single_gate(gate, false).points());
             }
-            if let Some(g) = gates.at_quarter_nm.as_ref() {
-                gate_scores.push(grade_single_gate(g, true).points());
+            if let Some(gate) = gates.at_quarter_nm.as_ref() {
+                gate_scores.push(grade_single_gate(gate, true).points());
             }
 
             if gate_scores.is_empty() {
                 let fallback = grade_from_gates(gates);
                 (fallback, fallback.points())
             } else {
-                let avg_points = gate_scores.iter().sum::<f64>() / gate_scores.len() as f64;
-                (map_vstol_approach_points_to_grade(avg_points), avg_points)
+                let average_points = gate_scores.iter().sum::<f64>() / gate_scores.len() as f64;
+                (
+                    map_vstol_approach_points_to_grade(average_points),
+                    average_points,
+                )
             }
         }
     }
 }
 
 fn map_vstol_approach_points_to_grade(points: f64) -> PassGrade {
-    if points >= PassGrade::Ok.points() {
+    // Gate scores are averaged, so map at the midpoint between adjacent grade
+    // values. This lets one slight gate (3, 4, 4 => 3.67) remain an OK while
+    // one significant gate (2, 4, 4 => 3.33) becomes (OK).
+    const OK_MIDPOINT: f64 = 3.5;
+    const OK_PARENTHESES_MIDPOINT: f64 = 2.5;
+    const NO_GRADE_MIDPOINT: f64 = 1.0;
+
+    if points >= OK_MIDPOINT {
         PassGrade::Ok
-    } else if points >= PassGrade::OkParentheses.points() {
+    } else if points >= OK_PARENTHESES_MIDPOINT {
         PassGrade::OkParentheses
-    } else if points >= PassGrade::NoGrade.points() {
+    } else if points >= NO_GRADE_MIDPOINT {
         PassGrade::NoGrade
     } else {
         PassGrade::Cut
@@ -264,11 +267,11 @@ fn grade_single_gate(gate: &crate::track::GateDatum, quarter_nm: bool) -> PassGr
 
     let gs_high = gate.gs_deviation_deg.max(0.0);
     let gs_low = gate.gs_deviation_deg.min(0.0).abs();
-    let lu = gate.lineup_deg.abs();
+    let lineup = gate.lineup_deg.abs();
 
-    if gs_high >= GS_SIGNIFICANT || gs_low >= GS_SIGNIFICANT || lu >= LU_MEDIUM {
+    if gs_high >= GS_SIGNIFICANT || gs_low >= GS_SIGNIFICANT || lineup >= LU_MEDIUM {
         PassGrade::NoGrade
-    } else if gs_high >= GS_SLIGHT_HIGH || gs_low >= GS_SLIGHT_LOW || lu >= LU_SLIGHT {
+    } else if gs_high >= GS_SLIGHT_HIGH || gs_low >= GS_SLIGHT_LOW || lineup >= LU_SLIGHT {
         PassGrade::OkParentheses
     } else {
         PassGrade::Ok
@@ -380,9 +383,9 @@ mod tests {
     }
 
     #[test]
-    fn test_slight_gs_low_threshold_is_0_5() {
-        // 0.6° low GS: exceeds GS_SLIGHT_LOW (0.5°) → (OK).
-        let g = gates_deg(-0.6, 0.0, 0.0, 0.0, 0.0, 0.0);
+    fn test_catobar_slight_gs_low_threshold_is_0_5() {
+        // The boundary is inclusive: 0.5° low GS is (OK).
+        let g = gates_deg(-0.5, 0.0, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(grade_from_gates(&g), PassGrade::OkParentheses);
     }
 
@@ -401,9 +404,9 @@ mod tests {
     }
 
     #[test]
-    fn test_significant_gs_deviation_is_no_grade() {
-        // 1.1° GS at 3/4 nm: exceeds GS_SIGNIFICANT (1.0°) → --.
-        let g = gates_deg(1.1, 0.3, 0.1, 0.2, 0.1, 0.1);
+    fn test_catobar_significant_gs_threshold_is_1_0() {
+        // The boundary is inclusive: 1.0° high GS is no-grade.
+        let g = gates_deg(1.0, 0.3, 0.1, 0.2, 0.1, 0.1);
         assert_eq!(grade_from_gates(&g), PassGrade::NoGrade);
     }
 
@@ -503,6 +506,32 @@ mod tests {
     }
 
     #[test]
+    fn test_intentional_bolter_with_estimated_wire_uses_catobar_gate_grade() {
+        let g = gates_deg(0.6, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: Some(3),
+        };
+
+        assert_eq!(
+            compute_pass_grade(&grading, &g, Some(16.5)),
+            PassGrade::OkParentheses
+        );
+    }
+
+    #[test]
+    fn test_intentional_bolter_without_estimated_wire_is_bolter() {
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: None,
+        };
+
+        assert_eq!(
+            compute_pass_grade(&grading, &g, Some(16.5)),
+            PassGrade::Bolter
+        );
+    }
+
+    #[test]
     fn test_points_bolter() {
         assert_eq!(PassGrade::Bolter.points(), 2.5);
     }
@@ -518,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vstol_spot_thresholds() {
+    fn test_vstol_spot_grade_boundaries() {
         assert_eq!(SpotGrade::from_distance_m(0.99), SpotGrade::A);
         assert_eq!(SpotGrade::from_distance_m(1.0), SpotGrade::B);
         assert_eq!(SpotGrade::from_distance_m(2.99), SpotGrade::B);
@@ -528,7 +557,22 @@ mod tests {
     }
 
     #[test]
-    fn test_vstol_bonus_maps_to_catobar_labels() {
+    fn test_vstol_spot_grade_labels_and_bonus_points() {
+        let cases = [
+            (SpotGrade::A, "A", 1.0),
+            (SpotGrade::B, "B", 0.75),
+            (SpotGrade::C, "C", 0.5),
+            (SpotGrade::D, "D", 0.0),
+        ];
+
+        for (spot_grade, expected_label, expected_bonus) in cases {
+            assert_eq!(spot_grade.label(), expected_label);
+            assert_eq!(spot_grade.bonus_points(), expected_bonus);
+        }
+    }
+
+    #[test]
+    fn test_vstol_spot_bonus_maps_to_display_grades() {
         assert_eq!(
             compute_vstol_final_grade_from_points(PassGrade::Ok.points(), SpotGrade::A),
             (PassGrade::Unicorn, 5.0)
@@ -548,39 +592,93 @@ mod tests {
     }
 
     #[test]
-    fn test_vstol_approach_average_all_ok_is_ok() {
-        let grading = Grading::Recovered { cable: None, cable_estimated: None };
-        let ok = gates_deg(0.2, 0.3, -0.2, 0.4, 0.1, 0.2);
-        let (grade, points) = compute_vstol_approach_grade_points(&grading, &ok);
+    fn test_vstol_approach_with_all_ok_gates_is_ok() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+        let gates = gates_deg(0.2, 0.3, -0.2, 0.4, 0.1, 0.2);
+
+        let (grade, points) = compute_vstol_approach_grade_points(&grading, &gates);
+
         assert_eq!(grade, PassGrade::Ok);
         assert!((points - 4.0).abs() < 1e-9);
     }
 
     #[test]
-    fn test_vstol_approach_average_single_significant_gate_stays_ok_parentheses() {
-        let grading = Grading::Recovered { cable: None, cable_estimated: None };
-        // 3/4 nm = -- (2.0), other two gates = OK (4.0) => average = 10 / 3.
-        let mixed = gates_deg(1.1, 0.2, 0.1, 0.2, 0.1, 0.1);
-        let (grade, points) = compute_vstol_approach_grade_points(&grading, &mixed);
+    fn test_vstol_approach_averages_one_significant_gate() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+        // 3/4 nm = -- (2.0), other gates = OK (4.0): average = 10 / 3.
+        let gates = gates_deg(1.0, 0.2, 0.1, 0.2, 0.1, 0.1);
+
+        let (grade, points) = compute_vstol_approach_grade_points(&grading, &gates);
+
         assert_eq!(grade, PassGrade::OkParentheses);
         assert!((points - (10.0 / 3.0)).abs() < 1e-9);
     }
 
     #[test]
-    fn test_vstol_approach_average_single_slight_gate_stays_ok() {
-        let grading = Grading::Recovered { cable: None, cable_estimated: None };
-        // 3/4 nm = (OK) (3.0), other two gates = OK (4.0) => average = 11 / 3.
-        let slight = gates_deg(0.6, 0.2, 0.1, 0.2, 0.1, 0.1);
-        let (grade, points) = compute_vstol_approach_grade_points(&grading, &slight);
+    fn test_vstol_approach_averages_one_slight_gate() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+        // 3/4 nm = (OK) (3.0), other gates = OK (4.0): average = 11 / 3.
+        let gates = gates_deg(0.5, 0.2, 0.1, 0.2, 0.1, 0.1);
+
+        let (grade, points) = compute_vstol_approach_grade_points(&grading, &gates);
+
         assert_eq!(grade, PassGrade::Ok);
         assert!((points - (11.0 / 3.0)).abs() < 1e-9);
     }
 
     #[test]
-    fn test_vstol_final_grade_uses_averaged_approach_points() {
+    fn test_vstol_approach_points_map_at_grade_midpoints() {
+        let cases = [
+            (3.5, PassGrade::Ok),
+            (3.49, PassGrade::OkParentheses),
+            (2.5, PassGrade::OkParentheses),
+            (2.49, PassGrade::NoGrade),
+            (1.0, PassGrade::NoGrade),
+            (0.99, PassGrade::Cut),
+        ];
+
+        for (points, expected_grade) in cases {
+            assert_eq!(map_vstol_approach_points_to_grade(points), expected_grade);
+        }
+    }
+
+    #[test]
+    fn test_vstol_final_grade_uses_fractional_approach_points() {
         let (grade, points) = compute_vstol_final_grade_from_points(10.0 / 3.0, SpotGrade::B);
+
         assert_eq!(grade, PassGrade::Ok);
         assert!((points - ((10.0 / 3.0) + 0.75)).abs() < 1e-9);
     }
 
+    #[test]
+    fn test_vstol_non_recovery_outcomes_keep_their_grade_and_points() {
+        let gates = GateDeviations::default();
+        let cases = [
+            (Grading::Unknown, PassGrade::NoGrade),
+            (Grading::WaveoffPilot, PassGrade::WaveoffPilot),
+            (Grading::Bolter, PassGrade::Bolter),
+            (
+                Grading::IntentionalBolter {
+                    cable_estimated: Some(3),
+                },
+                PassGrade::Bolter,
+            ),
+        ];
+
+        for (grading, expected_grade) in cases {
+            assert_eq!(
+                compute_vstol_approach_grade_points(&grading, &gates),
+                (expected_grade, expected_grade.points())
+            );
+        }
+    }
 }
