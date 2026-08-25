@@ -203,8 +203,10 @@ requirement. No active reference remains, except historical text that explicitly
 version. `git diff --check` also completed successfully.
 
 The repository-wide `cargo fmt -- --check` command still reports formatting drift in pre-existing
-code. Broad automatic formatting was deliberately not applied because it would create unrelated
-changes across the dirty working tree.
+source files. Broad automatic formatting was deliberately not applied because it would create
+unrelated runtime-code changes. During the 2026-08-25 documentation refresh,
+`cargo clippy -- -D warnings` also reported seven existing code-quality findings; see
+`docs/analysis_results.md` for the current validation summary.
 
 ## 8. Runtime Deployment Requirement
 
