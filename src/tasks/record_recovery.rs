@@ -68,6 +68,22 @@ pub static GRADE_DATE_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>
         time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").unwrap()
     });
 
+fn recovery_outcome(grading: &Grading, is_vstol: bool) -> String {
+    match (is_vstol, grading) {
+        (_, Grading::Unknown) => "unknown".to_string(),
+        (_, Grading::Bolter) => "Bolter".to_string(),
+        // Intentional bolters are valid only for arrested recoveries. Keep the
+        // V/STOL fallback defensive in case an invalid grading reaches this layer.
+        (true, Grading::IntentionalBolter { .. }) => "Bolter".to_string(),
+        (false, Grading::IntentionalBolter { .. }) => "Qualif Bolter".to_string(),
+        (_, Grading::WaveoffPilot) => "Waveoff".to_string(),
+        (true, Grading::Recovered { .. }) => "Spot 7.5".to_string(),
+        (false, Grading::Recovered { cable, .. }) => cable
+            .map(|wire| format!("Wire #{}", wire))
+            .unwrap_or_else(|| "-".to_string()),
+    }
+}
+
 #[tracing::instrument(
     skip_all,
     fields(carrier_name = params.carrier_name, plane_name = params.plane_name)
@@ -470,18 +486,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         }
     };
 
-    let outcome = match track.grading {
-        Grading::Unknown => "unknown".to_string(),
-        Grading::Bolter => "Bolter".to_string(),
-        Grading::IntentionalBolter { .. } => "Qualif Bolter".to_string(),
-        Grading::WaveoffPilot => "Waveoff".to_string(),
-        Grading::Recovered { .. } if track.carrier_info.is_vstol() => {
-            "Spot 7.5".to_string()
-        }
-        Grading::Recovered { cable, .. } => cable
-            .map(|wire| format!("Wire #{}", wire))
-            .unwrap_or_else(|| "Landed".to_string()),
-    };
+    let outcome = recovery_outcome(&track.grading, track.carrier_info.is_vstol());
 
     // Write JSON report.
     let json_path = params.out_dir.join(&filename).with_extension("json");
@@ -716,6 +721,42 @@ async fn create_initial_update(
     }
 
     Ok(Update { id, props })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recovery_outcome;
+    use crate::track::Grading;
+
+    #[test]
+    fn arrested_recovery_without_detected_wire_uses_dash_outcome() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+
+        assert_eq!(recovery_outcome(&grading, false), "-");
+    }
+
+    #[test]
+    fn vstol_recovery_uses_spot_outcome() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+
+        assert_eq!(recovery_outcome(&grading, true), "Spot 7.5");
+    }
+
+    #[test]
+    fn intentional_bolter_is_not_exposed_as_qualification_bolter_for_vstol() {
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: Some(3),
+        };
+
+        assert_eq!(recovery_outcome(&grading, false), "Qualif Bolter");
+        assert_eq!(recovery_outcome(&grading, true), "Bolter");
+    }
 }
 
 fn tags<I: AsRef<str>>(attrs: impl IntoIterator<Item = I>) -> HashSet<Tag> {

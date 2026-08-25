@@ -145,6 +145,7 @@ Without these compatibility changes, `cargo test` fails before any grading test 
 
 - Restores `CompletedPass.outcome` so the live session, database write, JSON report, and web API use
   one computed outcome value.
+- Preserves the original arrested-recovery fallback outcome `-` when no wire was detected.
 
 ## Validation performed
 
