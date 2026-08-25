@@ -8,11 +8,7 @@ use crate::track::{GateDeviations, Grading};
 /// Source: MOOSE Airboss `gle` table CVN defaults; NAVAIR 00-80T-104.
 /// Thresholds are asymmetric: being high is penalised slightly later than being low.
 const GS_SLIGHT_HIGH: f64 = 0.5;    // (H) — "slightly high"   NAVAIR ~+0.5°
-<<<<<<< HEAD
 const GS_SLIGHT_LOW: f64 = 0.5;     // (L) — "slightly low"    symmetric V/STOL/CATOBAR threshold
-=======
-const GS_SLIGHT_LOW: f64 = 0.5;     // (L) — "slightly low"    MOOSE  −0.8° (symmetric kept)
->>>>>>> upstream/main
 const GS_SIGNIFICANT: f64 = 1.0;    // H / L — "high/low"      symmetric
 /// Dangerously low at the 1/4-nm gate — triggers a Cut pass.
 const GS_CUT_LOW_DEG: f64 = -2.5;
@@ -84,7 +80,6 @@ impl PassGrade {
 }
 
 // ---------------------------------------------------------------------------
-<<<<<<< HEAD
 // V/STOL spot accuracy
 // ---------------------------------------------------------------------------
 
@@ -164,8 +159,6 @@ pub fn compute_vstol_final_grade_from_points(
 }
 
 // ---------------------------------------------------------------------------
-=======
->>>>>>> upstream/main
 // Grade computation
 // ---------------------------------------------------------------------------
 
@@ -188,17 +181,7 @@ pub fn compute_pass_grade(
         Grading::Unknown      => PassGrade::NoGrade,
         Grading::WaveoffPilot => PassGrade::WaveoffPilot,
         Grading::Bolter       => PassGrade::Bolter,
-<<<<<<< HEAD
         Grading::Recovered { cable, .. } => {
-=======
-        Grading::Recovered { cable, .. } | Grading::IntentionalBolter { cable_estimated: cable } => {
-            if let Grading::IntentionalBolter { cable_estimated: None } = grading {
-                // For a qualification touch-and-go, if they miss the wires completely,
-                // it is graded as a Bolter (B), but the outcome still reflects it was a Qualif Bolter.
-                return PassGrade::Bolter;
-            }
-
->>>>>>> upstream/main
             let base = grade_from_gates(gates);
             // Unicorn: zero deviations (base == Ok), wire 3, groove time in window.
             if base == PassGrade::Ok
@@ -215,7 +198,6 @@ pub fn compute_pass_grade(
     }
 }
 
-<<<<<<< HEAD
 /// Compute the AV-8B V/STOL approach grade using the same gate-deviation
 /// thresholds as the CATOBAR grader, but without CATOBAR-only wire/groove
 /// bonuses.  `GateDeviations` are already measured in `track.rs` relative to
@@ -293,8 +275,6 @@ fn grade_single_gate(gate: &crate::track::GateDatum, quarter_nm: bool) -> PassGr
     }
 }
 
-=======
->>>>>>> upstream/main
 fn grade_from_gates(gates: &GateDeviations) -> PassGrade {
     // Dangerously low at the 1/4-nm gate → Cut pass.
     // GS_CUT_LOW_DEG is negative, so this triggers when the hook is well below
@@ -338,11 +318,7 @@ fn grade_from_gates(gates: &GateDeviations) -> PassGrade {
     .fold(0.0_f64, f64::max);
 
     // Apply NAVAIR/MOOSE grade tiers.
-<<<<<<< HEAD
     // GS uses the CATOBAR-derived tiers retained for both paths: slight at 0.5°, significant at 1.0°.
-=======
-    // GS is asymmetric: slight high at 0.5° (NAVAIR), slight low at 0.8° (MOOSE).
->>>>>>> upstream/main
     // Lineup has three tiers: slight (1.0°) → (OK), medium (2.0°) → --, large (3.0°) → --
     if worst_gs_high >= GS_SIGNIFICANT || worst_gs_low >= GS_SIGNIFICANT || worst_lu >= LU_MEDIUM {
         PassGrade::NoGrade
@@ -404,15 +380,9 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn test_slight_gs_low_threshold_is_0_5() {
         // 0.6° low GS: exceeds GS_SLIGHT_LOW (0.5°) → (OK).
         let g = gates_deg(-0.6, 0.0, 0.0, 0.0, 0.0, 0.0);
-=======
-    fn test_slight_gs_low_threshold_is_0_8() {
-        // 0.9° low GS: exceeds GS_SLIGHT_LOW (0.8°) → (OK).
-        let g = gates_deg(-0.9, 0.0, 0.0, 0.0, 0.0, 0.0);
->>>>>>> upstream/main
         assert_eq!(grade_from_gates(&g), PassGrade::OkParentheses);
     }
 
@@ -432,13 +402,8 @@ mod tests {
 
     #[test]
     fn test_significant_gs_deviation_is_no_grade() {
-<<<<<<< HEAD
         // 1.1° GS at 3/4 nm: exceeds GS_SIGNIFICANT (1.0°) → --.
         let g = gates_deg(1.1, 0.3, 0.1, 0.2, 0.1, 0.1);
-=======
-        // 1.6° GS at 3/4 nm: exceeds GS_SIGNIFICANT (1.5°) → --.
-        let g = gates_deg(1.6, 0.3, 0.1, 0.2, 0.1, 0.1);
->>>>>>> upstream/main
         assert_eq!(grade_from_gates(&g), PassGrade::NoGrade);
     }
 
@@ -551,7 +516,6 @@ mod tests {
     fn test_points_no_grade() {
         assert_eq!(PassGrade::NoGrade.points(), 2.0);
     }
-<<<<<<< HEAD
 
     #[test]
     fn test_vstol_spot_thresholds() {
@@ -619,6 +583,4 @@ mod tests {
         assert!((points - ((10.0 / 3.0) + 0.75)).abs() < 1e-9);
     }
 
-=======
->>>>>>> upstream/main
 }
