@@ -40,6 +40,7 @@ graphify-out/
 *.acmi
 
 # custom ignore rules
+.ignore/
 modelviewer/
 trap_records/
 docs/analys-codex-justice/
