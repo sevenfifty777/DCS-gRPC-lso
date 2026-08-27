@@ -111,10 +111,14 @@ pub struct Track {
     spot_distance_m: Option<f64>,
     carrier_info: &'static CarrierInfo,
     plane_info: &'static AirplaneInfo,
+    /// Carrier and aircraft transforms at the closest point of an arrested approach.
+    min_distance_state: Option<(Transform, Transform)>,
     /// Exponentially smoothed carrier position used for approach geometry.
     /// Eliminates the sawtooth caused by DCS updating the carrier's world
     /// position in discrete steps rather than every frame.
     smoothed_carrier_pos: Option<DVec3>,
+    /// Whether an arrested-recovery aircraft was observed with its hook raised.
+    hook_was_up: bool,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -144,6 +148,9 @@ pub struct GateDeviations {
 pub enum Grading {
     Unknown,
     Bolter,
+    IntentionalBolter {
+        cable_estimated: Option<u8>,
+    },
     /// Pilot broke off the approach after entering the groove (inside 3/4 nm, below 300 ft).
     WaveoffPilot,
     Recovered {
@@ -197,11 +204,18 @@ impl Track {
             spot_distance_m: None,
             carrier_info,
             plane_info,
+            min_distance_state: None,
             smoothed_carrier_pos: None,
+            hook_was_up: false,
         }
     }
 
-    pub fn next(&mut self, carrier: &Transform, plane: &Transform) -> bool {
+    pub fn next(
+        &mut self,
+        carrier: &Transform,
+        plane: &Transform,
+        hook_state: Option<f64>,
+    ) -> bool {
         // ---------------------------------------------------------------
         // Pattern datum — BRC frame, recorded every frame.
         // Origin = carrier position. x_chart = -port_m, y_chart = -astern_m
@@ -274,14 +288,41 @@ impl Track {
             return false;
         }
 
+        let is_arrested_recovery = matches!(
+            &self.carrier_info.recovery,
+            CarrierRecovery::Arrested
+        );
+        if is_arrested_recovery && hook_state.is_some_and(|state| state < 0.5) {
+            self.hook_was_up = true;
+        }
+
         // Track the minimum distance to the touchdown point.
         let distance = ray_from_plane_to_carrier.mag();
         if distance < self.previous_distance {
             self.previous_distance = distance;
+            if is_arrested_recovery {
+                self.min_distance_state = Some((carrier.clone(), plane.clone()));
+            }
         } else if distance - self.previous_distance > 150.0 {
             match &self.grading {
                 Some(Grading::Recovered { .. }) => {
-                    // Landed and now moving away → bolter.
+                    // An arrested-recovery aircraft with its hook raised is a
+                    // qualification touch-and-go; V/STOL never enters this path.
+                    if self.hook_was_up {
+                        if let Some((min_carrier, min_plane)) = &self.min_distance_state {
+                            let estimated = self.estimate_cable(min_carrier, min_plane);
+                            tracing::debug!(
+                                distance_in_m = distance,
+                                "intentional bolter detected after touchdown"
+                            );
+                            self.grading = Some(Grading::IntentionalBolter {
+                                cable_estimated: estimated,
+                            });
+                            return false;
+                        }
+                    }
+
+                    // Landed and now moving away → normal bolter.
                     tracing::debug!(distance_in_m = distance, "bolter detected");
                     self.grading = Some(Grading::Bolter);
                     return false;
@@ -292,7 +333,29 @@ impl Track {
                     return false;
                 }
                 None if self.entered_groove => {
-                    // Entered the groove but now moving away → pilot waveoff.
+                    // An arrested aircraft that crossed the deck is a bolter or
+                    // qualification touch-and-go; otherwise it is a waveoff.
+                    if let Some((min_carrier, min_plane)) = &self.min_distance_state {
+                        if self.hook_was_up {
+                            let estimated = self.estimate_cable(min_carrier, min_plane);
+                            tracing::debug!(
+                                distance_in_m = distance,
+                                "intentional bolter detected"
+                            );
+                            self.grading = Some(Grading::IntentionalBolter {
+                                cable_estimated: estimated,
+                            });
+                            return false;
+                        }
+
+                        tracing::debug!(
+                            distance_in_m = distance,
+                            "bolter detected (no touchdown)"
+                        );
+                        self.grading = Some(Grading::Bolter);
+                        return false;
+                    }
+
                     tracing::debug!(distance_in_m = distance, "waveoff detected (entered groove, moving away)");
                     self.grading = Some(Grading::WaveoffPilot);
                     return false;
@@ -554,6 +617,7 @@ impl Track {
         } else {
             self.grading.unwrap_or_default()
         };
+        let grading = normalize_grading_for_recovery(grading, &self.carrier_info.recovery);
 
         let groove_time_secs = match (self.groove_entry_time, self.landing_time) {
             (Some(entry), Some(land)) if land > entry => Some(land - entry),
@@ -662,5 +726,53 @@ impl Track {
 impl Default for Grading {
     fn default() -> Self {
         Self::Unknown
+    }
+}
+
+fn normalize_grading_for_recovery(
+    grading: Grading,
+    recovery: &CarrierRecovery,
+) -> Grading {
+    match (recovery, grading) {
+        // Intentional bolters are hook-up qualification passes and only exist
+        // for arrested recoveries. Never expose this outcome on V/STOL.
+        (CarrierRecovery::Vstol { .. }, Grading::IntentionalBolter { .. }) => Grading::Bolter,
+        (_, grading) => grading,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intentional_bolter_is_preserved_for_arrested_recovery() {
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: Some(3),
+        };
+
+        assert_eq!(
+            normalize_grading_for_recovery(grading, &CarrierRecovery::Arrested),
+            Grading::IntentionalBolter {
+                cable_estimated: Some(3)
+            }
+        );
+    }
+
+    #[test]
+    fn intentional_bolter_is_never_exposed_for_vstol_recovery() {
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: Some(3),
+        };
+        let recovery = CarrierRecovery::Vstol {
+            landing_point: DVec3::zero(),
+            approach_axis_port_m: 27.24,
+            target_altitude_ft: 120.0,
+        };
+
+        assert_eq!(
+            normalize_grading_for_recovery(grading, &recovery),
+            Grading::Bolter
+        );
     }
 }

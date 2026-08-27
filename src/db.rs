@@ -36,6 +36,7 @@ pub struct DbPass {
     pub grade_points: f64,
     /// In-mission date/time from DCS scenario clock (ISO-8601 string).
     pub mission_datetime: String,
+    pub outcome: String,
 }
 
 /// Pass record as returned from a database query (JSON-serialisable for the web API).
@@ -61,6 +62,7 @@ pub struct StoredPass {
     pub grade_points: f64,
     /// In-mission date/time from DCS scenario clock.
     pub mission_datetime: String,
+    pub outcome: String,
 }
 
 impl RecoveryDb {
@@ -84,7 +86,8 @@ impl RecoveryDb {
                 map_name       TEXT,
                 grade_date         TEXT    NOT NULL DEFAULT '',
                 grade_points       REAL    NOT NULL DEFAULT 0.0,
-                mission_datetime   TEXT    NOT NULL DEFAULT ''
+                mission_datetime   TEXT    NOT NULL DEFAULT '',
+                outcome            TEXT    NOT NULL DEFAULT ''
             );",
         )?;
         // Migrations: add columns to pre-existing databases that lack them.
@@ -100,6 +103,7 @@ impl RecoveryDb {
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN spot TEXT;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN spot_grade TEXT;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN spot_distance_m REAL;");
+        let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN outcome TEXT NOT NULL DEFAULT '';");
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -111,8 +115,8 @@ impl RecoveryDb {
         conn.execute(
             "INSERT INTO passes \
                 (timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
-                 map_name, grade_date, grade_points, mission_datetime) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 map_name, grade_date, grade_points, mission_datetime, outcome) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -129,6 +133,7 @@ impl RecoveryDb {
                 &pass.grade_date,
                 pass.grade_points,
                 &pass.mission_datetime,
+                &pass.outcome,
             ],
         )?;
         Ok(())
@@ -139,7 +144,7 @@ impl RecoveryDb {
         let conn = self.conn.lock().expect("db mutex poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
-                    map_name, grade_date, grade_points, mission_datetime \
+                    map_name, grade_date, grade_points, mission_datetime, outcome \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -166,8 +171,43 @@ impl RecoveryDb {
                 grade_date: row.get(13)?,
                 grade_points: row.get(14)?,
                 mission_datetime: row.get(15)?,
+                outcome: row.get(16)?,
             })
         })?;
         rows.collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outcome_round_trips_through_sqlite() {
+        let db = RecoveryDb::open(Path::new(":memory:")).expect("open in-memory database");
+        db.insert(&DbPass {
+            timestamp: "LSO-test".to_string(),
+            pilot_name: "Pilot".to_string(),
+            pilot_ucid: None,
+            aircraft_id: Some(1),
+            pass_grade_label: "(OK)".to_string(),
+            wire: Some(3),
+            spot: None,
+            spot_grade: None,
+            spot_distance_m: None,
+            dcs_grading: None,
+            aircraft_type: Some("F/A-18C".to_string()),
+            map_name: Some("Caucasus".to_string()),
+            grade_date: "2026-08-26 00:00:00".to_string(),
+            grade_points: 3.0,
+            mission_datetime: "2026-08-26T00:00:00Z".to_string(),
+            outcome: "Qualif Bolter".to_string(),
+        })
+        .expect("insert pass");
+
+        let passes = db.all_passes().expect("query passes");
+
+        assert_eq!(passes.len(), 1);
+        assert_eq!(passes[0].outcome, "Qualif Bolter");
     }
 }

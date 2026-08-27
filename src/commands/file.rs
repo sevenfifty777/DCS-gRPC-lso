@@ -340,7 +340,9 @@ impl CarrierPlanePair {
         }
 
         if self.is_recovery_attempt {
-            let mut should_continue = self.datums.next(&self.carrier, &self.plane);
+            // Tacview recordings do not contain the live hook draw argument,
+            // so offline extraction cannot detect a qualification bolter.
+            let mut should_continue = self.datums.next(&self.carrier, &self.plane, None);
             if self.landed {
                 self.datums.landed(&self.carrier, &self.plane);
                 should_continue = false;

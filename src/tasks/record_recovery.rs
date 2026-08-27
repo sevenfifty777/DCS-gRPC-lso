@@ -54,6 +54,7 @@ struct RecoveryReport<'a> {
     /// In-mission date/time from the DCS scenario clock (ISO-8601).
     #[serde(skip_serializing_if = "str::is_empty")]
     mission_datetime: &'a str,
+    outcome: &'a str,
 }
 
 pub static FILENAME_DATETIME_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>> =
@@ -66,6 +67,22 @@ pub static GRADE_DATE_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>
     Lazy::new(|| {
         time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").unwrap()
     });
+
+fn recovery_outcome(grading: &Grading, is_vstol: bool) -> String {
+    match (is_vstol, grading) {
+        (_, Grading::Unknown) => "unknown".to_string(),
+        (_, Grading::Bolter) => "Bolter".to_string(),
+        // Intentional bolters are valid only for arrested recoveries. Keep the
+        // V/STOL fallback defensive in case an invalid grading reaches this layer.
+        (true, Grading::IntentionalBolter { .. }) => "Bolter".to_string(),
+        (false, Grading::IntentionalBolter { .. }) => "Qualif Bolter".to_string(),
+        (_, Grading::WaveoffPilot) => "Waveoff".to_string(),
+        (true, Grading::Recovered { .. }) => "Spot 7.5".to_string(),
+        (false, Grading::Recovered { cable, .. }) => cable
+            .map(|wire| format!("Wire #{}", wire))
+            .unwrap_or_else(|| "-".to_string()),
+    }
+}
 
 #[tracing::instrument(
     skip_all,
@@ -177,6 +194,14 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     client2.get_transform(params.plane_name),
                 )
                 .await?;
+                let hook_state = if params.carrier_info.is_vstol() {
+                    None
+                } else {
+                    client2
+                        .get_draw_argument_value(params.plane_name, 25)
+                        .await
+                        .ok()
+                };
 
                 if !ref_written {
                     lat_ref = carrier.lat;
@@ -234,7 +259,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
-                if !datums.next(&carrier, &plane) {
+                if !datums.next(&carrier, &plane, hook_state) {
                     break;
                 }
 
@@ -375,7 +400,15 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         text: None,
                     })?;
 
-                    datums.next(&carrier, &plane);
+                    let hook_state = if params.carrier_info.is_vstol() {
+                        None
+                    } else {
+                        client2
+                            .get_draw_argument_value(params.plane_name, 25)
+                            .await
+                            .ok()
+                    };
+                    datums.next(&carrier, &plane, hook_state);
                     datums.landed(&carrier, &plane);
 
                     // don't stop right away, track a couple of more seconds
@@ -453,6 +486,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         }
     };
 
+    let outcome = recovery_outcome(&track.grading, track.carrier_info.is_vstol());
+
     // Write JSON report.
     let json_path = params.out_dir.join(&filename).with_extension("json");
     let spot_label = track.carrier_info.is_vstol().then_some("7.5");
@@ -470,11 +505,13 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         gate_deviations: &track.gate_deviations,
         datums: &track.datums,
         mission_datetime: &mission_datetime,
+        outcome: &outcome,
     };
     tokio::fs::write(&json_path, serde_json::to_vec_pretty(&report)?).await?;
 
     let wire = match track.grading {
         Grading::Recovered { cable, .. } => cable,
+        Grading::IntentionalBolter { cable_estimated } => cable_estimated,
         _ => None,
     };
     let aircraft_id = crate::data::get_aircraft_id(params.plane_type);
@@ -497,6 +534,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         aircraft_type: display_type.to_string(),
         aircraft_id,
         map_name: map_name.clone(),
+        outcome: outcome.clone(),
     };
 
     // Append to in-memory session greenie board log.
@@ -541,6 +579,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 .unwrap_or_default(),
             grade_points: completed.grade_points,
             mission_datetime: mission_datetime.clone(),
+            outcome: completed.outcome.clone(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(())) => {}
@@ -597,23 +636,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             )
             .field(
                 "Outcome",
-                if track.carrier_info.is_vstol() {
-                    match track.grading {
-                        Grading::Recovered { .. } => Cow::Borrowed("Spot 7.5"),
-                        Grading::Unknown => Cow::Borrowed("unknown"),
-                        Grading::Bolter => Cow::Borrowed("Bolter"),
-                        Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-                    }
-                } else {
-                    match track.grading {
-                        Grading::Unknown => Cow::Borrowed("unknown"),
-                        Grading::Bolter => Cow::Borrowed("Bolter"),
-                        Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-                        Grading::Recovered { cable, .. } => cable
-                            .map(|c| Cow::Owned(format!("Wire #{}", c)))
-                            .unwrap_or(Cow::Borrowed("-")),
-                    }
-                },
+                completed.outcome.clone(),
                 true,
             )
             .field(
@@ -689,7 +712,7 @@ async fn create_initial_update(
     let coalition = Coalition::try_from(unit.coalition).unwrap_or(Coalition::Neutral);
     let mut props = vec![
         Property::Type(tags(attrs)),
-        Property::Name(unit.r#type),
+        Property::Name(unit.r#type.unwrap_or_default()),
         Property::Group(unit.group.unwrap_or_default().name),
         Property::Color(color(coalition)),
     ];
@@ -698,6 +721,42 @@ async fn create_initial_update(
     }
 
     Ok(Update { id, props })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recovery_outcome;
+    use crate::track::Grading;
+
+    #[test]
+    fn arrested_recovery_without_detected_wire_uses_dash_outcome() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+
+        assert_eq!(recovery_outcome(&grading, false), "-");
+    }
+
+    #[test]
+    fn vstol_recovery_uses_spot_outcome() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+
+        assert_eq!(recovery_outcome(&grading, true), "Spot 7.5");
+    }
+
+    #[test]
+    fn intentional_bolter_is_not_exposed_as_qualification_bolter_for_vstol() {
+        let grading = Grading::IntentionalBolter {
+            cable_estimated: Some(3),
+        };
+
+        assert_eq!(recovery_outcome(&grading, false), "Qualif Bolter");
+        assert_eq!(recovery_outcome(&grading, true), "Bolter");
+    }
 }
 
 fn tags<I: AsRef<str>>(attrs: impl IntoIterator<Item = I>) -> HashSet<Tag> {

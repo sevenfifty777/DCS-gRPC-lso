@@ -184,7 +184,7 @@ async fn run(
                         (
                             unit.id,
                             unit.player_name.unwrap_or_else(|| String::from("KI")),
-                            unit.r#type.clone(),
+                            unit.r#type.clone().unwrap_or_default(),
                             plane_info,
                         ),
                     );
@@ -321,7 +321,7 @@ async fn run(
                                 carrier_info,
                                 unit.id,
                                 unit.name.clone(),
-                                unit.r#type.clone(),
+                                unit.r#type.clone().unwrap_or_default(),
                                 plane_info,
                                 unit.player_name
                                     .clone()
@@ -380,7 +380,11 @@ async fn check_candidate(
 ) -> Result<Option<Candidate>, Status> {
     match GroupCategory::try_from(unit.group.as_ref().map(|g| g.category).unwrap_or(-1)) {
         Ok(GroupCategory::Airplane) if unit.player_name.is_some() || include_ki => {
-            return Ok(AirplaneInfo::by_type(&unit.r#type).map(Candidate::Plane))
+            return Ok(unit
+                .r#type
+                .as_deref()
+                .and_then(AirplaneInfo::by_type)
+                .map(Candidate::Plane))
         }
         Ok(GroupCategory::Ship) => {
             let attrs = svc
@@ -398,7 +402,11 @@ async fn check_candidate(
                         | "AircraftCarrier With Tramplin"
                 )
             }) {
-                return Ok(CarrierInfo::by_type(&unit.r#type).map(Candidate::Carrier));
+                return Ok(unit
+                    .r#type
+                    .as_deref()
+                    .and_then(CarrierInfo::by_type)
+                    .map(Candidate::Carrier));
             }
         }
         _ => {}

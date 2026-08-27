@@ -5,7 +5,7 @@ use ultraviolet::{DRotor3, DVec3};
 
 use crate::utils::precision::Precision;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Transform {
     pub forward: DVec3,
     pub position: DVec3,
