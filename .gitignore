@@ -34,7 +34,7 @@ build/
 coverage/
 
 # Generated analysis output
-graphify-out/
+
 
 # ACMI files
 *.acmi
