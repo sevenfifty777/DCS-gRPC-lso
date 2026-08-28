@@ -1,10 +1,11 @@
 # DCS-gRPC Fork Migration
 
-**Date:** 2026-08-25  
+**Date:** 2026-08-25; updated for the official release on 2026-08-28
 **Status:** Implemented and validated  
 **LSO version:** 0.2.0  
 **Server/stubs version:** 0.9.0  
-**Pinned server commit:** [`11aea3484099c2dd21d41a53db2e510f6e5e84c5`](https://github.com/sevenfifty777/rust-server/commit/11aea3484099c2dd21d41a53db2e510f6e5e84c5)
+**Official release:** [`v0.9.0`](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0)
+**Locked server commit:** [`5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`](https://github.com/sevenfifty777/rust-server/commit/5bd6d6e42491c8697a5c5a95e80a2e689923bd3b)
 
 ## 1. Purpose
 
@@ -41,13 +42,15 @@ tonic = "0.13"
 [dependencies.stubs]
 package = "dcs-grpc-stubs"
 git = "https://github.com/sevenfifty777/rust-server.git"
-rev = "11aea3484099c2dd21d41a53db2e510f6e5e84c5"
+tag = "v0.9.0"
 features = ["client"]
 ```
 
-The full commit SHA is used instead of `main`. This prevents a future push to the branch from
-silently changing the generated Rust API or the compiled LSO binary. At migration time, the fork
-had no version tag or GitHub release for 0.9.0, so an immutable commit was the reproducible choice.
+The manifest selects the official release tag instead of `main`. `Cargo.lock` records the resolved
+commit, so locked builds continue to use the reviewed source rather than following later branch
+changes. At the original migration on 2026-08-25, the fork had no `v0.9.0` tag or GitHub release, so
+commit `11aea3484099c2dd21d41a53db2e510f6e5e84c5` was used provisionally. The official annotated tag
+published on 2026-08-28 resolves to `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`.
 
 ## 3. Why `tonic` Was Upgraded
 
@@ -120,7 +123,8 @@ resulting stubs entry is:
 ```text
 dcs-grpc-stubs 0.9.0
 git+https://github.com/sevenfifty777/rust-server.git
-rev 11aea3484099c2dd21d41a53db2e510f6e5e84c5
+tag v0.9.0
+commit 5bd6d6e42491c8697a5c5a95e80a2e689923bd3b
 ```
 
 The initial RustSec scan found two vulnerable transitive packages and one unsound package warning.
@@ -140,16 +144,32 @@ The final audit reported zero known vulnerabilities. It retained one allowed mai
 - The warning does not describe a known exploitable vulnerability, but it should be reviewed when
   Plotters or the chart-rendering stack is next upgraded.
 
+### Official release tag review
+
+The official release was published on 2026-08-28, so it was still inside the normal observation
+window for a new dependency release when this update was requested. The source diff from the
+provisional commit to the tag target was therefore reviewed before the lockfile was changed:
+
+- `stubs/Cargo.toml` and `stubs/build.rs` did not change, so the stubs introduced no new direct,
+  build, or transitive dependency requirements.
+- The protobuf edits are formatting and lint comments; they do not change field numbers, field
+  types, service names, or RPC signatures.
+- The stubs library change is module ordering plus a Clippy allowance for generated tonic methods.
+- The material server behavior change is the stale-unit/SRS error-handling fix included in the
+  official release. It does not alter the LSO client API.
+- All intervening commits were authored through the same `sevenfifty777` GitHub account. The
+  annotated tag is not cryptographically signed, so the lockfile's exact commit remains important.
+
 ## 6. Files Changed
 
 | File | Change |
 |---|---|
-| `Cargo.toml` | Points `dcs-grpc-stubs` to the fork commit and upgrades `tonic` to 0.13 |
-| `Cargo.lock` | Records stubs 0.9.0, the new gRPC stack, and patched transitive packages |
+| `Cargo.toml` | Points `dcs-grpc-stubs` to the official fork tag and upgrades `tonic` to 0.13 |
+| `Cargo.lock` | Records stubs 0.9.0, the resolved release commit, the new gRPC stack, and patched transitive packages |
 | `src/commands/run.rs` | Handles optional `Unit.type` during initial discovery and `Birth` events |
 | `src/tasks/record_recovery.rs` | Adds a safe ACMI name fallback when `Unit.type` is absent |
 | `README.md` | States that the forked DCS-gRPC 0.9.0 server is required |
-| `docs/ADMIN_GUIDE.md` | Updates installation requirements, repository instructions, and the pinned server reference |
+| `docs/ADMIN_GUIDE.md` | Updates installation requirements, repository instructions, and the official release baseline |
 | `docs/LSO_ANALYSIS.md` | Updates the architecture and dependency descriptions |
 | `docs/analysis2.md` | Updates the recorded server, stubs, and `tonic` versions |
 
@@ -164,19 +184,19 @@ was not rewritten as part of this migration.
 cargo update -p dcs-grpc-stubs
 ```
 
-Result: the fork was fetched successfully and `Cargo.lock` resolved `dcs-grpc-stubs 0.9.0` at the
-exact pinned commit.
+Result: the fork was fetched successfully and `Cargo.lock` resolved `dcs-grpc-stubs 0.9.0` from tag
+`v0.9.0` at the exact release commit.
 
 ### Full test suite
 
 ```powershell
-cargo test
+cargo test --locked --no-fail-fast
 ```
 
 Result:
 
 ```text
-39 passed; 0 failed; 0 ignored
+55 passed; 0 failed; 0 ignored
 ```
 
 This validates compilation of the generated 0.9.0 clients and all existing unit tests, including
@@ -198,25 +218,26 @@ Final result:
 
 ### Reference and whitespace checks
 
-The active manifest and project documentation were scanned for the former upstream URL and 0.8.1
-requirement. No active reference remains, except historical text that explicitly discusses the old
-version. `git diff --check` also completed successfully.
+The active manifest and project documentation were scanned for the former upstream URL, the 0.8.1
+requirement, and the provisional `11aea348...` pin. No active reference remains, except historical
+text that explicitly records the previous dependency state. `git diff --check` also completed
+successfully.
 
 The repository-wide `cargo fmt -- --check` command still reports formatting drift in pre-existing
 source files. Broad automatic formatting was deliberately not applied because it would create
-unrelated runtime-code changes. During the 2026-08-25 documentation refresh,
-`cargo clippy -- -D warnings` also reported seven existing code-quality findings; see
-`docs/analysis_results.md` for the current validation summary.
+unrelated runtime-code changes. On 2026-08-28, `cargo clippy --locked -- -D warnings` continued to
+report the same seven existing code-quality findings; see `docs/analysis_results.md` for the current
+validation summary.
 
 ## 8. Runtime Deployment Requirement
 
 The Rust client stubs and the DCS server installation should describe the same protocol version.
-Deploy the server built from the pinned fork commit together with the LSO binary built from this
-lockfile:
+Deploy the official release together with the LSO binary built from this lockfile:
 
 ```text
-https://github.com/sevenfifty777/rust-server
-commit 11aea3484099c2dd21d41a53db2e510f6e5e84c5
+https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0
+tag v0.9.0
+locked commit 5bd6d6e42491c8697a5c5a95e80a2e689923bd3b
 ```
 
 Using upstream DCS-gRPC 0.8.1 with this LSO build is no longer the supported configuration. A
@@ -225,12 +246,12 @@ runtime behavior even when the TCP connection itself succeeds.
 
 ## 9. Future Fork Upgrade Procedure
 
-When a newer fork commit is ready:
+When a newer fork release is ready:
 
-1. Review the fork history and identify the exact tested commit SHA.
+1. Review the fork history, release tag, and exact target commit SHA.
 2. Review `Cargo.toml`, `stubs/Cargo.toml`, protobuf changes, build dependencies, and the changelog
    in the server repository.
-3. Update only the `rev` value in the LSO `[dependencies.stubs]` section unless the fork also changes
+3. Update only the `tag` value in the LSO `[dependencies.stubs]` section unless the fork also changes
    its required `tonic` version.
 4. Regenerate the lockfile:
 

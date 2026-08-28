@@ -2,6 +2,8 @@
 
 **Audit date:** 2026-08-25
 
+**Dependency baseline refreshed:** 2026-08-28
+
 **Implementation baseline:** crate `0.2.0`, commit `b9ac263` before documentation changes
 
 **Excluded by request:** `docs/analys-codex-justice/`
@@ -26,7 +28,7 @@ documentation.
 | Pattern chart | Not present or clipped at old ranges | Separate 900x900 PNG, +/-2.5 nm port/starboard and +/-3 nm ahead/astern |
 | Web board | Planned | Implemented on `0.0.0.0:<port>`, unauthenticated, HTTP only |
 | Database | Minimal schema or planned | 14 columns including UCID, aircraft ID/display name, map, UTC/mission time, points, and outcome |
-| DCS-gRPC | Upstream 0.8.1 | sevenfifty777 fork 0.9.0 at commit `11aea348...` |
+| DCS-gRPC | Upstream 0.8.1 | official sevenfifty777 fork tag `v0.9.0`, locked at `5bd6d6e...` |
 | Links | Machine-local `file:///c:/...` links | Repository-relative links |
 | Development commands | `cargo run -- run -vv` and `cargo run --file ...` | `cargo run -- -vv run` and `cargo run -- file ...` |
 
@@ -72,12 +74,12 @@ Additional documented limitations:
 
 | Check | Result |
 |---|---|
-| `cargo test` | Passed: 39 passed, 0 failed |
+| `cargo test --locked --no-fail-fast` | Passed: 55 passed, 0 failed |
 | Local Markdown/HTML link check | Passed: all repository-relative targets resolve |
 | `git diff --check` | Passed; Git reports only Windows LF-to-CRLF notices |
 | `cargo audit` | 0 vulnerabilities; one allowed unmaintained warning for `ttf-parser 0.20.0` (`RUSTSEC-2026-0192`) |
 | `cargo fmt -- --check` | Failed on pre-existing formatting drift across Rust sources; no source formatting was applied |
-| `cargo clippy -- -D warnings` | Failed with 7 pre-existing findings: three large error results, type complexity, drain/collect, manual range containment, and derivable `Default` |
+| `cargo clippy --locked -- -D warnings` | Failed with 7 pre-existing findings: three large error results, type complexity, drain/collect, manual range containment, and derivable `Default` |
 
 ## Canonical documentation map
 

@@ -190,4 +190,5 @@ exposure need environment-level validation.
 - Discord webhook URLs are accepted only as a CLI argument. Operators must protect process/service
   configuration and avoid committing or sharing the URL.
 - Offline replay does not reproduce every live artifact.
-- DCS-gRPC and live DCS behavior remain coupled to the exact pinned fork revision.
+- DCS-gRPC and live DCS behavior remain coupled to the official fork release tag and the exact
+  revision recorded in `Cargo.lock`.
