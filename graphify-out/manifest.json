@@ -1,0 +1,1154 @@
+{
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\Cargo.toml": {
+    "mtime": 1787669912.9666023,
+    "seen": 1787917768.444871,
+    "ast_hash": "0c79c47419a901ba37e9b39b4a645f9e",
+    "semantic_hash": "0c79c47419a901ba37e9b39b4a645f9e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\Carrier info\\TarawaRunwaysAndRoutes.lua": {
+    "mtime": 1787669912.9686007,
+    "seen": 1787917768.444871,
+    "ast_hash": "93623130c9b3e6d51353a5fb8bc0280c",
+    "semantic_hash": "93623130c9b3e6d51353a5fb8bc0280c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\Carrier info\\USS_Nimitz_RunwaysAndRoutes.lua": {
+    "mtime": 1787669912.9686007,
+    "seen": 1787917768.444871,
+    "ast_hash": "6d49e95a630a033b5027464c706f033c",
+    "semantic_hash": "6d49e95a630a033b5027464c706f033c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\exporters\\object.lua": {
+    "mtime": 1787669913.1046035,
+    "seen": 1787917768.444871,
+    "ast_hash": "87267a1ca2f947091d40e91a0fed8e22",
+    "semantic_hash": "87267a1ca2f947091d40e91a0fed8e22"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\grpc-hook.lua": {
+    "mtime": 1787669913.1056037,
+    "seen": 1787917768.444871,
+    "ast_hash": "c2a1d19131ff1a5bab7ceaa19109e334",
+    "semantic_hash": "c2a1d19131ff1a5bab7ceaa19109e334"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\grpc-mission.lua": {
+    "mtime": 1787669913.1056037,
+    "seen": 1787917768.444871,
+    "ast_hash": "b7fae231015e49128f44a975a4cdf279",
+    "semantic_hash": "b7fae231015e49128f44a975a4cdf279"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\grpc.lua": {
+    "mtime": 1787669913.1066034,
+    "seen": 1787917768.444871,
+    "ast_hash": "0b3b0c5db1183c2cff970908c22c37c0",
+    "semantic_hash": "0b3b0c5db1183c2cff970908c22c37c0"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\atmosphere.lua": {
+    "mtime": 1787669913.1076014,
+    "seen": 1787917768.444871,
+    "ast_hash": "73d2c81f77a3b37719edf8b3c479bd34",
+    "semantic_hash": "73d2c81f77a3b37719edf8b3c479bd34"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\coalitions.lua": {
+    "mtime": 1787669913.1076014,
+    "seen": 1787917768.444871,
+    "ast_hash": "ffbb7a3e702e630015d12888d89bfbf1",
+    "semantic_hash": "ffbb7a3e702e630015d12888d89bfbf1"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\controllers.lua": {
+    "mtime": 1787669913.108601,
+    "seen": 1787917768.444871,
+    "ast_hash": "265f27efcb6b402accd00135c8a29138",
+    "semantic_hash": "265f27efcb6b402accd00135c8a29138"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\custom.lua": {
+    "mtime": 1787669913.1096015,
+    "seen": 1787917768.444871,
+    "ast_hash": "68e167bd0d32edff5d48ecb4c3cb6b1f",
+    "semantic_hash": "68e167bd0d32edff5d48ecb4c3cb6b1f"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\group.lua": {
+    "mtime": 1787669913.1096015,
+    "seen": 1787917768.444871,
+    "ast_hash": "1d5c6ec3268d912bb7282e5d4f6cb69b",
+    "semantic_hash": "1d5c6ec3268d912bb7282e5d4f6cb69b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\hook.lua": {
+    "mtime": 1787669913.1096015,
+    "seen": 1787917768.444871,
+    "ast_hash": "75ecc033b72fb2c42a5f88bbab080f51",
+    "semantic_hash": "75ecc033b72fb2c42a5f88bbab080f51"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\land.lua": {
+    "mtime": 1787669913.1106045,
+    "seen": 1787917768.444871,
+    "ast_hash": "3fc7e6768af63a708196b0e62746764a",
+    "semantic_hash": "3fc7e6768af63a708196b0e62746764a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\mission.lua": {
+    "mtime": 1787669913.1106045,
+    "seen": 1787917768.444871,
+    "ast_hash": "6a8178978fd913229137fe6acd738bfe",
+    "semantic_hash": "6a8178978fd913229137fe6acd738bfe"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\net.lua": {
+    "mtime": 1787669913.1116016,
+    "seen": 1787917768.444871,
+    "ast_hash": "e15adcb3a3c8d324ba12044dfed2cfcb",
+    "semantic_hash": "e15adcb3a3c8d324ba12044dfed2cfcb"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\spot.lua": {
+    "mtime": 1787669913.1116016,
+    "seen": 1787917768.444871,
+    "ast_hash": "b64d7b2ac76e5b7563d389c68b254091",
+    "semantic_hash": "b64d7b2ac76e5b7563d389c68b254091"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\timer.lua": {
+    "mtime": 1787669913.1126008,
+    "seen": 1787917768.444871,
+    "ast_hash": "28f7f8a468f9fe22a7d8e31716ee5c33",
+    "semantic_hash": "28f7f8a468f9fe22a7d8e31716ee5c33"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\trigger.lua": {
+    "mtime": 1787669913.1126008,
+    "seen": 1787917768.444871,
+    "ast_hash": "bab7df08d0d3a34a21b4493cf8474069",
+    "semantic_hash": "bab7df08d0d3a34a21b4493cf8474069"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\unit.lua": {
+    "mtime": 1787669913.1136017,
+    "seen": 1787917768.444871,
+    "ast_hash": "2993faf58cad0a6ade41b61e5a1ae9d5",
+    "semantic_hash": "2993faf58cad0a6ade41b61e5a1ae9d5"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\warehouse.lua": {
+    "mtime": 1787669913.1136017,
+    "seen": 1787917768.444871,
+    "ast_hash": "5fb928d690a24e52ecbbc5e322c0df7e",
+    "semantic_hash": "5fb928d690a24e52ecbbc5e322c0df7e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\weapon.lua": {
+    "mtime": 1787669913.1146045,
+    "seen": 1787917768.444871,
+    "ast_hash": "528915b7368be44a160f5b39d03f1dfe",
+    "semantic_hash": "528915b7368be44a160f5b39d03f1dfe"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\methods\\world.lua": {
+    "mtime": 1787669913.1146045,
+    "seen": 1787917768.444871,
+    "ast_hash": "acd950f325d32e471cefae69561f1209",
+    "semantic_hash": "acd950f325d32e471cefae69561f1209"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\DCS-gRPC\\version.lua": {
+    "mtime": 1787669913.1156025,
+    "seen": 1787917768.444871,
+    "ast_hash": "7ea8d03d2822655ce5e998147f21b928",
+    "semantic_hash": "7ea8d03d2822655ce5e998147f21b928"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Scripts\\Hooks\\DCS-gRPC.lua": {
+    "mtime": 1787669913.1156025,
+    "seen": 1787917768.444871,
+    "ast_hash": "409ed5d850aa7f7ec851922757a7c91b",
+    "semantic_hash": "409ed5d850aa7f7ec851922757a7c91b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\client\\atmosphere_client.rs": {
+    "mtime": 1781430899.1579738,
+    "seen": 1787917768.444871,
+    "ast_hash": "5aed4e89f8d27d3038d996edbfbf97fb",
+    "semantic_hash": "5aed4e89f8d27d3038d996edbfbf97fb"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\client\\hook_client.rs": {
+    "mtime": 1781104371.975224,
+    "seen": 1787917768.444871,
+    "ast_hash": "38a86975ac08bf0087cce2fa44736362",
+    "semantic_hash": "38a86975ac08bf0087cce2fa44736362"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\client\\mission_client.rs": {
+    "mtime": 1786743031.5600393,
+    "seen": 1787917768.444871,
+    "ast_hash": "3cec6b2c71747513b59926a86b72e584",
+    "semantic_hash": "3cec6b2c71747513b59926a86b72e584"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\client\\mod.rs": {
+    "mtime": 1786743031.5600393,
+    "seen": 1787917768.444871,
+    "ast_hash": "9353b29897d176529f785cdac162838a",
+    "semantic_hash": "9353b29897d176529f785cdac162838a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\client\\net_client.rs": {
+    "mtime": 1786743031.5610409,
+    "seen": 1787917768.444871,
+    "ast_hash": "0a1f7dc30fe981717215d5d54a2af0e0",
+    "semantic_hash": "0a1f7dc30fe981717215d5d54a2af0e0"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\client\\unit_client.rs": {
+    "mtime": 1787856006.1361804,
+    "seen": 1787917768.444871,
+    "ast_hash": "359093b0644e088f14024aad4be60a1a",
+    "semantic_hash": "359093b0644e088f14024aad4be60a1a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\client\\world_client.rs": {
+    "mtime": 1781943473.7788577,
+    "seen": 1787917768.444871,
+    "ast_hash": "56cf4d8e3f63021c014e7f9dcf0bc2df",
+    "semantic_hash": "56cf4d8e3f63021c014e7f9dcf0bc2df"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\commands\\file.rs": {
+    "mtime": 1787856006.1361804,
+    "seen": 1787917768.444871,
+    "ast_hash": "92a70800952bc7516509389210b775a3",
+    "semantic_hash": "92a70800952bc7516509389210b775a3"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\commands\\mod.rs": {
+    "mtime": 1787731451.3727014,
+    "seen": 1787917768.444871,
+    "ast_hash": "0c11538c522a53f1f344d1db600422f4",
+    "semantic_hash": "0c11538c522a53f1f344d1db600422f4"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\commands\\run.rs": {
+    "mtime": 1787856006.1371803,
+    "seen": 1787917768.444871,
+    "ast_hash": "250d7bc862da59830d8af892be313332",
+    "semantic_hash": "250d7bc862da59830d8af892be313332"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\data.rs": {
+    "mtime": 1787731451.3737013,
+    "seen": 1787917768.444871,
+    "ast_hash": "4d58b0f7ba2ae9403c70a1125668a244",
+    "semantic_hash": "4d58b0f7ba2ae9403c70a1125668a244"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\db.rs": {
+    "mtime": 1787856006.1371803,
+    "seen": 1787917768.444871,
+    "ast_hash": "d771ab3bd08925acaf304f96c5995d1b",
+    "semantic_hash": "d771ab3bd08925acaf304f96c5995d1b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\draw.rs": {
+    "mtime": 1787856006.138182,
+    "seen": 1787917768.444871,
+    "ast_hash": "d8686111dbb9fcd371fec44933e3ee51",
+    "semantic_hash": "d8686111dbb9fcd371fec44933e3ee51"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\error.rs": {
+    "mtime": 1781123221.5532117,
+    "seen": 1787917768.444871,
+    "ast_hash": "f906c9fb5f88f8294474173b63a8e02c",
+    "semantic_hash": "f906c9fb5f88f8294474173b63a8e02c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\grading.rs": {
+    "mtime": 1787856006.138182,
+    "seen": 1787917768.444871,
+    "ast_hash": "d08ae727688023d4fb44950dc4e99491",
+    "semantic_hash": "d08ae727688023d4fb44950dc4e99491"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\lso_notation.rs": {
+    "mtime": 1781437035.7936287,
+    "seen": 1787917768.444871,
+    "ast_hash": "a40712e52d27f166a57a175c529e416d",
+    "semantic_hash": "a40712e52d27f166a57a175c529e416d"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\main.rs": {
+    "mtime": 1781430899.1574738,
+    "seen": 1787917768.444871,
+    "ast_hash": "c79035cae8a5c846dc68a6697ed0bf81",
+    "semantic_hash": "c79035cae8a5c846dc68a6697ed0bf81"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\tasks\\detect_recovery_attempt.rs": {
+    "mtime": 1781943473.7820807,
+    "seen": 1787917768.444871,
+    "ast_hash": "cb8071350bae46d6df448b2f7c3f861e",
+    "semantic_hash": "cb8071350bae46d6df448b2f7c3f861e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\tasks\\mod.rs": {
+    "mtime": 1787856006.1391842,
+    "seen": 1787917768.444871,
+    "ast_hash": "c23dd7251ce38d16fe6e62249246d9e8",
+    "semantic_hash": "c23dd7251ce38d16fe6e62249246d9e8"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\tasks\\record_recovery.rs": {
+    "mtime": 1787856006.1391842,
+    "seen": 1787917768.444871,
+    "ast_hash": "f3ec1c8b16a7aa40bff8f43bdab95315",
+    "semantic_hash": "f3ec1c8b16a7aa40bff8f43bdab95315"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\tests.rs": {
+    "mtime": 1781943473.7836351,
+    "seen": 1787917768.444871,
+    "ast_hash": "89570618b832b9075317fd8d9e914ae7",
+    "semantic_hash": "89570618b832b9075317fd8d9e914ae7"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\track.rs": {
+    "mtime": 1787856006.1401806,
+    "seen": 1787917768.444871,
+    "ast_hash": "7ed4c2a696befc358f248eec339e95e2",
+    "semantic_hash": "7ed4c2a696befc358f248eec339e95e2"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\transform.rs": {
+    "mtime": 1787856006.1401806,
+    "seen": 1787917768.444871,
+    "ast_hash": "eed26ed2139bbacbbaad3f975dbf2610",
+    "semantic_hash": "eed26ed2139bbacbbaad3f975dbf2610"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\utils\\interval.rs": {
+    "mtime": 1781104371.9802244,
+    "seen": 1787917768.444871,
+    "ast_hash": "ed008aea99d3a48001187cc361d7c6c6",
+    "semantic_hash": "ed008aea99d3a48001187cc361d7c6c6"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\utils\\mod.rs": {
+    "mtime": 1781104371.9802244,
+    "seen": 1787917768.444871,
+    "ast_hash": "4ed0543bf82d56a60af1e5d222ded80d",
+    "semantic_hash": "4ed0543bf82d56a60af1e5d222ded80d"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\utils\\precision.rs": {
+    "mtime": 1781104371.9802244,
+    "seen": 1787917768.444871,
+    "ast_hash": "7d6e81aeb5851fa639b13835ce8d6344",
+    "semantic_hash": "7d6e81aeb5851fa639b13835ce8d6344"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\utils\\shutdown.rs": {
+    "mtime": 1781104371.9802244,
+    "seen": 1787917768.444871,
+    "ast_hash": "efdfe1f41c2543003e2cbd00b390cda1",
+    "semantic_hash": "efdfe1f41c2543003e2cbd00b390cda1"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\src\\web.rs": {
+    "mtime": 1787856006.1411805,
+    "seen": 1787917768.444871,
+    "ast_hash": "126ff4390e7d6e2ba4e91a036c03eed5",
+    "semantic_hash": "126ff4390e7d6e2ba4e91a036c03eed5"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215701-Nazgul91NOeZJustice.json": {
+    "mtime": 1787731451.379701,
+    "seen": 1787917768.444871,
+    "ast_hash": "38be20ae067283464259a637abb7d13e",
+    "semantic_hash": "38be20ae067283464259a637abb7d13e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215702-Meteor86Phenex.json": {
+    "mtime": 1787731451.3827019,
+    "seen": 1787917768.444871,
+    "ast_hash": "3bbb9168538acb7b640ad68bd96cc623",
+    "semantic_hash": "3bbb9168538acb7b640ad68bd96cc623"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215743-Ghost72TT.json": {
+    "mtime": 1787731451.3847032,
+    "seen": 1787917768.444871,
+    "ast_hash": "12072b204a9048110f13a7bca139aacc",
+    "semantic_hash": "12072b204a9048110f13a7bca139aacc"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-220129-Ghost72TT.json": {
+    "mtime": 1787731451.3867016,
+    "seen": 1787917768.444871,
+    "ast_hash": "f6753979f7b846af2ab0b18858a4af2a",
+    "semantic_hash": "f6753979f7b846af2ab0b18858a4af2a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-000427-Meteor86Phenex.json": {
+    "mtime": 1787731451.3887029,
+    "seen": 1787917768.444871,
+    "ast_hash": "ecfd3c93427ef36870e0fb67d3f944d9",
+    "semantic_hash": "ecfd3c93427ef36870e0fb67d3f944d9"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-000835-Meteor86Phenex.json": {
+    "mtime": 1787731451.3917012,
+    "seen": 1787917768.444871,
+    "ast_hash": "cc7060b1faa32d241feba49c9171c7ae",
+    "semantic_hash": "cc7060b1faa32d241feba49c9171c7ae"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-001054-Meteor86Phenex.json": {
+    "mtime": 1787731451.393701,
+    "seen": 1787917768.444871,
+    "ast_hash": "03145a19538dedbe1784fa11c6475060",
+    "semantic_hash": "03145a19538dedbe1784fa11c6475060"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-001322-Meteor86Phenex.json": {
+    "mtime": 1787731451.3957033,
+    "seen": 1787917768.444871,
+    "ast_hash": "f5ecb1287d795138fd74813927cb01cc",
+    "semantic_hash": "f5ecb1287d795138fd74813927cb01cc"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-224253-Phoenix13MiorilFB.json": {
+    "mtime": 1787731451.3987017,
+    "seen": 1787917768.444871,
+    "ast_hash": "ceac6599486750eb27c289f841728473",
+    "semantic_hash": "ceac6599486750eb27c289f841728473"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-224434-Phoenix13MiorilFB.json": {
+    "mtime": 1787731451.4007013,
+    "seen": 1787917768.444871,
+    "ast_hash": "98e121d1c667cee56fda8ad521134011",
+    "semantic_hash": "98e121d1c667cee56fda8ad521134011"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-225150-Taproom11SpiperFB.json": {
+    "mtime": 1787731451.402702,
+    "seen": 1787917768.444871,
+    "ast_hash": "b2bf8b138fc242f1b57739fbe7fbd3f3",
+    "semantic_hash": "b2bf8b138fc242f1b57739fbe7fbd3f3"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-225836-Meteor86Phenex.json": {
+    "mtime": 1787731451.4057014,
+    "seen": 1787917768.444871,
+    "ast_hash": "1d2a3d2a2b832e198a87af5b505d4af4",
+    "semantic_hash": "1d2a3d2a2b832e198a87af5b505d4af4"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230200-PARTY41ERGONoEZ.json": {
+    "mtime": 1787731451.408702,
+    "seen": 1787917768.444871,
+    "ast_hash": "51b1ec697eddaa326df486b2204f33e7",
+    "semantic_hash": "51b1ec697eddaa326df486b2204f33e7"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230252-Meteor86Phenex.json": {
+    "mtime": 1787731451.4117029,
+    "seen": 1787917768.444871,
+    "ast_hash": "fc2be34e0024a5fd0039799ee50d5360",
+    "semantic_hash": "fc2be34e0024a5fd0039799ee50d5360"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230605-Meteor86Phenex.json": {
+    "mtime": 1787731451.4137015,
+    "seen": 1787917768.444871,
+    "ast_hash": "8e9ef2461a97df6c1c9afbbe56970c12",
+    "semantic_hash": "8e9ef2461a97df6c1c9afbbe56970c12"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230848-Meteor86Phenex.json": {
+    "mtime": 1787731451.4167025,
+    "seen": 1787917768.444871,
+    "ast_hash": "1eb2483690c59572336f8a802a576e9b",
+    "semantic_hash": "1eb2483690c59572336f8a802a576e9b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-231124-Meteor86Phenex.json": {
+    "mtime": 1787731451.4187007,
+    "seen": 1787917768.444871,
+    "ast_hash": "f7061e49ed8db74ab08a9563ab36aed3",
+    "semantic_hash": "f7061e49ed8db74ab08a9563ab36aed3"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-231919-Meteor86Phenex.json": {
+    "mtime": 1787731451.421703,
+    "seen": 1787917768.444871,
+    "ast_hash": "093d261b1d96ae76cd7aafbade3c794c",
+    "semantic_hash": "093d261b1d96ae76cd7aafbade3c794c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-232546-PARTY41ERGONoEZ.json": {
+    "mtime": 1787731451.4247015,
+    "seen": 1787917768.444871,
+    "ast_hash": "0032566abe1e54cb08a29e34cecea9e5",
+    "semantic_hash": "0032566abe1e54cb08a29e34cecea9e5"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-233131-Meteor86Phenex.json": {
+    "mtime": 1787731451.427705,
+    "seen": 1787917768.444871,
+    "ast_hash": "ad2cd38caaf32aa2dc26e21831ee96c6",
+    "semantic_hash": "ad2cd38caaf32aa2dc26e21831ee96c6"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-234124-PARTY41ERGONoEZ.json": {
+    "mtime": 1787731451.4297032,
+    "seen": 1787917768.444871,
+    "ast_hash": "dd02a9a110b1e7833c42ba9ce416136e",
+    "semantic_hash": "dd02a9a110b1e7833c42ba9ce416136e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-234613-Meteor86Phenex.json": {
+    "mtime": 1787731451.432703,
+    "seen": 1787917768.444871,
+    "ast_hash": "cc807a3ca892329ec4dd213204ee0427",
+    "semantic_hash": "cc807a3ca892329ec4dd213204ee0427"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-022635-Meteor86Phenex.json": {
+    "mtime": 1787669913.3206077,
+    "seen": 1787917768.444871,
+    "ast_hash": "b21bb7cd5b7669ee84fa04ef42fdecb7",
+    "semantic_hash": "b21bb7cd5b7669ee84fa04ef42fdecb7"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-023229-Meteor86Phenex.json": {
+    "mtime": 1787669913.3236065,
+    "seen": 1787917768.444871,
+    "ast_hash": "f755eda7b322e0359faeb70cb0105c05",
+    "semantic_hash": "f755eda7b322e0359faeb70cb0105c05"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-023805-Meteor86Phenex.json": {
+    "mtime": 1787669913.326607,
+    "seen": 1787917768.444871,
+    "ast_hash": "07cda44aa10f6a41dff76efa22adabec",
+    "semantic_hash": "07cda44aa10f6a41dff76efa22adabec"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024307-Meteor86Phenex.json": {
+    "mtime": 1787669913.3296072,
+    "seen": 1787917768.444871,
+    "ast_hash": "158f1914879f652f1d3b308819fe4245",
+    "semantic_hash": "158f1914879f652f1d3b308819fe4245"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024309-Meteor86Phenex.json": {
+    "mtime": 1787669913.332607,
+    "seen": 1787917768.444871,
+    "ast_hash": "f8d1336995794b447db2b2ca03399ac5",
+    "semantic_hash": "f8d1336995794b447db2b2ca03399ac5"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024749-Meteor86Phenex.json": {
+    "mtime": 1787669913.3346086,
+    "seen": 1787917768.444871,
+    "ast_hash": "ed7ad5f5494a652bfcf470621259e1dc",
+    "semantic_hash": "ed7ad5f5494a652bfcf470621259e1dc"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025506-Meteor86Phenex.json": {
+    "mtime": 1787669913.3376088,
+    "seen": 1787917768.444871,
+    "ast_hash": "0d08163d70b0f6f4dbf8a0d910cec147",
+    "semantic_hash": "0d08163d70b0f6f4dbf8a0d910cec147"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025825-Meteor86Phenex.json": {
+    "mtime": 1787669913.340608,
+    "seen": 1787917768.444871,
+    "ast_hash": "9dd3a6751eb3c6d5d33d5af0b286b25f",
+    "semantic_hash": "9dd3a6751eb3c6d5d33d5af0b286b25f"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025826-Meteor86Phenex.json": {
+    "mtime": 1787669913.3436067,
+    "seen": 1787917768.444871,
+    "ast_hash": "14dbb976f6d7eb6eaa14892fca7dddec",
+    "semantic_hash": "14dbb976f6d7eb6eaa14892fca7dddec"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-030251-Meteor86Phenex.json": {
+    "mtime": 1787669913.3466072,
+    "seen": 1787917768.444871,
+    "ast_hash": "ee3ed0088b85bff1bc79f949ee513f58",
+    "semantic_hash": "ee3ed0088b85bff1bc79f949ee513f58"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-031018-Meteor86Phenex.json": {
+    "mtime": 1787669913.348608,
+    "seen": 1787917768.444871,
+    "ast_hash": "d7ddb72a44419a96cf8af487ca11c71a",
+    "semantic_hash": "d7ddb72a44419a96cf8af487ca11c71a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\.github\\ISSUE_TEMPLATE\\1_wrong_cable.yml": {
+    "mtime": 1781255796.1874,
+    "seen": 1787917768.444871,
+    "ast_hash": "f010d176d5ebe412910da50a5f02036d",
+    "semantic_hash": "f010d176d5ebe412910da50a5f02036d"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\.github\\ISSUE_TEMPLATE\\2_bug_report.yml": {
+    "mtime": 1781255796.1874,
+    "seen": 1787917768.444871,
+    "ast_hash": "b3126a7e89c974bb21aa2e0f0ca86c35",
+    "semantic_hash": "b3126a7e89c974bb21aa2e0f0ca86c35"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\.github\\ISSUE_TEMPLATE\\config.yml": {
+    "mtime": 1781255796.1874,
+    "seen": 1787917768.444871,
+    "ast_hash": "db8b0e0ef1cc819c60fba1055017e50e",
+    "semantic_hash": "db8b0e0ef1cc819c60fba1055017e50e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\.github\\workflows\\ci.yml": {
+    "mtime": 1787696163.1621468,
+    "seen": 1787917768.444871,
+    "ast_hash": "addd59ca36ee7d31546e2f55a5776c66",
+    "semantic_hash": "addd59ca36ee7d31546e2f55a5776c66"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\CHANGES.md": {
+    "mtime": 1787669912.964601,
+    "seen": 1787917768.444871,
+    "ast_hash": "30f18b0d49e2885b693a711865e5f84d",
+    "semantic_hash": "30f18b0d49e2885b693a711865e5f84d"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\CONTRIBUTING.md": {
+    "mtime": 1787669912.965601,
+    "seen": 1787917768.444871,
+    "ast_hash": "9d837e13b177ad64fc50d2a0f099445a",
+    "semantic_hash": "9d837e13b177ad64fc50d2a0f099445a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\README.md": {
+    "mtime": 1787669912.967603,
+    "seen": 1787917768.444871,
+    "ast_hash": "ff11346091b22eb6f3f4278de89e4f62",
+    "semantic_hash": "ff11346091b22eb6f3f4278de89e4f62"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\VSTOL.md": {
+    "mtime": 1787731451.180964,
+    "seen": 1787917768.444871,
+    "ast_hash": "a23bc352dfa3742416527d51f2b46b4c",
+    "semantic_hash": "a23bc352dfa3742416527d51f2b46b4c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\ADMIN_GUIDE.md": {
+    "mtime": 1787686628.3435435,
+    "seen": 1787917768.444871,
+    "ast_hash": "306c7dd292c7e75b18a33f1d4add94e3",
+    "semantic_hash": "306c7dd292c7e75b18a33f1d4add94e3"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Docs\\DCS-gRPC\\CHANGELOG.md": {
+    "mtime": 1787669912.9696016,
+    "seen": 1787917768.444871,
+    "ast_hash": "8805e419ddda2a5c18b93e7f9fa99eea",
+    "semantic_hash": "8805e419ddda2a5c18b93e7f9fa99eea"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Docs\\DCS-gRPC\\README.md": {
+    "mtime": 1787669912.9706013,
+    "seen": 1787917768.444871,
+    "ast_hash": "863ef99f2d7ab083351239d2c27cb812",
+    "semantic_hash": "863ef99f2d7ab083351239d2c27cb812"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Docs\\DCS-gRPC\\STATUS.md": {
+    "mtime": 1787669912.9706013,
+    "seen": 1787917768.444871,
+    "ast_hash": "00ff13dbfe9ce9ce6c36e691001b8dbc",
+    "semantic_hash": "00ff13dbfe9ce9ce6c36e691001b8dbc"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Docs\\DCS-gRPC\\api.html": {
+    "mtime": 1787669912.9726007,
+    "seen": 1787917768.444871,
+    "ast_hash": "414507327ffc0d81322a7922b81c711d",
+    "semantic_hash": "414507327ffc0d81322a7922b81c711d"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Tools\\DCS-gRPC\\grpcui-LICENSE.txt": {
+    "mtime": 1787669913.1166017,
+    "seen": 1787917768.444871,
+    "ast_hash": "577f72df8111214664bdaa8e2beb58ea",
+    "semantic_hash": "577f72df8111214664bdaa8e2beb58ea"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS-gRPC-0.9.0\\Tools\\DCS-gRPC\\grpcurl-LICENSE.txt": {
+    "mtime": 1787669913.203608,
+    "seen": 1787917768.444871,
+    "ast_hash": "577f72df8111214664bdaa8e2beb58ea",
+    "semantic_hash": "577f72df8111214664bdaa8e2beb58ea"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\DCS_GRPC_FORK_MIGRATION.md": {
+    "mtime": 1787669913.3076103,
+    "seen": 1787917768.444871,
+    "ast_hash": "65839b2f85615276a7947dba43bbfefe",
+    "semantic_hash": "65839b2f85615276a7947dba43bbfefe"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\GRADING_ANALYSIS.md": {
+    "mtime": 1787669913.3086088,
+    "seen": 1787917768.444871,
+    "ast_hash": "a6ee806231cf9a1c99734ecabfb153bd",
+    "semantic_hash": "a6ee806231cf9a1c99734ecabfb153bd"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\GRADING_PR_REVIEW.md": {
+    "mtime": 1787856006.0701838,
+    "seen": 1787917768.444871,
+    "ast_hash": "7b7aedf4ab2bc6720bcce026d7972806",
+    "semantic_hash": "7b7aedf4ab2bc6720bcce026d7972806"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\GRADING_REFERENCE.html": {
+    "mtime": 1787669913.3096077,
+    "seen": 1787917768.444871,
+    "ast_hash": "a78b0942c3482a22f87c39e3d8519c97",
+    "semantic_hash": "a78b0942c3482a22f87c39e3d8519c97"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\GRADING_REFERENCE.md": {
+    "mtime": 1787669913.3096077,
+    "seen": 1787917768.444871,
+    "ast_hash": "37e5bb1aa425c3a1a4dd7e5605a6415b",
+    "semantic_hash": "37e5bb1aa425c3a1a4dd7e5605a6415b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\LSO_ANALYSIS.md": {
+    "mtime": 1787669913.3106072,
+    "seen": 1787917768.444871,
+    "ast_hash": "e694184065db7c88b6f431b237570bd9",
+    "semantic_hash": "e694184065db7c88b6f431b237570bd9"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\analysis.md": {
+    "mtime": 1787669913.311608,
+    "seen": 1787917768.444871,
+    "ast_hash": "17567f78dffa27e85878f8f673561e3e",
+    "semantic_hash": "17567f78dffa27e85878f8f673561e3e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\analysis2.md": {
+    "mtime": 1787669913.3126087,
+    "seen": 1787917768.444871,
+    "ast_hash": "edb4167bc792da1ea441bf55bf54effb",
+    "semantic_hash": "edb4167bc792da1ea441bf55bf54effb"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\analysis_results.md": {
+    "mtime": 1787669913.3136077,
+    "seen": 1787917768.444871,
+    "ast_hash": "969d1c14c068e0895dcbac0fa1c87a3e",
+    "semantic_hash": "969d1c14c068e0895dcbac0fa1c87a3e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\implementation_plan_carrier_pos.md": {
+    "mtime": 1787669913.3146074,
+    "seen": 1787917768.444871,
+    "ast_hash": "6033c21733fb1b191cd82e11fdf48e5a",
+    "semantic_hash": "6033c21733fb1b191cd82e11fdf48e5a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\implementation_plan_mission_date.md": {
+    "mtime": 1787669913.3146074,
+    "seen": 1787917768.444871,
+    "ast_hash": "075de3a9b08739965ea74fa30350e95a",
+    "semantic_hash": "075de3a9b08739965ea74fa30350e95a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\walkthrough_carrier_pos.md": {
+    "mtime": 1787669913.3156085,
+    "seen": 1787917768.444871,
+    "ast_hash": "28055b9c212bc324b5b0094fa409f4df",
+    "semantic_hash": "28055b9c212bc324b5b0094fa409f4df"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\releases\\README.txt": {
+    "mtime": 1787731451.3717017,
+    "seen": 1787917768.444871,
+    "ast_hash": "aeeedf09039b27d56d24eafb837a6d9c",
+    "semantic_hash": "aeeedf09039b27d56d24eafb837a6d9c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\discord-example.jpg": {
+    "mtime": 1781104371.9673753,
+    "seen": 1787917768.444871,
+    "ast_hash": "ebe6d95dcd12fdf2883f16b06f9d4cf7",
+    "semantic_hash": "ebe6d95dcd12fdf2883f16b06f9d4cf7"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\example.png": {
+    "mtime": 1781104371.9680295,
+    "seen": 1787917768.444871,
+    "ast_hash": "f311883a0ccab6fca63608e66dea2bcc",
+    "semantic_hash": "f311883a0ccab6fca63608e66dea2bcc"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\image.png": {
+    "mtime": 1781943473.6912217,
+    "seen": 1787917768.444871,
+    "ast_hash": "1e3d7ceb7aac5dae151de52f52036d3b",
+    "semantic_hash": "1e3d7ceb7aac5dae151de52f52036d3b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\docs\\image2.png": {
+    "mtime": 1781943473.693221,
+    "seen": 1787917768.444871,
+    "ast_hash": "e26ceb4d6dfe9e0ef9b6c065bace8e17",
+    "semantic_hash": "e26ceb4d6dfe9e0ef9b6c065bace8e17"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\carrier-side-full-transp.png": {
+    "mtime": 1781943473.6962214,
+    "seen": 1787917768.444871,
+    "ast_hash": "fd450f5d32e30cd2239d1f26203feb40",
+    "semantic_hash": "fd450f5d32e30cd2239d1f26203feb40"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\carrier-side.png": {
+    "mtime": 1781104371.9680295,
+    "seen": 1787917768.444871,
+    "ast_hash": "435e5ade93f275e7e63a47d2d612e666",
+    "semantic_hash": "435e5ade93f275e7e63a47d2d612e666"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\carrier-top-full-transp.png": {
+    "mtime": 1781943473.697221,
+    "seen": 1787917768.444871,
+    "ast_hash": "fe7d5f7c18e226df7060e7774da40bc4",
+    "semantic_hash": "fe7d5f7c18e226df7060e7774da40bc4"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\carrier-top-full3.png": {
+    "mtime": 1781943473.7052221,
+    "seen": 1787917768.444871,
+    "ast_hash": "da23dc77a50857144b0cb86dd35128cd",
+    "semantic_hash": "da23dc77a50857144b0cb86dd35128cd"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\carrier-top.png": {
+    "mtime": 1781104371.9722238,
+    "seen": 1787917768.444871,
+    "ast_hash": "7bebf19d30362f63f63dabb08ce1546f",
+    "semantic_hash": "7bebf19d30362f63f63dabb08ce1546f"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\tarawa-vstol-pattern-top.png": {
+    "mtime": 1787731451.3707023,
+    "seen": 1787917768.444871,
+    "ast_hash": "4e6909c6c8b9e1d960ae26d42e906677",
+    "semantic_hash": "4e6909c6c8b9e1d960ae26d42e906677"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\tarawa-vstol-recovery-side.png": {
+    "mtime": 1787731451.3707023,
+    "seen": 1787917768.444871,
+    "ast_hash": "e1495b9ba0894f9b68fd66e9c2a2667d",
+    "semantic_hash": "e1495b9ba0894f9b68fd66e9c2a2667d"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\img\\tarawa-vstol-recovery-top.png": {
+    "mtime": 1787731451.3717017,
+    "seen": 1787917768.444871,
+    "ast_hash": "4e6909c6c8b9e1d960ae26d42e906677",
+    "semantic_hash": "4e6909c6c8b9e1d960ae26d42e906677"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215701-Nazgul91NOeZJustice-pattern.png": {
+    "mtime": 1787731451.3787012,
+    "seen": 1787917768.444871,
+    "ast_hash": "223645467ce7d5d57161813001bef0fd",
+    "semantic_hash": "223645467ce7d5d57161813001bef0fd"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215701-Nazgul91NOeZJustice.png": {
+    "mtime": 1787731451.3807015,
+    "seen": 1787917768.444871,
+    "ast_hash": "1afae520650371c248fc72e7d03026be",
+    "semantic_hash": "1afae520650371c248fc72e7d03026be"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215702-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.3817015,
+    "seen": 1787917768.444871,
+    "ast_hash": "a76a4020e3dedecb49bc2fa91854a42b",
+    "semantic_hash": "a76a4020e3dedecb49bc2fa91854a42b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215702-Meteor86Phenex.png": {
+    "mtime": 1787731451.3827019,
+    "seen": 1787917768.444871,
+    "ast_hash": "0f3135a0cb4863bc171ddae5790141bf",
+    "semantic_hash": "0f3135a0cb4863bc171ddae5790141bf"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215743-Ghost72TT-pattern.png": {
+    "mtime": 1787731451.3837028,
+    "seen": 1787917768.444871,
+    "ast_hash": "d13b5479e1444f88d3653a1d0bdf6c80",
+    "semantic_hash": "d13b5479e1444f88d3653a1d0bdf6c80"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-215743-Ghost72TT.png": {
+    "mtime": 1787731451.3857021,
+    "seen": 1787917768.444871,
+    "ast_hash": "18f65a6a6b413e7732a7fa218cdace71",
+    "semantic_hash": "18f65a6a6b413e7732a7fa218cdace71"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-220129-Ghost72TT-pattern.png": {
+    "mtime": 1787731451.3857021,
+    "seen": 1787917768.444871,
+    "ast_hash": "18326a903cc7f4d02b508feceed17865",
+    "semantic_hash": "18326a903cc7f4d02b508feceed17865"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260729-220129-Ghost72TT.png": {
+    "mtime": 1787731451.3877022,
+    "seen": 1787917768.444871,
+    "ast_hash": "65ee4b78eb1ba788078cf4bbf1438d5e",
+    "semantic_hash": "65ee4b78eb1ba788078cf4bbf1438d5e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-000427-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.3877022,
+    "seen": 1787917768.444871,
+    "ast_hash": "9d96c97d82d21308e8084037ad06e9b5",
+    "semantic_hash": "9d96c97d82d21308e8084037ad06e9b5"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-000427-Meteor86Phenex.png": {
+    "mtime": 1787731451.389703,
+    "seen": 1787917768.444871,
+    "ast_hash": "0a70b827ac4bc633203644a9d1341554",
+    "semantic_hash": "0a70b827ac4bc633203644a9d1341554"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-000835-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.3907032,
+    "seen": 1787917768.444871,
+    "ast_hash": "d514628b10b313b6c12a4ac66b541545",
+    "semantic_hash": "d514628b10b313b6c12a4ac66b541545"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-000835-Meteor86Phenex.png": {
+    "mtime": 1787731451.3927019,
+    "seen": 1787917768.444871,
+    "ast_hash": "8d07f74b4540038fd752524afb8efcc9",
+    "semantic_hash": "8d07f74b4540038fd752524afb8efcc9"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-001054-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.3927019,
+    "seen": 1787917768.444871,
+    "ast_hash": "6260a4aa93c857d96b3fac612c772194",
+    "semantic_hash": "6260a4aa93c857d96b3fac612c772194"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-001054-Meteor86Phenex.png": {
+    "mtime": 1787731451.3947015,
+    "seen": 1787917768.444871,
+    "ast_hash": "180cbf832d1d4314220456d96bf0986a",
+    "semantic_hash": "180cbf832d1d4314220456d96bf0986a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-001322-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.3957033,
+    "seen": 1787917768.444871,
+    "ast_hash": "548a3d02f78ff51810b7e269022663c6",
+    "semantic_hash": "548a3d02f78ff51810b7e269022663c6"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260730-001322-Meteor86Phenex.png": {
+    "mtime": 1787731451.3967006,
+    "seen": 1787917768.444871,
+    "ast_hash": "0902f7b12e12f7a1514b81b480810ca4",
+    "semantic_hash": "0902f7b12e12f7a1514b81b480810ca4"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-224253-Phoenix13MiorilFB-pattern.png": {
+    "mtime": 1787731451.3977013,
+    "seen": 1787917768.444871,
+    "ast_hash": "d63fd3c289e37c675ec9371e5feec50b",
+    "semantic_hash": "d63fd3c289e37c675ec9371e5feec50b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-224253-Phoenix13MiorilFB.png": {
+    "mtime": 1787731451.399701,
+    "seen": 1787917768.444871,
+    "ast_hash": "ec18fc1ee4ae9ea040ec6e24dfddf205",
+    "semantic_hash": "ec18fc1ee4ae9ea040ec6e24dfddf205"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-224434-Phoenix13MiorilFB-pattern.png": {
+    "mtime": 1787731451.399701,
+    "seen": 1787917768.444871,
+    "ast_hash": "b49a4bf446766198b6077c9008371055",
+    "semantic_hash": "b49a4bf446766198b6077c9008371055"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-224434-Phoenix13MiorilFB.png": {
+    "mtime": 1787731451.4017024,
+    "seen": 1787917768.444871,
+    "ast_hash": "ce5b2bd84cc66122e682953df15cdd5e",
+    "semantic_hash": "ce5b2bd84cc66122e682953df15cdd5e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-225150-Taproom11SpiperFB-pattern.png": {
+    "mtime": 1787731451.402702,
+    "seen": 1787917768.444871,
+    "ast_hash": "ad1c9b133380997b7d3fdb91e9e37eb9",
+    "semantic_hash": "ad1c9b133380997b7d3fdb91e9e37eb9"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-225150-Taproom11SpiperFB.png": {
+    "mtime": 1787731451.404703,
+    "seen": 1787917768.444871,
+    "ast_hash": "a98a69943a8caf1487ab124ef5f73480",
+    "semantic_hash": "a98a69943a8caf1487ab124ef5f73480"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-225836-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.404703,
+    "seen": 1787917768.444871,
+    "ast_hash": "d41d575da6f3222b563dfbeec2849149",
+    "semantic_hash": "d41d575da6f3222b563dfbeec2849149"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-225836-Meteor86Phenex.png": {
+    "mtime": 1787731451.4067025,
+    "seen": 1787917768.444871,
+    "ast_hash": "b9a85bd4e34c01ce0f5e489565cb50d0",
+    "semantic_hash": "b9a85bd4e34c01ce0f5e489565cb50d0"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230200-PARTY41ERGONoEZ-pattern.png": {
+    "mtime": 1787731451.4077024,
+    "seen": 1787917768.444871,
+    "ast_hash": "cc85f90c9d51a077ee402d5de0ff6c5f",
+    "semantic_hash": "cc85f90c9d51a077ee402d5de0ff6c5f"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230200-PARTY41ERGONoEZ.png": {
+    "mtime": 1787731451.4097016,
+    "seen": 1787917768.444871,
+    "ast_hash": "c6e32af74d5d3682e728a0c23f38e90d",
+    "semantic_hash": "c6e32af74d5d3682e728a0c23f38e90d"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230252-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.410701,
+    "seen": 1787917768.444871,
+    "ast_hash": "7804dfe553649283995b02c616ac6a3e",
+    "semantic_hash": "7804dfe553649283995b02c616ac6a3e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230252-Meteor86Phenex.png": {
+    "mtime": 1787731451.4127023,
+    "seen": 1787917768.444871,
+    "ast_hash": "689ba92ba5449d8b091c16086c5bf5e1",
+    "semantic_hash": "689ba92ba5449d8b091c16086c5bf5e1"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230605-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.4127023,
+    "seen": 1787917768.444871,
+    "ast_hash": "80461e8b384f4579a405d1fb9d8dcce4",
+    "semantic_hash": "80461e8b384f4579a405d1fb9d8dcce4"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230605-Meteor86Phenex.png": {
+    "mtime": 1787731451.4147007,
+    "seen": 1787917768.444871,
+    "ast_hash": "d2c32804a932ba137b96778c00b949d7",
+    "semantic_hash": "d2c32804a932ba137b96778c00b949d7"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230848-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.4157012,
+    "seen": 1787917768.444871,
+    "ast_hash": "d9cdeff3059df336099749ac91d28fd9",
+    "semantic_hash": "d9cdeff3059df336099749ac91d28fd9"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-230848-Meteor86Phenex.png": {
+    "mtime": 1787731451.4177022,
+    "seen": 1787917768.444871,
+    "ast_hash": "3333789948f6f136b908197bc3c1957b",
+    "semantic_hash": "3333789948f6f136b908197bc3c1957b"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-231124-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.4177022,
+    "seen": 1787917768.444871,
+    "ast_hash": "cdb9ba9e771042f5c5eff34f2bc0c2c1",
+    "semantic_hash": "cdb9ba9e771042f5c5eff34f2bc0c2c1"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-231124-Meteor86Phenex.png": {
+    "mtime": 1787731451.419701,
+    "seen": 1787917768.444871,
+    "ast_hash": "7df294f83f9b80760ee5dd78a2980a02",
+    "semantic_hash": "7df294f83f9b80760ee5dd78a2980a02"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-231919-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.420702,
+    "seen": 1787917768.444871,
+    "ast_hash": "b65b1842871e8934777ebae8d86608e1",
+    "semantic_hash": "b65b1842871e8934777ebae8d86608e1"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-231919-Meteor86Phenex.png": {
+    "mtime": 1787731451.4227023,
+    "seen": 1787917768.444871,
+    "ast_hash": "58d9d676e645c27a8e9749c67c777604",
+    "semantic_hash": "58d9d676e645c27a8e9749c67c777604"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-232546-PARTY41ERGONoEZ-pattern.png": {
+    "mtime": 1787731451.4237018,
+    "seen": 1787917768.444871,
+    "ast_hash": "d2eb90b9a2ee41700034d185bb142ca6",
+    "semantic_hash": "d2eb90b9a2ee41700034d185bb142ca6"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-232546-PARTY41ERGONoEZ.png": {
+    "mtime": 1787731451.4257014,
+    "seen": 1787917768.444871,
+    "ast_hash": "447b80260d3827be9ea0305c6a505287",
+    "semantic_hash": "447b80260d3827be9ea0305c6a505287"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-233131-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.4257014,
+    "seen": 1787917768.444871,
+    "ast_hash": "462104855ddf363166026ab3e733b1ee",
+    "semantic_hash": "462104855ddf363166026ab3e733b1ee"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-233131-Meteor86Phenex.png": {
+    "mtime": 1787731451.427705,
+    "seen": 1787917768.444871,
+    "ast_hash": "8c6d3ed257c5ee227c3438e4d6c88ec6",
+    "semantic_hash": "8c6d3ed257c5ee227c3438e4d6c88ec6"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-234124-PARTY41ERGONoEZ-pattern.png": {
+    "mtime": 1787731451.428701,
+    "seen": 1787917768.444871,
+    "ast_hash": "5a660948e099d2d2b6020cc31f37b15c",
+    "semantic_hash": "5a660948e099d2d2b6020cc31f37b15c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-234124-PARTY41ERGONoEZ.png": {
+    "mtime": 1787731451.4307015,
+    "seen": 1787917768.444871,
+    "ast_hash": "3154ad5e90263f6580c3b304d6059fbf",
+    "semantic_hash": "3154ad5e90263f6580c3b304d6059fbf"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-234613-Meteor86Phenex-pattern.png": {
+    "mtime": 1787731451.4317014,
+    "seen": 1787917768.444871,
+    "ast_hash": "2cd1c2b68862a894493a92c3815f9e2e",
+    "semantic_hash": "2cd1c2b68862a894493a92c3815f9e2e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260804-234613-Meteor86Phenex.png": {
+    "mtime": 1787731451.4337049,
+    "seen": 1787917768.444871,
+    "ast_hash": "cd995e58ee7cc01e0c93041c881b6676",
+    "semantic_hash": "cd995e58ee7cc01e0c93041c881b6676"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-022635-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.3196063,
+    "seen": 1787917768.444871,
+    "ast_hash": "3fc104bd290893b261c7d6a6fe479565",
+    "semantic_hash": "3fc104bd290893b261c7d6a6fe479565"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-022635-Meteor86Phenex.png": {
+    "mtime": 1787669913.3216076,
+    "seen": 1787917768.444871,
+    "ast_hash": "9f31252e0974c07ecd6873407b835bc2",
+    "semantic_hash": "9f31252e0974c07ecd6873407b835bc2"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-023229-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.322607,
+    "seen": 1787917768.444871,
+    "ast_hash": "e161440bcf663345f8374231726f180e",
+    "semantic_hash": "e161440bcf663345f8374231726f180e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-023229-Meteor86Phenex.png": {
+    "mtime": 1787669913.3246088,
+    "seen": 1787917768.444871,
+    "ast_hash": "41032155c4ac06c4bc4069de8e9cde4e",
+    "semantic_hash": "41032155c4ac06c4bc4069de8e9cde4e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-023805-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.3256078,
+    "seen": 1787917768.444871,
+    "ast_hash": "d3809e052e13cf2d585fef61d44a0345",
+    "semantic_hash": "d3809e052e13cf2d585fef61d44a0345"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-023805-Meteor86Phenex.png": {
+    "mtime": 1787669913.3276079,
+    "seen": 1787917768.444871,
+    "ast_hash": "6f0d42579a2922747eb3e32fd67ba706",
+    "semantic_hash": "6f0d42579a2922747eb3e32fd67ba706"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024307-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.3286085,
+    "seen": 1787917768.444871,
+    "ast_hash": "0df652fe4f40eebe5dc81ec2ea4294a4",
+    "semantic_hash": "0df652fe4f40eebe5dc81ec2ea4294a4"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024307-Meteor86Phenex.png": {
+    "mtime": 1787669913.330608,
+    "seen": 1787917768.444871,
+    "ast_hash": "b86e301d01a40542d9b61a5d777eb225",
+    "semantic_hash": "b86e301d01a40542d9b61a5d777eb225"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024309-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.330608,
+    "seen": 1787917768.444871,
+    "ast_hash": "2942f4d1633fbf554a1cbcac66e639f2",
+    "semantic_hash": "2942f4d1633fbf554a1cbcac66e639f2"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024309-Meteor86Phenex.png": {
+    "mtime": 1787669913.3336082,
+    "seen": 1787917768.444871,
+    "ast_hash": "9e355f19576b94db85d6903187c5830a",
+    "semantic_hash": "9e355f19576b94db85d6903187c5830a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024749-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.3336082,
+    "seen": 1787917768.444871,
+    "ast_hash": "b0ecc2ff62e2723c3c16842510e633a8",
+    "semantic_hash": "b0ecc2ff62e2723c3c16842510e633a8"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-024749-Meteor86Phenex.png": {
+    "mtime": 1787669913.335607,
+    "seen": 1787917768.444871,
+    "ast_hash": "d053ec3ac9f8611ed252d32552aa1b35",
+    "semantic_hash": "d053ec3ac9f8611ed252d32552aa1b35"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025506-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.336608,
+    "seen": 1787917768.444871,
+    "ast_hash": "d51e65af7129e226f339c0adc6423ad5",
+    "semantic_hash": "d51e65af7129e226f339c0adc6423ad5"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025506-Meteor86Phenex.png": {
+    "mtime": 1787669913.3386083,
+    "seen": 1787917768.444871,
+    "ast_hash": "cd65e9943ccaee0d907da01b4928f8b3",
+    "semantic_hash": "cd65e9943ccaee0d907da01b4928f8b3"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025825-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.339607,
+    "seen": 1787917768.444871,
+    "ast_hash": "f5e87824ff359cf80c0cd1b47b76eb38",
+    "semantic_hash": "f5e87824ff359cf80c0cd1b47b76eb38"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025825-Meteor86Phenex.png": {
+    "mtime": 1787669913.3416066,
+    "seen": 1787917768.444871,
+    "ast_hash": "13e582e6727e876d1fec592e975b782c",
+    "semantic_hash": "13e582e6727e876d1fec592e975b782c"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025826-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.3426075,
+    "seen": 1787917768.444871,
+    "ast_hash": "eb26b79ec227b6f92b294445cfacb001",
+    "semantic_hash": "eb26b79ec227b6f92b294445cfacb001"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-025826-Meteor86Phenex.png": {
+    "mtime": 1787669913.3446076,
+    "seen": 1787917768.444871,
+    "ast_hash": "2f8552fdc1cf5b1197de6b1d307bd50f",
+    "semantic_hash": "2f8552fdc1cf5b1197de6b1d307bd50f"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-030251-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.3456092,
+    "seen": 1787917768.444871,
+    "ast_hash": "5f2e0343b31c7cf6a8e38a71e4d2c84e",
+    "semantic_hash": "5f2e0343b31c7cf6a8e38a71e4d2c84e"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-030251-Meteor86Phenex.png": {
+    "mtime": 1787669913.3476079,
+    "seen": 1787917768.444871,
+    "ast_hash": "53906c5a1dfcb4c359d98f5d0ed1a4bc",
+    "semantic_hash": "53906c5a1dfcb4c359d98f5d0ed1a4bc"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-031018-Meteor86Phenex-pattern.png": {
+    "mtime": 1787669913.3476079,
+    "seen": 1787917768.444871,
+    "ast_hash": "5e58263852860d393e98d59296d5fc2a",
+    "semantic_hash": "5e58263852860d393e98d59296d5fc2a"
+  },
+  "C:\\Users\\thierry\\Documents\\GitHub\\sevenfifty777\\DCS-gRPC-lso\\trap sample\\LSO-20260825-031018-Meteor86Phenex.png": {
+    "mtime": 1787669913.3496072,
+    "seen": 1787917768.444871,
+    "ast_hash": "9f5d0022d52e5e3c46bb6edd20eb06bc",
+    "semantic_hash": "9f5d0022d52e5e3c46bb6edd20eb06bc"
+  }
+}

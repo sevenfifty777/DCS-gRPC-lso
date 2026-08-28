@@ -1,0 +1,1 @@
+{"nodes": [{"id": "readme_lso_exe", "label": "lso.exe", "file_type": "code", "source_file": "releases/README.txt", "rationale": "The resulting executable from building the project with cargo."}], "edges": [], "hyperedges": []}
