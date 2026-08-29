@@ -1,9 +1,9 @@
 # LSO Installation and Administration Guide
 
-**Applies to:** crate version `0.2.0` plus Unreleased changes through 2026-08-25
+**Applies to:** crate version `0.2.0` plus Unreleased changes through 2026-08-28
 
-**Required protocol:** sevenfifty777 DCS-gRPC `0.9.0`, commit
-`11aea3484099c2dd21d41a53db2e510f6e5e84c5`
+**Required protocol:** official sevenfifty777 DCS-gRPC tag `v0.9.0`, resolved by `Cargo.lock` to
+commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`
 
 ## 1. Prerequisites
 
@@ -36,8 +36,9 @@ cargo fmt -- --check
 cargo clippy -- -D warnings
 ```
 
-The release binary is `target\release\lso.exe`. Cargo obtains `dcs-grpc-stubs` from the exact Git
-commit in `Cargo.toml`; do not replace it with an unpinned branch.
+The release binary is `target\release\lso.exe`. Cargo obtains `dcs-grpc-stubs` from the official Git
+tag in `Cargo.toml`, while `Cargo.lock` fixes the resolved commit; do not replace it with an unpinned
+branch.
 
 If dependencies changed and `cargo-audit` is already installed, also run:
 
@@ -50,8 +51,9 @@ embedded at compile time, so the runtime does not need the repository's `img` di
 
 ## 3. Install and start DCS-gRPC
 
-Use the release package built from the pinned fork commit. Extract the package into the DCS Saved
-Games server directory. The resulting layout includes:
+Use the package from the official
+[`v0.9.0` release](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0). Extract it into
+the DCS Saved Games server directory. The resulting layout includes:
 
 ```text
 <Saved Games DCS>\
@@ -465,7 +467,8 @@ gRPC failures are retried.
 - Confirm DCS and the mission environment are running.
 - Confirm DCS-gRPC autostart or mission startup is configured.
 - Check DCS `[GRPC]` logs and `Test-NetConnection` to the same host/port used in `--uri`.
-- Confirm the deployed server matches the pinned 0.9.0 fork commit.
+- Confirm the deployed server matches the official `v0.9.0` release and the commit recorded in
+  `Cargo.lock`.
 - Use `-v` to see retry reasons; LSO normally keeps retrying rather than exiting.
 
 ### No saved passes

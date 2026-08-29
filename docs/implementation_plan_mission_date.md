@@ -2,7 +2,7 @@
 
 **Status:** Implemented across commits `3e50c67` and `4d74c8a`
 
-**Protocol baseline:** DCS-gRPC 0.9.0 at the currently pinned fork commit
+**Protocol baseline:** official DCS-gRPC tag `v0.9.0` at the revision recorded in `Cargo.lock`
 
 ## Implemented flow
 

@@ -35,7 +35,7 @@ Fournir les valeurs suivantes :
 
 - [ ] version exacte de DCS World Dedicated Server, avec numéro de build ;
 - [ ] branche DCS utilisée, si plusieurs canaux existent dans votre installation ;
-- [ ] version exacte de DCS-gRPC réellement installée, avec hash des DLL/Lua ; le code attend le fork 0.9.0 au commit `11aea3484099c2dd21d41a53db2e510f6e5e84c5` ;
+- [ ] version exacte de DCS-gRPC réellement installée, avec hash des DLL/Lua ; le code attend le tag officiel du fork `v0.9.0`, verrouillé au commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b` ;
 - [ ] version de Windows Server et architecture ;
 - [ ] type d'exécution de LSO : console, tâche planifiée, service, wrapper ou autre ;
 - [ ] commande complète de lancement de LSO, en masquant les secrets ;
@@ -492,7 +492,7 @@ La doctrine 2004 décrit un jugement humain par phases/tendances, hover, cross, 
 
 ### Arbitrage Y — Version DCS-gRPC de référence
 
-**Recommandation :** figer client, DLL et Lua sur le commit `11aea348…`, enregistrer leurs hashes et refuser le démarrage ou avertir fortement si version/session attendue non vérifiable.
+**Recommandation :** figer client, DLL et Lua sur le tag `v0.9.0` et le commit verrouillé `5bd6d6e…`, enregistrer leurs hashes et refuser le démarrage ou avertir fortement si version/session attendue non vérifiable.
 
 - [ ] Recommandation acceptée
 - [ ] Une autre version doit être supportée : `______________________________`
