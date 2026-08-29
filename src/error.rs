@@ -1,7 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Grpc(#[from] tonic::Status),
+    Grpc(Box<tonic::Status>),
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
     #[error(transparent)]
@@ -13,9 +13,21 @@ pub enum Error {
     #[error("failed to parse ACMI (Tacview) file")]
     Tracview(#[from] tacview::ParseError),
     #[error("failed to send Discord message")]
-    Discord(#[from] serenity::prelude::SerenityError),
+    Discord(#[source] Box<serenity::prelude::SerenityError>),
     #[error("failed to deserialize JSON")]
     Serde(#[from] serde_json::Error),
     #[error("database error")]
     Db(#[from] rusqlite::Error),
+}
+
+impl From<tonic::Status> for Error {
+    fn from(error: tonic::Status) -> Self {
+        Self::Grpc(Box::new(error))
+    }
+}
+
+impl From<serenity::prelude::SerenityError> for Error {
+    fn from(error: serenity::prelude::SerenityError) -> Self {
+        Self::Discord(Box::new(error))
+    }
 }

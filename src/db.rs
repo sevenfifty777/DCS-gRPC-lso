@@ -95,15 +95,22 @@ impl RecoveryDb {
         // (SQLite does not support IF NOT EXISTS on ALTER TABLE ADD COLUMN).
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN aircraft_type  TEXT;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN map_name       TEXT;");
-        let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN grade_date     TEXT    NOT NULL DEFAULT '';");
-        let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN grade_points   REAL    NOT NULL DEFAULT 0.0;");
+        let _ = conn.execute_batch(
+            "ALTER TABLE passes ADD COLUMN grade_date     TEXT    NOT NULL DEFAULT '';",
+        );
+        let _ = conn.execute_batch(
+            "ALTER TABLE passes ADD COLUMN grade_points   REAL    NOT NULL DEFAULT 0.0;",
+        );
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN pilot_ucid     TEXT;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN aircraft_id    INTEGER;");
-        let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN mission_datetime TEXT NOT NULL DEFAULT '';");
+        let _ = conn.execute_batch(
+            "ALTER TABLE passes ADD COLUMN mission_datetime TEXT NOT NULL DEFAULT '';",
+        );
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN spot TEXT;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN spot_grade TEXT;");
         let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN spot_distance_m REAL;");
-        let _ = conn.execute_batch("ALTER TABLE passes ADD COLUMN outcome TEXT NOT NULL DEFAULT '';");
+        let _ =
+            conn.execute_batch("ALTER TABLE passes ADD COLUMN outcome TEXT NOT NULL DEFAULT '';");
         Ok(Self {
             conn: Mutex::new(conn),
         })

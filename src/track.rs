@@ -4,7 +4,10 @@ use std::str::FromStr;
 use ultraviolet::{DRotor3, DVec3};
 
 use crate::data::{AirplaneInfo, CarrierInfo, CarrierRecovery};
-use crate::grading::{compute_pass_grade, compute_vstol_approach_grade_points, compute_vstol_final_grade_from_points, PassGrade, SpotGrade};
+use crate::grading::{
+    compute_pass_grade, compute_vstol_approach_grade_points, compute_vstol_final_grade_from_points,
+    PassGrade, SpotGrade,
+};
 use crate::transform::Transform;
 use crate::utils::{m_to_ft, m_to_nm};
 
@@ -144,8 +147,9 @@ pub struct GateDeviations {
     pub at_quarter_nm: Option<GateDatum>,
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub enum Grading {
+    #[default]
     Unknown,
     Bolter,
     IntentionalBolter {
@@ -223,9 +227,8 @@ impl Track {
         // top of the overview PNG.
         // ---------------------------------------------------------------
         {
-            let brc_rot =
-                DRotor3::from_rotation_xz(carrier.heading.neg().to_radians());
-            let brc_fwd  = DVec3::unit_z().rotated_by(brc_rot); // BRC forward
+            let brc_rot = DRotor3::from_rotation_xz(carrier.heading.neg().to_radians());
+            let brc_fwd = DVec3::unit_z().rotated_by(brc_rot); // BRC forward
             let brc_stbd = DVec3::unit_x().rotated_by(brc_rot); // starboard
 
             // rel = vector from plane to carrier
@@ -288,10 +291,7 @@ impl Track {
             return false;
         }
 
-        let is_arrested_recovery = matches!(
-            &self.carrier_info.recovery,
-            CarrierRecovery::Arrested
-        );
+        let is_arrested_recovery = matches!(&self.carrier_info.recovery, CarrierRecovery::Arrested);
         if is_arrested_recovery && hook_state.is_some_and(|state| state < 0.5) {
             self.hook_was_up = true;
         }
@@ -329,7 +329,10 @@ impl Track {
                 }
                 Some(_) => {
                     // Waveoff or other graded outcome, plane moving away → stop.
-                    tracing::debug!(distance_in_m = distance, "stop tracking (graded, moving away)");
+                    tracing::debug!(
+                        distance_in_m = distance,
+                        "stop tracking (graded, moving away)"
+                    );
                     return false;
                 }
                 None if self.entered_groove => {
@@ -348,15 +351,15 @@ impl Track {
                             return false;
                         }
 
-                        tracing::debug!(
-                            distance_in_m = distance,
-                            "bolter detected (no touchdown)"
-                        );
+                        tracing::debug!(distance_in_m = distance, "bolter detected (no touchdown)");
                         self.grading = Some(Grading::Bolter);
                         return false;
                     }
 
-                    tracing::debug!(distance_in_m = distance, "waveoff detected (entered groove, moving away)");
+                    tracing::debug!(
+                        distance_in_m = distance,
+                        "waveoff detected (entered groove, moving away)"
+                    );
                     self.grading = Some(Grading::WaveoffPilot);
                     return false;
                 }
@@ -365,7 +368,10 @@ impl Track {
                     // pattern (break turn, downwind, abeam).  Reset the distance floor so the
                     // next approaching leg is tracked from a fresh minimum instead of stopping.
                     self.previous_distance = distance;
-                    tracing::trace!(distance_in_m = distance, "pattern: plane moving away, resetting distance tracker");
+                    tracing::trace!(
+                        distance_in_m = distance,
+                        "pattern: plane moving away, resetting distance tracker"
+                    );
                 }
             }
         }
@@ -435,13 +441,15 @@ impl Track {
             // Sample gate deviations at key distances on first crossing.
             let ideal_gs_alt = match &self.carrier_info.recovery {
                 CarrierRecovery::Arrested => x * self.plane_info.glide_slope.to_radians().tan(),
-                CarrierRecovery::Vstol { target_altitude_ft, .. } => {
+                CarrierRecovery::Vstol {
+                    target_altitude_ft, ..
+                } => {
                     // Same geometric principle as CATOBAR, but translated upward:
                     // the ideal V/STOL approach reaches 120 ft MSL/above-water at
                     // x = 0 (abeam the 7.5 longitudinal station).
                     (*target_altitude_ft / 3.28084)
                         + x * self.plane_info.glide_slope.to_radians().tan()
-                },
+                }
             };
             let gs_deviation_m = alt - ideal_gs_alt;
             let gs_deviation_ft = m_to_ft(gs_deviation_m);
@@ -457,7 +465,12 @@ impl Track {
             // still on base/turning toward the parallel axis.  This avoids
             // bogus multi-thousand-foot LAT values from an earlier circuit pass.
             let gate_lined_up = !self.carrier_info.is_vstol() || lineup_deg.abs() <= 10.0;
-            if in_approach && gate_lined_up && is_inbound && x <= GATE_THREE_QUARTER_NM && self.gate_deviations.at_three_quarter_nm.is_none() {
+            if in_approach
+                && gate_lined_up
+                && is_inbound
+                && x <= GATE_THREE_QUARTER_NM
+                && self.gate_deviations.at_three_quarter_nm.is_none()
+            {
                 self.gate_deviations.at_three_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -465,7 +478,12 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && gate_lined_up && is_inbound && x <= GATE_HALF_NM && self.gate_deviations.at_half_nm.is_none() {
+            if in_approach
+                && gate_lined_up
+                && is_inbound
+                && x <= GATE_HALF_NM
+                && self.gate_deviations.at_half_nm.is_none()
+            {
                 self.gate_deviations.at_half_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -473,7 +491,12 @@ impl Track {
                     lineup_ft,
                 });
             }
-            if in_approach && gate_lined_up && is_inbound && x <= GATE_QUARTER_NM && self.gate_deviations.at_quarter_nm.is_none() {
+            if in_approach
+                && gate_lined_up
+                && is_inbound
+                && x <= GATE_QUARTER_NM
+                && self.gate_deviations.at_quarter_nm.is_none()
+            {
                 self.gate_deviations.at_quarter_nm = Some(GateDatum {
                     gs_deviation_deg,
                     lineup_deg,
@@ -520,10 +543,10 @@ impl Track {
             // plane axes (local X/Z).  Vertical compression/gear animation therefore
             // cannot distort the touchdown accuracy score.
             if let CarrierRecovery::Vstol { landing_point, .. } = &self.carrier_info.recovery {
-                let spot_ref_world = plane.position
-                    + self.plane_info.landing_reference.rotated_by(plane.rotation);
-                let spot_ref_local = (spot_ref_world - carrier.position)
-                    .rotated_by(carrier.rotation.reversed());
+                let spot_ref_world =
+                    plane.position + self.plane_info.landing_reference.rotated_by(plane.rotation);
+                let spot_ref_local =
+                    (spot_ref_world - carrier.position).rotated_by(carrier.rotation.reversed());
                 let dx = spot_ref_local.x - landing_point.x;
                 let dz = spot_ref_local.z - landing_point.z;
                 let spot_distance_m = (dx * dx + dz * dz).sqrt();
@@ -639,16 +662,15 @@ impl Track {
         // CATOBAR is intentionally untouched. Only a successfully recovered V/STOL
         // pass receives the spot-accuracy bonus and is then mapped back to the same
         // greenie-board labels used by CATOBAR (_OK_/OK/(OK)/--/C).
-        let (pass_grade, grade_points) = if self.carrier_info.is_vstol()
-            && matches!(&grading, Grading::Recovered { .. })
-        {
-            match spot_grade {
-                Some(spot) => compute_vstol_final_grade_from_points(approach_points, spot),
-                None => (approach_grade, approach_points),
-            }
-        } else {
-            (approach_grade, approach_points)
-        };
+        let (pass_grade, grade_points) =
+            if self.carrier_info.is_vstol() && matches!(&grading, Grading::Recovered { .. }) {
+                match spot_grade {
+                    Some(spot) => compute_vstol_final_grade_from_points(approach_points, spot),
+                    None => (approach_grade, approach_points),
+                }
+            } else {
+                (approach_grade, approach_points)
+            };
 
         TrackResult {
             pilot_name: self.pilot_name,
@@ -723,16 +745,7 @@ impl Track {
     }
 }
 
-impl Default for Grading {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
-fn normalize_grading_for_recovery(
-    grading: Grading,
-    recovery: &CarrierRecovery,
-) -> Grading {
+fn normalize_grading_for_recovery(grading: Grading, recovery: &CarrierRecovery) -> Grading {
     match (recovery, grading) {
         // Intentional bolters are hook-up qualification passes and only exist
         // for arrested recoveries. Never expose this outcome on V/STOL.

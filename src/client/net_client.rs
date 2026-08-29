@@ -1,5 +1,5 @@
-use stubs::net::v0::net_service_client::NetServiceClient;
 use stubs::net::v0::get_players_response::GetPlayerInfo;
+use stubs::net::v0::net_service_client::NetServiceClient;
 use tonic::{transport::Channel, Status};
 
 pub struct NetClient {

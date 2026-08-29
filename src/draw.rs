@@ -121,7 +121,6 @@ fn themed_png_from_bytes(bytes: &[u8]) -> Result<image::DynamicImage, DrawError>
     Ok(image::DynamicImage::ImageRgba8(bg))
 }
 
-
 /// Small owned copy helper for rendering-only V/STOL selections.
 fn copy_datum(d: &Datum) -> Datum {
     Datum {
@@ -360,8 +359,7 @@ pub fn draw_chart(
     // Their plot heights retain the original axis aspect ratios.
     let (root_height, side_height, top_start) = chart_layout(track.carrier_info.is_vstol());
 
-    let root_drawing_area =
-        BitMapBackend::new(&path, (WIDTH, root_height)).into_drawing_area();
+    let root_drawing_area = BitMapBackend::new(&path, (WIDTH, root_height)).into_drawing_area();
     root_drawing_area.fill(&THEME_BG)?;
 
     let (side, _) = root_drawing_area.split_vertically(side_height);
@@ -393,7 +391,11 @@ pub fn draw_chart(
         format!("{:.1}", track.grade_points)
     };
     root_drawing_area.draw_text(
-        &format!("Grade: {}  ({} pts)", track.pass_grade.label(), grade_points_text),
+        &format!(
+            "Grade: {}  ({} pts)",
+            track.pass_grade.label(),
+            grade_points_text
+        ),
         &text_style,
         (16, 48),
     )?;
@@ -418,7 +420,7 @@ pub fn draw_chart(
                         .map(|c| Cow::Owned(format!("Cable {}", c)))
                         .unwrap_or(Cow::Borrowed("(failed to detect cable)"))
                 }
-            },
+            }
         },
         &text_style,
         (16, 112),
@@ -436,7 +438,11 @@ pub fn draw_chart(
         let (label, gate) = (*label, *gate);
         let y_pos = 144 + (index as i32) * 28;
         root_drawing_area.draw_text(
-            &format!("{}: {}", label, fmt_gate(gate, track.carrier_info.is_vstol())),
+            &format!(
+                "{}: {}",
+                label,
+                fmt_gate(gate, track.carrier_info.is_vstol())
+            ),
             &text_style_small,
             (16, y_pos),
         )?;
@@ -477,7 +483,11 @@ pub fn draw_top_view(
         .x_label_area_size(X_LABEL_AREA_SIZE)
         .y_label_area_size(0u32)
         .build_cartesian_2d(
-            CustomRange(chart_range_x.clone().with_key_points(vec![0.25f64, 0.5, 0.75, 1.0])),
+            CustomRange(
+                chart_range_x
+                    .clone()
+                    .with_key_points(vec![0.25f64, 0.5, 0.75, 1.0]),
+            ),
             TOP_RANGE_Y,
         )?;
 
@@ -492,7 +502,12 @@ pub fn draw_top_view(
 
     let mut vstol_visual_ref_y_nm: Option<f64> = None;
 
-    if let CarrierRecovery::Vstol { landing_point, approach_axis_port_m, .. } = &track.carrier_info.recovery {
+    if let CarrierRecovery::Vstol {
+        landing_point,
+        approach_axis_port_m,
+        ..
+    } = &track.carrier_info.recovery
+    {
         // V/STOL keeps the native CATOBAR visual grammar but uses the user-provided
         // Tarawa top-down artwork.  The pink-square reference supplied by the user
         // was used off-line to calibrate the spot-7.5 pixel location; the production
@@ -524,8 +539,7 @@ pub fn draw_top_view(
         // at landing_point.x = -3.10 m, its actual distance to that edge is
         // 18.0 - 3.10 = 14.90 m.  Derive this from the recovery geometry so
         // the artwork and the scoring reference cannot drift apart.
-        let ref_to_port_edge_m =
-            (*approach_axis_port_m - AV8B_WINGSPAN_M + landing_point.x).abs();
+        let ref_to_port_edge_m = (*approach_axis_port_m - AV8B_WINGSPAN_M + landing_point.x).abs();
         let port_edge_to_hover_px = if ref_to_port_edge_m > 1.0e-9 {
             ref_to_port_edge_px * (AV8B_WINGSPAN_M / ref_to_port_edge_m)
         } else {
@@ -662,9 +676,8 @@ pub fn draw_top_view(
                 // origin at exact spot 7.5 is fixed to the yellow 7.5 marker. This
                 // transform therefore cannot become singular and is independent of
                 // when the pilot starts the lateral translation.
-                let physical_75_y_m = *approach_axis_port_m
-                    + landing_point.x
-                    - track.plane_info.landing_reference.x;
+                let physical_75_y_m =
+                    *approach_axis_port_m + landing_point.x - track.plane_info.landing_reference.x;
                 let physical_75_y_nm = m_to_nm(physical_75_y_m);
                 let visual_75_y_nm = vstol_visual_ref_y_nm.unwrap_or(physical_75_y_nm);
                 let scale = if physical_75_y_nm.abs() > 1.0e-9 {
@@ -787,7 +800,11 @@ pub fn draw_side_view(
         .x_label_area_size(0u32)
         .y_label_area_size(0u32)
         .build_cartesian_2d(
-            CustomRange(chart_range_x.clone().with_key_points(vec![0.25f64, 0.5, 0.75, 1.0])),
+            CustomRange(
+                chart_range_x
+                    .clone()
+                    .with_key_points(vec![0.25f64, 0.5, 0.75, 1.0]),
+            ),
             side_range.clone(),
         )?;
 
@@ -801,7 +818,10 @@ pub fn draw_side_view(
         .x_label_style(text_style())
         .draw()?;
 
-    if let CarrierRecovery::Vstol { target_altitude_ft, .. } = &track.carrier_info.recovery {
+    if let CarrierRecovery::Vstol {
+        target_altitude_ft, ..
+    } = &track.carrier_info.recovery
+    {
         // Use the user-provided Tarawa side profile.  The clean asset is stored
         // under /img as a recovery-only asset while the pink-square copy was used
         // only to calibrate the spot-7.5 pixel reference.
@@ -846,11 +866,9 @@ pub fn draw_side_view(
 
         for (deg, color) in lines {
             let mut x = chart_range_x.end;
-            let mut y = *target_altitude_ft
-                + nm_to_ft(deg.to_radians().tan() * chart_range_x.end);
+            let mut y = *target_altitude_ft + nm_to_ft(deg.to_radians().tan() * chart_range_x.end);
             if y > side_range.end {
-                x = ft_to_nm(side_range.end - *target_altitude_ft)
-                    / deg.to_radians().tan();
+                x = ft_to_nm(side_range.end - *target_altitude_ft) / deg.to_radians().tan();
                 y = side_range.end;
             }
             chart.draw_series(LineSeries::new(
@@ -921,8 +939,12 @@ pub fn draw_side_view(
         // the user-marked 7.5 deck point, visually 50 ft below the hover datum.
         let translation = select_vstol_translation_datums(track, &final_run);
         if translation.len() > 1 {
-            if let (Some(endpoint), CarrierRecovery::Vstol { target_altitude_ft, .. }) =
-                (final_run.last(), &track.carrier_info.recovery)
+            if let (
+                Some(endpoint),
+                CarrierRecovery::Vstol {
+                    target_altitude_ft, ..
+                },
+            ) = (final_run.last(), &track.carrier_info.recovery)
             {
                 let start_alt_ft = m_to_ft(endpoint.alt);
                 // The exact land-event datum appended by Track::landed() is
@@ -932,11 +954,12 @@ pub fn draw_side_view(
                 let physical_touchdown_alt_ft = translation
                     .last()
                     .map(|d| m_to_ft(d.alt))
-                    .unwrap_or_else(|| m_to_ft(
-                        track.carrier_info.deck_altitude - track.plane_info.landing_reference.y,
-                    ));
-                let visual_deck_alt_ft =
-                    *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
+                    .unwrap_or_else(|| {
+                        m_to_ft(
+                            track.carrier_info.deck_altitude - track.plane_info.landing_reference.y,
+                        )
+                    });
+                let visual_deck_alt_ft = *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
                 let denom = physical_touchdown_alt_ft - start_alt_ft;
                 let scale = if denom.abs() > 1.0e-9 {
                     (visual_deck_alt_ft - start_alt_ft) / denom
@@ -1023,9 +1046,11 @@ pub fn draw_side_view(
 
     // Draw the deck-level 7.5 marker last so it remains visible even when the
     // touchdown trace terminates on the exact same point.
-    if let CarrierRecovery::Vstol { target_altitude_ft, .. } = &track.carrier_info.recovery {
-        let visual_deck_alt_ft =
-            *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
+    if let CarrierRecovery::Vstol {
+        target_altitude_ft, ..
+    } = &track.carrier_info.recovery
+    {
+        let visual_deck_alt_ft = *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
         chart.draw_series(std::iter::once(Circle::new(
             (0.0, visual_deck_alt_ft),
             VSTOL_MARKER_RADIUS_PX,
@@ -1042,10 +1067,7 @@ fn text_style() -> TextStyle<'static> {
 
 fn fmt_gate(gate: Option<&GateDatum>, vstol: bool) -> String {
     match gate {
-        Some(g) if vstol => format!(
-            "ALT {:+.0}ft  LAT {:+.0}ft",
-            g.gs_deviation_ft, g.lineup_ft
-        ),
+        Some(g) if vstol => format!("ALT {:+.0}ft  LAT {:+.0}ft", g.gs_deviation_ft, g.lineup_ft),
         Some(g) => format!(
             "GS {:+.1}\u{00B0}  LU {:+.1}\u{00B0}",
             g.gs_deviation_deg, g.lineup_deg
@@ -1128,7 +1150,7 @@ mod layout_tests {
 const PAT_WIDTH_NM: f64 = 5.0;
 /// Height in nm of the pattern chart (ahead–astern, 0 = carrier).
 const PAT_ASTERN_NM: f64 = 3.0; // astern (bottom of chart)
-const PAT_AHEAD_NM: f64 = 3.0;  // ahead  (top of chart)
+const PAT_AHEAD_NM: f64 = 3.0; // ahead  (top of chart)
 /// Physical size of the pattern PNG.
 const PAT_IMG_W: u32 = 900;
 const PAT_IMG_H: u32 = 900;
@@ -1148,10 +1170,11 @@ pub fn draw_pattern_chart(
     filename: &str,
     track: &TrackResult,
 ) -> Result<PathBuf, DrawError> {
-    let path = out_dir.join(format!("{filename}-pattern")).with_extension("png");
+    let path = out_dir
+        .join(format!("{filename}-pattern"))
+        .with_extension("png");
 
-    let root =
-        BitMapBackend::new(&path, (PAT_IMG_W, PAT_IMG_H)).into_drawing_area();
+    let root = BitMapBackend::new(&path, (PAT_IMG_W, PAT_IMG_H)).into_drawing_area();
     root.fill(&THEME_BG)?;
 
     // Title
@@ -1193,7 +1216,7 @@ pub fn draw_pattern_chart(
 
     // BRC reference line through carrier
     chart.draw_series(LineSeries::new(
-        [( 0.0, y_range.start), (0.0, y_range.end)],
+        [(0.0, y_range.start), (0.0, y_range.end)],
         THEME_GUIDE_GRAY.mix(0.3).stroke_width(1),
     ))?;
 
@@ -1238,11 +1261,8 @@ pub fn draw_pattern_chart(
 
         let anchor_x = -m_to_nm(ship_wid_m * vs / 2.0);
         let anchor_y = m_to_nm(ship_len_m * vs / 2.0);
-        let elem: BitMapElement<_> = (
-            (anchor_x, anchor_y),
-            image::DynamicImage::ImageRgba8(bg),
-        )
-            .into();
+        let elem: BitMapElement<_> =
+            ((anchor_x, anchor_y), image::DynamicImage::ImageRgba8(bg)).into();
         chart.draw_series(std::iter::once(elem))?;
     }
 
@@ -1269,14 +1289,16 @@ pub fn draw_pattern_chart(
         .map(|d| PatternDatum {
             time: d.time,
             // chart coords: port on left (negate port_m), ahead at top (negate astern_m)
-            astern_m: -m_to_nm(d.astern_m),  // chart_y = -astern_m
-            port_m:   -m_to_nm(d.port_m),    // chart_x = -port_m
+            astern_m: -m_to_nm(d.astern_m), // chart_y = -astern_m
+            port_m: -m_to_nm(d.port_m),     // chart_x = -port_m
             alt_ft: d.alt_ft,
             aoa: d.aoa,
         })
         .filter(|d| {
-            d.port_m  >= -PAT_WIDTH_NM / 2.0 && d.port_m  <= PAT_WIDTH_NM / 2.0
-                && d.astern_m >= -PAT_ASTERN_NM   && d.astern_m <= PAT_AHEAD_NM
+            d.port_m >= -PAT_WIDTH_NM / 2.0
+                && d.port_m <= PAT_WIDTH_NM / 2.0
+                && d.astern_m >= -PAT_ASTERN_NM
+                && d.astern_m <= PAT_AHEAD_NM
         })
         .collect();
 
@@ -1295,7 +1317,7 @@ pub fn draw_pattern_chart(
                 seg_pts.push(pt);
             }
             chart.draw_series(LineSeries::new(
-                seg_pts.drain(..).collect::<Vec<_>>(),
+                std::mem::take(&mut seg_pts),
                 seg_color.stroke_width(2),
             ))?;
             seg_color = color;
@@ -1303,10 +1325,7 @@ pub fn draw_pattern_chart(
         seg_pts.push(pt);
     }
     if !seg_pts.is_empty() {
-        chart.draw_series(LineSeries::new(
-            seg_pts,
-            seg_color.stroke_width(2),
-        ))?;
+        chart.draw_series(LineSeries::new(seg_pts, seg_color.stroke_width(2)))?;
     }
 
     // Touchdown marker (last datum)

@@ -23,6 +23,8 @@ use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::Status;
 
+type RecoveryTaskMap = Arc<Mutex<HashMap<(u32, u32), JoinHandle<()>>>>;
+
 #[derive(clap::Parser)]
 pub struct Opts {
     /// The directory the carrier recovery recordings should be saved to.
@@ -98,9 +100,15 @@ pub async fn execute(
             // on each try, run the program and consider every error as transient (ie. worth
             // retrying)
             || async {
-                run(&opts, users.clone(), shutdown_handle.clone(), session_log.clone(), db.clone())
-                    .await
-                    .map_err(backoff::Error::transient)
+                run(
+                    &opts,
+                    users.clone(),
+                    shutdown_handle.clone(),
+                    session_log.clone(),
+                    db.clone(),
+                )
+                .await
+                .map_err(backoff::Error::transient)
             },
             // error hook:
             |err, backoff: Duration| {
@@ -202,8 +210,7 @@ async fn run(
     // Tracks the active detect_recovery_attempt task for each (plane_id, carrier_id) pair.
     // When a Birth event re-spawns a known unit the old task is aborted before a new one starts,
     // preventing duplicate recordings.
-    let active_tasks: Arc<Mutex<HashMap<(u32, u32), JoinHandle<()>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let active_tasks: RecoveryTaskMap = Arc::new(Mutex::new(HashMap::new()));
 
     let discord_webhook = opts.discord_webhook.clone();
     let record_acmi = !opts.no_acmi;
@@ -261,7 +268,8 @@ async fn run(
             if let Ok(mut map) = active_tasks2.lock() {
                 if let Some(old) = map.insert((plane_id, carrier_id), handle) {
                     tracing::debug!(
-                        plane_id, carrier_id,
+                        plane_id,
+                        carrier_id,
                         "aborting stale detect_recovery_attempt task for re-spawned unit"
                     );
                     old.abort();
@@ -330,7 +338,8 @@ async fn run(
                         }
                     }
                     Ok(Some(Candidate::Carrier(carrier_info))) => {
-                        for (plane_name, (plane_id, pilot_name, plane_type, plane_info)) in &planes {
+                        for (plane_name, (plane_id, pilot_name, plane_type, plane_info)) in &planes
+                        {
                             spawn_detect_recovery_attempt(
                                 unit.id,
                                 unit.name.clone(),
@@ -354,7 +363,10 @@ async fn run(
                 }
             }
         }
-        tx_events.send(tonic::Status::aborted("Mission event stream ended").into()).await.ok();
+        tx_events
+            .send(tonic::Status::aborted("Mission event stream ended").into())
+            .await
+            .ok();
     });
 
     drop(tx);
@@ -398,8 +410,7 @@ async fn check_candidate(
             if attrs.iter().any(|a| {
                 matches!(
                     a.as_str(),
-                    "AircraftCarrier With Arresting Gear"
-                        | "AircraftCarrier With Tramplin"
+                    "AircraftCarrier With Arresting Gear" | "AircraftCarrier With Tramplin"
                 )
             }) {
                 return Ok(unit
@@ -440,7 +451,10 @@ fn print_greenie_board(session_log: &SessionLog) {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║              SESSION GREENIE BOARD                       ║");
     println!("╠═══════════════════════╦══════╦══════╦════════════════════╣");
-    println!("║ Pilot                 ║ {:^4} ║ Grd  ║ DCS Grade          ║", point_header);
+    println!(
+        "║ Pilot                 ║ {:^4} ║ Grd  ║ DCS Grade          ║",
+        point_header
+    );
     println!("╠═══════════════════════╬══════╬══════╬════════════════════╣");
     for pass in &passes {
         let recovery_point = pass
@@ -466,4 +480,3 @@ fn print_greenie_board(session_log: &SessionLog) {
     println!("╚═══════════════════════╩══════╩══════╩════════════════════╝");
     println!();
 }
-
