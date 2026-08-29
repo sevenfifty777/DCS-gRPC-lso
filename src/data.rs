@@ -313,7 +313,6 @@ pub struct CarrierInfo {
     pub cable4: (DVec3, DVec3),
 }
 
-
 const TARAWA: CarrierInfo = CarrierInfo {
     // V/STOL approach is parallel to the ship's BRC, not the angled runway definition.
     deck_angle: 0.0,
@@ -334,10 +333,54 @@ const TARAWA: CarrierInfo = CarrierInfo {
         target_altitude_ft: 120.0,
     },
     // Tarawa has no arresting wires; retained only to preserve the existing CarrierInfo layout.
-    cable1: (DVec3 { x: 0.0, y: 0.0, z: 0.0 }, DVec3 { x: 0.0, y: 0.0, z: 0.0 }),
-    cable2: (DVec3 { x: 0.0, y: 0.0, z: 0.0 }, DVec3 { x: 0.0, y: 0.0, z: 0.0 }),
-    cable3: (DVec3 { x: 0.0, y: 0.0, z: 0.0 }, DVec3 { x: 0.0, y: 0.0, z: 0.0 }),
-    cable4: (DVec3 { x: 0.0, y: 0.0, z: 0.0 }, DVec3 { x: 0.0, y: 0.0, z: 0.0 }),
+    cable1: (
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    ),
+    cable2: (
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    ),
+    cable3: (
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    ),
+    cable4: (
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        DVec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+    ),
 };
 
 impl CarrierInfo {

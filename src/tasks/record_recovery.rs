@@ -573,10 +573,12 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             spot_distance_m: completed.spot_distance_m,
             dcs_grading: completed.dcs_grading.clone(),
             aircraft_type: Some(completed.aircraft_type.clone()),
-            map_name: if completed.map_name.is_empty() { None } else { Some(completed.map_name.clone()) },
-            grade_date: now_utc
-                .format(&GRADE_DATE_FORMAT)
-                .unwrap_or_default(),
+            map_name: if completed.map_name.is_empty() {
+                None
+            } else {
+                Some(completed.map_name.clone())
+            },
+            grade_date: now_utc.format(&GRADE_DATE_FORMAT).unwrap_or_default(),
             grade_points: completed.grade_points,
             mission_datetime: mission_datetime.clone(),
             outcome: completed.outcome.clone(),
@@ -589,8 +591,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     }
 
     let chart_path = crate::draw::draw_chart(params.out_dir, &filename, &track)?;
-    let pattern_chart_path =
-        crate::draw::draw_pattern_chart(params.out_dir, &filename, &track)?;
+    let pattern_chart_path = crate::draw::draw_pattern_chart(params.out_dir, &filename, &track)?;
 
     if let Some(discord_webhook) = params.discord_webhook.as_deref() {
         let http = Http::new("token");
@@ -599,7 +600,10 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         // Query wind at carrier position (non-fatal — a failure must not abort the post).
         let wind: Option<(u16, f32)> = {
             let mut atmo = crate::client::AtmosphereClient::new(params.ch.clone());
-            match atmo.get_wind(last_carrier_lat, last_carrier_lon, last_carrier_alt).await {
+            match atmo
+                .get_wind(last_carrier_lat, last_carrier_lon, last_carrier_alt)
+                .await
+            {
                 Ok(w) => Some(w),
                 Err(err) => {
                     tracing::warn!(?err, "failed to query wind at carrier position");
@@ -610,7 +614,15 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
         let mut embed = CreateEmbed::new()
             .field("Aircraft", params.plane_info.name, false)
-            .field("Map", if map_name.is_empty() { "-" } else { map_name.as_str() }, false)
+            .field(
+                "Map",
+                if map_name.is_empty() {
+                    "-"
+                } else {
+                    map_name.as_str()
+                },
+                false,
+            )
             .field("Date / Time (UTC)", recovery_timestamp.as_str(), false);
         if !mission_datetime.is_empty() {
             embed = embed.field("Mission Date/Time", mission_datetime.as_str(), false);
@@ -628,17 +640,21 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             .field(
                 "Grade",
                 if track.carrier_info.is_vstol() {
-                    format!("{} ({:.2} pts)", track.pass_grade.label(), track.grade_points)
+                    format!(
+                        "{} ({:.2} pts)",
+                        track.pass_grade.label(),
+                        track.grade_points
+                    )
                 } else {
-                    format!("{} ({:.1} pts)", track.pass_grade.label(), track.grade_points)
+                    format!(
+                        "{} ({:.1} pts)",
+                        track.pass_grade.label(),
+                        track.grade_points
+                    )
                 },
                 true,
             )
-            .field(
-                "Outcome",
-                completed.outcome.clone(),
-                true,
-            )
+            .field("Outcome", completed.outcome.clone(), true)
             .field(
                 "Gates (GS / LU)",
                 {
@@ -657,7 +673,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             );
 
         if track.carrier_info.is_vstol() {
-            if let (Some(spot_grade), Some(distance_m)) = (track.spot_grade, track.spot_distance_m) {
+            if let (Some(spot_grade), Some(distance_m)) = (track.spot_grade, track.spot_distance_m)
+            {
                 embed = embed.field(
                     "Spot 7.5",
                     format!(
