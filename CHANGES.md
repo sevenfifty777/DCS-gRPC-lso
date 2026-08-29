@@ -45,6 +45,8 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   ACMI capture after a missed approach or mission change.
 - Carrier-position smoothing reduces periodic sawtooth artifacts in final-approach charts and gate
   measurements.
+- CATOBAR charts select the latest continuous inbound branch, preventing earlier overhead-pattern
+  points from joining the real final as a false vertical drop.
 - F-14B(U) identification and trap-sheet naming.
 
 ### Security and dependencies
