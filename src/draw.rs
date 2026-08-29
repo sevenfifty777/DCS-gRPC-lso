@@ -34,6 +34,8 @@ const THEME_AOA_SLOW: RGBColor = RGBColor(34, 197, 94); // 22C55E
 const WIDTH: u32 = 1000;
 const X_LABEL_AREA_SIZE: u32 = 30;
 const RANGE_X: Range<f64> = -0.02..0.78;
+const FINAL_APPROACH_ALT_RANGE: Range<f64> = 0.0..500.0;
+const MIN_FINAL_SPAN_NM: f64 = 0.20;
 // Give the Tarawa artwork real room to the left of x=0.  In V1.8 the
 // calibrated bitmap anchor sat outside the -0.02 nm native CATOBAR viewport,
 // so Plotters clipped the sprite at the left border even though the 7.5 pixel
@@ -121,7 +123,7 @@ fn themed_png_from_bytes(bytes: &[u8]) -> Result<image::DynamicImage, DrawError>
     Ok(image::DynamicImage::ImageRgba8(bg))
 }
 
-/// Small owned copy helper for rendering-only V/STOL selections.
+/// Small owned copy helper for rendering-only approach selections.
 fn copy_datum(d: &Datum) -> Datum {
     Datum {
         time: d.time,
@@ -132,16 +134,68 @@ fn copy_datum(d: &Datum) -> Datum {
     }
 }
 
-/// Select the single continuous V/STOL final-approach branch used by both plots.
+/// Select the single continuous final-approach branch used by both plots.
 ///
-/// The endpoint is interpolated exactly at x=0 (the abeam-7.5 station). This
-/// removes the artificial visual gap that existed when the renderer stopped at
-/// x=0.01 nm (~18.5 m short of the reference point).
-fn select_vstol_final_datums(track: &TrackResult) -> Vec<Datum> {
+/// The endpoint is interpolated exactly at x=0 when the aircraft crosses the
+/// touchdown/reference station. Keeping this as one time- and position-continuous
+/// run prevents an earlier overhead crossing from being joined to the real final.
+fn select_final_approach_datums(track: &TrackResult) -> Vec<Datum> {
+    if track.carrier_info.is_vstol() {
+        select_vstol_final_datums(&track.datums)
+    } else {
+        select_catobar_final_datums(&track.datums)
+    }
+}
+
+/// Preserve the original V/STOL policy: prefer the longest continuous branch
+/// that reaches the abeam-7.5 station, with the latest branch winning a span tie.
+fn select_vstol_final_datums(datums: &[Datum]) -> Vec<Datum> {
+    continuous_final_runs(datums)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, run)| {
+            inbound_span_nm(run) >= MIN_FINAL_SPAN_NM
+                && run
+                    .last()
+                    .map(|datum| m_to_nm(datum.x))
+                    .unwrap_or(f64::INFINITY)
+                    <= 0.01
+        })
+        .max_by(|(index_a, run_a), (index_b, run_b)| {
+            inbound_span_nm(run_a)
+                .partial_cmp(&inbound_span_nm(run_b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| index_a.cmp(index_b))
+        })
+        .map(|(_, run)| run)
+        .unwrap_or_default()
+}
+
+/// CATOBAR grading belongs to the terminal recovery, so prefer the latest
+/// substantial inbound branch and retain a shorter fallback for early waveoffs.
+fn select_catobar_final_datums(datums: &[Datum]) -> Vec<Datum> {
+    let mut runs = continuous_final_runs(datums);
+    let selected_index = runs
+        .iter()
+        .rposition(|run| inbound_span_nm(run) >= MIN_FINAL_SPAN_NM)
+        .or_else(|| runs.iter().rposition(|run| inbound_span_nm(run) > 0.0));
+
+    selected_index
+        .map(|index| runs.remove(index))
+        .unwrap_or_default()
+}
+
+fn inbound_span_nm(run: &[Datum]) -> f64 {
+    run.first()
+        .zip(run.last())
+        .map(|(first, last)| m_to_nm(first.x - last.x))
+        .unwrap_or(0.0)
+}
+
+fn continuous_final_runs(datums: &[Datum]) -> Vec<Vec<Datum>> {
     const MAX_DT_S: f64 = 1.0;
     const MAX_STEP_M: f64 = 60.0;
     const MAX_X_BACKTRACK_M: f64 = 20.0;
-    const MIN_FINAL_SPAN_NM: f64 = 0.20;
 
     let mut runs: Vec<Vec<Datum>> = Vec::new();
     let mut current: Vec<Datum> = Vec::new();
@@ -154,13 +208,13 @@ fn select_vstol_final_datums(track: &TrackResult) -> Vec<Datum> {
         }
     };
 
-    for d in &track.datums {
+    for d in datums {
         let x_nm = m_to_nm(d.x);
         let y_nm = m_to_nm(d.y);
         let alt_ft = m_to_ft(d.alt);
         let common_window = x_nm <= RANGE_X.end
             && TOP_RANGE_Y.contains(&y_nm)
-            && VSTOL_SIDE_RANGE_Y.contains(&alt_ft);
+            && FINAL_APPROACH_ALT_RANGE.contains(&alt_ft);
 
         if current.is_empty() {
             // A final branch must start on the approach side of the abeam station.
@@ -225,26 +279,7 @@ fn select_vstol_final_datums(track: &TrackResult) -> Vec<Datum> {
         }
     }
     finish_run(&mut current, &mut runs);
-
-    // Prefer the longest branch that reaches (or gets very close to) the
-    // abeam-7.5 station. If spans tie, prefer the latest run in the recording.
-    runs.into_iter()
-        .enumerate()
-        .filter(|(_, run)| {
-            let first_x = run.first().map(|d| m_to_nm(d.x)).unwrap_or(0.0);
-            let last_x = run.last().map(|d| m_to_nm(d.x)).unwrap_or(f64::INFINITY);
-            first_x - last_x >= MIN_FINAL_SPAN_NM && last_x <= 0.01
-        })
-        .max_by(|(ia, a), (ib, b)| {
-            let span_a = m_to_nm(a.first().unwrap().x - a.last().unwrap().x);
-            let span_b = m_to_nm(b.first().unwrap().x - b.last().unwrap().x);
-            span_a
-                .partial_cmp(&span_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| ia.cmp(ib))
-        })
-        .map(|(_, run)| run)
-        .unwrap_or_default()
+    runs
 }
 
 /// Post-x=0 V/STOL lateral translation, for the horizontal chart only.
@@ -623,8 +658,8 @@ pub fn draw_top_view(
     }
 
     let vstol = track.carrier_info.is_vstol();
+    let final_run = select_final_approach_datums(track);
     let track_in_nm: Vec<Datum> = if vstol {
-        let final_run = select_vstol_final_datums(track);
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
@@ -709,8 +744,7 @@ pub fn draw_top_view(
         }
         combined
     } else {
-        let mut raw = track
-            .datums
+        final_run
             .iter()
             .map(|d| Datum {
                 time: d.time,
@@ -719,17 +753,7 @@ pub fn draw_top_view(
                 aoa: d.aoa,
                 alt: d.alt,
             })
-            .filter(|d| RANGE_X.contains(&d.x) && TOP_RANGE_Y.contains(&d.y));
-
-        let mut selected = Vec::new();
-        let mut x_before = f64::MAX;
-        for datum in &mut raw {
-            if datum.x < x_before {
-                x_before = datum.x;
-                selected.push(datum);
-            }
-        }
-        selected
+            .collect()
     };
 
     // draw approach shadow
@@ -919,8 +943,8 @@ pub fn draw_side_view(
     }
 
     let vstol = track.carrier_info.is_vstol();
+    let final_run = select_final_approach_datums(track);
     let track_descent: Vec<Datum> = if vstol {
-        let final_run = select_vstol_final_datums(track);
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
@@ -981,8 +1005,7 @@ pub fn draw_side_view(
         }
         combined
     } else {
-        let mut raw = track
-            .datums
+        final_run
             .iter()
             .map(|d| Datum {
                 time: d.time,
@@ -991,17 +1014,7 @@ pub fn draw_side_view(
                 aoa: d.aoa,
                 alt: m_to_ft(d.alt),
             })
-            .filter(|d| RANGE_X.contains(&d.x) && side_range.contains(&d.alt));
-
-        let mut selected = Vec::new();
-        let mut x_before = f64::MAX;
-        for datum in &mut raw {
-            if datum.x < x_before {
-                x_before = datum.x;
-                selected.push(datum);
-            }
-        }
-        selected
+            .collect()
     };
 
     // draw approach shadow
@@ -1125,7 +1138,45 @@ impl ValueFormatter<f64> for CustomRange {
 
 #[cfg(test)]
 mod layout_tests {
-    use super::{chart_layout, PANEL_GAP};
+    use super::{
+        chart_layout, select_catobar_final_datums, select_vstol_final_datums, Datum, PANEL_GAP,
+    };
+
+    fn two_complete_final_approach_runs() -> Vec<Datum> {
+        let mut datums = Vec::new();
+
+        // The earlier branch deliberately spans farther than the later branch.
+        for (index, x_m) in (0..=24).map(|index| (index, 1_200.0 - index as f64 * 50.0)) {
+            datums.push(Datum {
+                time: index as f64 * 0.1,
+                x: x_m,
+                y: 180.0,
+                aoa: 2.0,
+                alt: 100.0,
+            });
+        }
+
+        // Leave the shared chart window before commencing the later final.
+        datums.push(Datum {
+            time: 10.0,
+            x: 1_300.0,
+            y: 400.0,
+            aoa: 2.0,
+            alt: 100.0,
+        });
+
+        for (index, x_m) in (0..=22).map(|index| (index, 1_100.0 - index as f64 * 50.0)) {
+            datums.push(Datum {
+                time: 100.0 + index as f64 * 0.1,
+                x: x_m,
+                y: 4.0,
+                aoa: 7.0,
+                alt: 100.0,
+            });
+        }
+
+        datums
+    }
 
     #[test]
     fn catobar_chart_panels_do_not_overlap() {
@@ -1139,6 +1190,26 @@ mod layout_tests {
         let (_root_height, side_height, top_start) = chart_layout(true);
 
         assert_eq!(top_start - side_height, PANEL_GAP);
+    }
+
+    #[test]
+    fn catobar_final_approach_selection_uses_latest_continuous_inbound_run() {
+        let selected = select_catobar_final_datums(&two_complete_final_approach_runs());
+
+        assert!(!selected.is_empty());
+        assert!(selected.iter().all(|datum| datum.time >= 100.0));
+        assert!(selected.iter().all(|datum| datum.y == 4.0));
+        assert_eq!(selected.last().map(|datum| datum.x), Some(0.0));
+    }
+
+    #[test]
+    fn vstol_final_approach_selection_preserves_longest_completed_branch_policy() {
+        let selected = select_vstol_final_datums(&two_complete_final_approach_runs());
+
+        assert!(!selected.is_empty());
+        assert!(selected.iter().all(|datum| datum.time < 100.0));
+        assert!(selected.iter().all(|datum| datum.y == 180.0));
+        assert_eq!(selected.last().map(|datum| datum.x), Some(0.0));
     }
 }
 
