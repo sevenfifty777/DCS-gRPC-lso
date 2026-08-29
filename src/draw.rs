@@ -42,17 +42,39 @@ const VSTOL_RANGE_X: Range<f64> = -0.16..0.78;
 const TOP_RANGE_Y: Range<f64> = -0.15..0.15;
 const SIDE_RANGE_Y: Range<f64> = 0.0..350.0;
 const VSTOL_SIDE_RANGE_Y: Range<f64> = 0.0..500.0;
-const OVERLAP_OFFSET: u32 = 130;
-
-// V/STOL uses two independent panels. The native CATOBAR renderer intentionally
-// overlaps the side and top views by OVERLAP_OFFSET pixels; that visual trick
-// works for the carrier touchdown geometry but makes the Harrier 120-ft
-// reference collide with the horizontal lineup panel. Keep the native layout
-// untouched for arrested recoveries and use a clean split only for V/STOL.
+// Keep the vertical-profile and lineup plots in independent panels. Overlapping
+// them makes unrelated traces appear to join into a false vertical excursion.
+const PANEL_GAP: u32 = 16;
 const VSTOL_VERTICAL_PLOT_HEIGHT: u32 = 500;
 const VSTOL_HORIZONTAL_PLOT_HEIGHT: u32 = 300;
-const VSTOL_PANEL_GAP: u32 = 16;
 
+fn chart_layout(is_vstol: bool) -> (u32, u32, u32) {
+    if is_vstol {
+        let root_height = VSTOL_VERTICAL_PLOT_HEIGHT
+            + PANEL_GAP
+            + VSTOL_HORIZONTAL_PLOT_HEIGHT
+            + X_LABEL_AREA_SIZE;
+        (
+            root_height,
+            VSTOL_VERTICAL_PLOT_HEIGHT,
+            VSTOL_VERTICAL_PLOT_HEIGHT + PANEL_GAP,
+        )
+    } else {
+        let side_height = ((ft_to_nm(SIDE_RANGE_Y.end - SIDE_RANGE_Y.start) * 5.0
+            / (RANGE_X.end - RANGE_X.start))
+            * f64::from(WIDTH))
+        .floor() as u32;
+        let top_height = (((TOP_RANGE_Y.end - TOP_RANGE_Y.start) / (RANGE_X.end - RANGE_X.start))
+            * f64::from(WIDTH))
+        .floor() as u32;
+
+        (
+            top_height + side_height + PANEL_GAP + X_LABEL_AREA_SIZE,
+            side_height,
+            side_height + PANEL_GAP,
+        )
+    }
+}
 
 // Tarawa recovery-artwork calibration. The *_REF_PX coordinates come from the
 // exact user-supplied full-ship copies carrying the pink spot-7.5 marker.
@@ -334,37 +356,9 @@ pub fn draw_chart(
 ) -> Result<PathBuf, DrawError> {
     let path = out_dir.join(filename).with_extension("png");
 
-    // Preserve the original/native CATOBAR canvas geometry byte-for-byte in
-    // principle: same side-height calculation, same 130 px overlap and same
-    // top-view aspect ratio.  Only V/STOL gets the dedicated two-panel layout.
-    let (root_height, side_height, top_start) = if track.carrier_info.is_vstol() {
-        let root_height = VSTOL_VERTICAL_PLOT_HEIGHT
-            + VSTOL_PANEL_GAP
-            + VSTOL_HORIZONTAL_PLOT_HEIGHT
-            + X_LABEL_AREA_SIZE;
-        (
-            root_height,
-            VSTOL_VERTICAL_PLOT_HEIGHT,
-            VSTOL_VERTICAL_PLOT_HEIGHT + VSTOL_PANEL_GAP,
-        )
-    } else {
-        let side_height = ((ft_to_nm(SIDE_RANGE_Y.end - SIDE_RANGE_Y.start) * 5.0
-            / (RANGE_X.end - RANGE_X.start))
-            * (WIDTH as f64))
-            .floor() as u32;
-
-        let top_height = (((TOP_RANGE_Y.end - TOP_RANGE_Y.start)
-            / (RANGE_X.end - RANGE_X.start))
-            * (WIDTH as f64))
-            .floor() as u32
-            - OVERLAP_OFFSET;
-
-        (
-            top_height + side_height + X_LABEL_AREA_SIZE,
-            side_height,
-            side_height - OVERLAP_OFFSET,
-        )
-    };
+    // Both recovery types use independent vertical-profile and lineup panels.
+    // Their plot heights retain the original axis aspect ratios.
+    let (root_height, side_height, top_start) = chart_layout(track.carrier_info.is_vstol());
 
     let root_drawing_area =
         BitMapBackend::new(&path, (WIDTH, root_height)).into_drawing_area();
@@ -379,15 +373,11 @@ pub fn draw_chart(
     draw_side_view(track, side)?;
     draw_top_view(track, top)?;
 
-    // A subtle separator is V/STOL-only. It makes the two independent frames
-    // explicit without changing any CATOBAR pixel geometry.
-    if track.carrier_info.is_vstol() {
-        let sep_y = VSTOL_VERTICAL_PLOT_HEIGHT + VSTOL_PANEL_GAP / 2;
-        root_drawing_area.draw(&PathElement::new(
-            vec![(0, sep_y as i32), (WIDTH as i32, sep_y as i32)],
-            THEME_GUIDE_GRAY.mix(0.35),
-        ))?;
-    }
+    let sep_y = side_height + PANEL_GAP / 2;
+    root_drawing_area.draw(&PathElement::new(
+        vec![(0, sep_y as i32), (WIDTH as i32, sep_y as i32)],
+        THEME_GUIDE_GRAY.mix(0.35),
+    ))?;
 
     let text_style = TextStyle::from(("sans-serif", 24).into_font()).color(&THEME_FG);
 
@@ -1110,6 +1100,26 @@ impl ValueFormatter<f64> for CustomRange {
         }
     }
 }
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{chart_layout, PANEL_GAP};
+
+    #[test]
+    fn catobar_chart_panels_do_not_overlap() {
+        let (_root_height, side_height, top_start) = chart_layout(false);
+
+        assert_eq!(top_start - side_height, PANEL_GAP);
+    }
+
+    #[test]
+    fn vstol_chart_panels_do_not_overlap() {
+        let (_root_height, side_height, top_start) = chart_layout(true);
+
+        assert_eq!(top_start - side_height, PANEL_GAP);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pattern (circuit) overview chart
 // ---------------------------------------------------------------------------
