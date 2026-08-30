@@ -26,6 +26,12 @@ impl From<tonic::Status> for Error {
     }
 }
 
+impl From<Box<tonic::Status>> for Error {
+    fn from(error: Box<tonic::Status>) -> Self {
+        Self::Grpc(error)
+    }
+}
+
 impl From<serenity::prelude::SerenityError> for Error {
     fn from(error: serenity::prelude::SerenityError) -> Self {
         Self::Discord(Box::new(error))

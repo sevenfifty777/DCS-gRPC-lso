@@ -111,6 +111,9 @@ fn extract_tracks(rd: &mut impl Read) -> Result<Vec<CarrierPlanePair>, crate::er
                             match CarrierInfo::by_type(name) {
                                 Some(carrier_info) => {
                                     for (plane_id, (pilot_name, plane_info)) in &planes {
+                                        if !compatible_infos(carrier_info, plane_info) {
+                                            continue;
+                                        }
                                         tracks.push(CarrierPlanePair::new(
                                             recording_time + Duration::seconds_f64(time),
                                             update.id,
@@ -129,6 +132,9 @@ fn extract_tracks(rd: &mut impl Read) -> Result<Vec<CarrierPlanePair>, crate::er
                             match AirplaneInfo::by_type(name) {
                                 Some(plane_info) => {
                                     for (carrier_id, carrier_info) in &carriers {
+                                        if !carrier_info.supports_aircraft_type(name) {
+                                            continue;
+                                        }
                                         tracks.push(CarrierPlanePair::new(
                                             recording_time + Duration::seconds_f64(time),
                                             *carrier_id,
@@ -196,6 +202,13 @@ fn extract_tracks(rd: &mut impl Read) -> Result<Vec<CarrierPlanePair>, crate::er
     }
 
     Ok(tracks)
+}
+
+fn compatible_infos(carrier: &CarrierInfo, plane: &AirplaneInfo) -> bool {
+    match carrier.recovery {
+        crate::data::CarrierRecovery::Vstol { .. } => plane.is_vstol(),
+        crate::data::CarrierRecovery::Arrested => !plane.is_vstol(),
+    }
 }
 
 struct CarrierPlanePair {

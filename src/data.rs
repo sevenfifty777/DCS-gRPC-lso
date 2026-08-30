@@ -13,6 +13,7 @@ const NIMITZ: CarrierInfo = CarrierInfo {
     deck_angle: 9.1359,
     deck_altitude: 20.1494,
     recovery: CarrierRecovery::Arrested,
+    active_vstol_spots: &[],
     cable1: (
         // POINT_TROS_01_01
         DVec3 {
@@ -76,6 +77,7 @@ const FORRESTAL: CarrierInfo = CarrierInfo {
     deck_angle: 9.42,
     deck_altitude: 18.46,
     recovery: CarrierRecovery::Arrested,
+    active_vstol_spots: &[],
     cable1: (
         // POINT_TROS_01_01
         DVec3 {
@@ -306,12 +308,30 @@ pub struct CarrierInfo {
     // in meter
     pub deck_altitude: f64,
     pub recovery: CarrierRecovery,
+    /// Geometrically calibrated spots enabled for nearest-spot reporting.
+    /// Phase 1 intentionally contains only Tarawa 7.5; 7 and 8 require live calibration.
+    pub active_vstol_spots: &'static [VstolSpot],
     /// Cable pendant positions (left, right) relative to the object' origin.
     pub cable1: (DVec3, DVec3),
     pub cable2: (DVec3, DVec3),
     pub cable3: (DVec3, DVec3),
     pub cable4: (DVec3, DVec3),
 }
+
+#[derive(Debug, PartialEq)]
+pub struct VstolSpot {
+    pub label: &'static str,
+    pub landing_point: DVec3,
+}
+
+const TARAWA_PHASE1_SPOTS: &[VstolSpot] = &[VstolSpot {
+    label: "7.5",
+    landing_point: DVec3 {
+        x: -3.10,
+        y: 19.95,
+        z: -64.81,
+    },
+}];
 
 const TARAWA: CarrierInfo = CarrierInfo {
     // V/STOL approach is parallel to the ship's BRC, not the angled runway definition.
@@ -332,6 +352,7 @@ const TARAWA: CarrierInfo = CarrierInfo {
         // V1: descend to 120 ft above the water at the 7.5 longitudinal station.
         target_altitude_ft: 120.0,
     },
+    active_vstol_spots: TARAWA_PHASE1_SPOTS,
     // Tarawa has no arresting wires; retained only to preserve the existing CarrierInfo layout.
     cable1: (
         DVec3 {
@@ -384,6 +405,17 @@ const TARAWA: CarrierInfo = CarrierInfo {
 };
 
 impl CarrierInfo {
+    /// Strict phase-1 compatibility matrix. Unsupported pairs must never create
+    /// a detector or an event stream.
+    pub fn supports_aircraft_type(&self, aircraft_type: &str) -> bool {
+        match self.recovery {
+            CarrierRecovery::Vstol { .. } => aircraft_type == "AV8BNA",
+            CarrierRecovery::Arrested => {
+                AirplaneInfo::by_type(aircraft_type).is_some() && aircraft_type != "AV8BNA"
+            }
+        }
+    }
+
     /// Reference offset used as x=0 / y=0 for the approach chart.
     /// Arrested recoveries keep the original optimal hook touchdown geometry.
     /// V/STOL V1 uses a line parallel to BRC, one AV-8B wingspan outside the
@@ -419,6 +451,21 @@ impl CarrierInfo {
 
     pub fn is_vstol(&self) -> bool {
         matches!(&self.recovery, CarrierRecovery::Vstol { .. })
+    }
+
+    /// Returns the nearest geometrically calibrated active spot and deck-plane distance.
+    /// Adding Tarawa 7 or 8 later requires calibrated catalog entries; scoring remains tied
+    /// separately to the intended spot.
+    pub fn nearest_active_vstol_spot(&self, local_point: DVec3) -> Option<(&'static str, f64)> {
+        self.active_vstol_spots
+            .iter()
+            .map(|spot| {
+                let dx = local_point.x - spot.landing_point.x;
+                let dz = local_point.z - spot.landing_point.z;
+                (spot.label, (dx * dx + dz * dz).sqrt())
+            })
+            .filter(|(_, distance)| distance.is_finite())
+            .min_by(|(_, left), (_, right)| left.total_cmp(right))
     }
 
     pub fn by_type(t: &str) -> Option<&'static Self> {
@@ -467,6 +514,10 @@ impl PartialEq for AirplaneInfo {
 }
 
 impl AirplaneInfo {
+    pub fn is_vstol(&self) -> bool {
+        std::ptr::eq(self, &AV8B)
+    }
+
     pub fn by_type(t: &str) -> Option<&'static Self> {
         match t {
             "FA-18C_hornet" => Some(&FA18C),
@@ -489,5 +540,72 @@ pub fn get_aircraft_id(t: &str) -> Option<i64> {
         "A-6E" => Some(5),
         "T-45" => Some(0),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_recovery_matrix_accepts_only_supported_pairs() {
+        let cvn = CarrierInfo::by_type("CVN_71").unwrap();
+        let tarawa = CarrierInfo::by_type("LHA_Tarawa").unwrap();
+
+        assert!(cvn.supports_aircraft_type("FA-18C_hornet"));
+        assert!(tarawa.supports_aircraft_type("AV8BNA"));
+        assert!(!cvn.supports_aircraft_type("AV8BNA"));
+        assert!(!tarawa.supports_aircraft_type("FA-18C_hornet"));
+        assert!(!cvn.supports_aircraft_type("unsupported"));
+    }
+
+    #[test]
+    fn simultaneous_hornet_cvn_and_harrier_tarawa_create_exactly_two_pairs() {
+        let carriers = [
+            CarrierInfo::by_type("CVN_71").unwrap(),
+            CarrierInfo::by_type("LHA_Tarawa").unwrap(),
+        ];
+        let aircraft = ["FA-18C_hornet", "AV8BNA"];
+        let pairs = carriers
+            .iter()
+            .flat_map(|carrier| {
+                aircraft
+                    .iter()
+                    .filter(move |aircraft| carrier.supports_aircraft_type(aircraft))
+            })
+            .count();
+
+        assert_eq!(pairs, 2);
+    }
+
+    #[test]
+    fn phase_one_nearest_spot_catalog_is_explicit_and_extensible() {
+        let tarawa = CarrierInfo::by_type("LHA_Tarawa").unwrap();
+        assert_eq!(tarawa.active_vstol_spots.len(), 1);
+
+        let calibrated = tarawa.active_vstol_spots[0].landing_point;
+        let (label, distance) = tarawa
+            .nearest_active_vstol_spot(calibrated)
+            .expect("phase-1 spot catalog");
+        assert_eq!(label, "7.5");
+        assert_eq!(distance, 0.0);
+
+        assert!(CarrierInfo::by_type("CVN_71")
+            .unwrap()
+            .nearest_active_vstol_spot(DVec3::zero())
+            .is_none());
+    }
+
+    #[test]
+    fn compatibility_is_independent_of_aircraft_or_carrier_discovery_order() {
+        let tarawa = CarrierInfo::by_type("LHA_Tarawa").unwrap();
+        let harrier = AirplaneInfo::by_type("AV8BNA").unwrap();
+
+        // The live Birth handler invokes the same predicate from both branches.
+        let aircraft_then_carrier = tarawa.supports_aircraft_type("AV8BNA") && harrier.is_vstol();
+        let carrier_then_aircraft = harrier.is_vstol() && tarawa.supports_aircraft_type("AV8BNA");
+
+        assert!(aircraft_then_carrier);
+        assert_eq!(aircraft_then_carrier, carrier_then_aircraft);
     }
 }

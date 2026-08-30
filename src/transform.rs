@@ -1,4 +1,5 @@
 use std::ops::Neg;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use stubs::common::v0::{Orientation, Position, Vector, Velocity};
 use ultraviolet::{DRotor3, DVec3};
@@ -21,6 +22,8 @@ pub struct Transform {
     pub roll: f64,
     pub rotation: DRotor3,
     pub aoa: f64,
+    /// World-space velocity in metres per second.
+    pub velocity: DVec3,
     /// Time in seconds since the scenario started.
     pub time: f64,
 }
@@ -33,7 +36,16 @@ impl From<(f64, Position, Orientation, Velocity)> for Transform {
         // data.
         let velocity = fix_vector(velocity.velocity.unwrap_or_default());
         let forward = fix_vector(orientation.forward.unwrap_or_default());
-        let aoa = forward.dot(velocity.normalized()).acos().to_degrees();
+        let aoa = if velocity.mag_sq() > f64::EPSILON && forward.mag_sq() > f64::EPSILON {
+            forward
+                .normalized()
+                .dot(velocity.normalized())
+                .clamp(-1.0, 1.0)
+                .acos()
+                .to_degrees()
+        } else {
+            f64::NAN
+        };
 
         // The result from a DCS recording and TacView replay should match exactly, which is why the
         // values the calculations are based on must be rounded to the same precision
@@ -68,7 +80,35 @@ impl From<(f64, Position, Orientation, Velocity)> for Transform {
                 orientation.heading.max_precision(1).neg().to_radians(),
             ),
             aoa: aoa.max_precision(2),
+            velocity,
             time: time.max_precision(2),
+        }
+    }
+}
+
+/// A transform together with both reception clocks.
+///
+/// `received_at` is monotonic and must be used for local durations. The Unix
+/// timestamp is diagnostic-only and can be persisted/correlated with DCS logs.
+#[derive(Debug, Clone)]
+pub struct ObservedTransform {
+    pub value: Transform,
+    pub received_at: Instant,
+    pub received_unix_ms: u64,
+}
+
+impl ObservedTransform {
+    pub fn now(value: Transform) -> Self {
+        let received_at = Instant::now();
+        let received_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        Self {
+            value,
+            received_at,
+            received_unix_ms,
         }
     }
 }
