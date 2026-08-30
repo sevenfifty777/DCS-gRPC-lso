@@ -28,8 +28,10 @@ at three gates; AoA colours the charts but does not currently change the grade. 
 ## Requirements
 
 - Windows or another platform supported by the Rust dependency stack.
-- DCS World with the forked DCS-gRPC server version `0.9.0`, pinned at commit
-  `11aea3484099c2dd21d41a53db2e510f6e5e84c5`.
+- DCS World with the official forked
+  [DCS-gRPC `v0.9.0` release](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0).
+  The committed lockfile resolves that tag to commit
+  `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`.
 - A Rust stable toolchain only when building from source.
 
 The DCS-gRPC server and this client must use compatible protobuf APIs. Upstream DCS-gRPC 0.8.1 is

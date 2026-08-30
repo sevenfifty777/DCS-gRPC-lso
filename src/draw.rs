@@ -34,6 +34,8 @@ const THEME_AOA_SLOW: RGBColor = RGBColor(34, 197, 94); // 22C55E
 const WIDTH: u32 = 1000;
 const X_LABEL_AREA_SIZE: u32 = 30;
 const RANGE_X: Range<f64> = -0.02..0.78;
+const FINAL_APPROACH_ALT_RANGE: Range<f64> = 0.0..500.0;
+const MIN_FINAL_SPAN_NM: f64 = 0.20;
 // Give the Tarawa artwork real room to the left of x=0.  In V1.8 the
 // calibrated bitmap anchor sat outside the -0.02 nm native CATOBAR viewport,
 // so Plotters clipped the sprite at the left border even though the 7.5 pixel
@@ -42,17 +44,39 @@ const VSTOL_RANGE_X: Range<f64> = -0.16..0.78;
 const TOP_RANGE_Y: Range<f64> = -0.15..0.15;
 const SIDE_RANGE_Y: Range<f64> = 0.0..350.0;
 const VSTOL_SIDE_RANGE_Y: Range<f64> = 0.0..500.0;
-const OVERLAP_OFFSET: u32 = 130;
-
-// V/STOL uses two independent panels. The native CATOBAR renderer intentionally
-// overlaps the side and top views by OVERLAP_OFFSET pixels; that visual trick
-// works for the carrier touchdown geometry but makes the Harrier 120-ft
-// reference collide with the horizontal lineup panel. Keep the native layout
-// untouched for arrested recoveries and use a clean split only for V/STOL.
+// Keep the vertical-profile and lineup plots in independent panels. Overlapping
+// them makes unrelated traces appear to join into a false vertical excursion.
+const PANEL_GAP: u32 = 16;
 const VSTOL_VERTICAL_PLOT_HEIGHT: u32 = 500;
 const VSTOL_HORIZONTAL_PLOT_HEIGHT: u32 = 300;
-const VSTOL_PANEL_GAP: u32 = 16;
 
+fn chart_layout(is_vstol: bool) -> (u32, u32, u32) {
+    if is_vstol {
+        let root_height = VSTOL_VERTICAL_PLOT_HEIGHT
+            + PANEL_GAP
+            + VSTOL_HORIZONTAL_PLOT_HEIGHT
+            + X_LABEL_AREA_SIZE;
+        (
+            root_height,
+            VSTOL_VERTICAL_PLOT_HEIGHT,
+            VSTOL_VERTICAL_PLOT_HEIGHT + PANEL_GAP,
+        )
+    } else {
+        let side_height = ((ft_to_nm(SIDE_RANGE_Y.end - SIDE_RANGE_Y.start) * 5.0
+            / (RANGE_X.end - RANGE_X.start))
+            * f64::from(WIDTH))
+        .floor() as u32;
+        let top_height = (((TOP_RANGE_Y.end - TOP_RANGE_Y.start) / (RANGE_X.end - RANGE_X.start))
+            * f64::from(WIDTH))
+        .floor() as u32;
+
+        (
+            top_height + side_height + PANEL_GAP + X_LABEL_AREA_SIZE,
+            side_height,
+            side_height + PANEL_GAP,
+        )
+    }
+}
 
 // Tarawa recovery-artwork calibration. The *_REF_PX coordinates come from the
 // exact user-supplied full-ship copies carrying the pink spot-7.5 marker.
@@ -99,8 +123,7 @@ fn themed_png_from_bytes(bytes: &[u8]) -> Result<image::DynamicImage, DrawError>
     Ok(image::DynamicImage::ImageRgba8(bg))
 }
 
-
-/// Small owned copy helper for rendering-only V/STOL selections.
+/// Small owned copy helper for rendering-only approach selections.
 fn copy_datum(d: &Datum) -> Datum {
     Datum {
         time: d.time,
@@ -111,16 +134,68 @@ fn copy_datum(d: &Datum) -> Datum {
     }
 }
 
-/// Select the single continuous V/STOL final-approach branch used by both plots.
+/// Select the single continuous final-approach branch used by both plots.
 ///
-/// The endpoint is interpolated exactly at x=0 (the abeam-7.5 station). This
-/// removes the artificial visual gap that existed when the renderer stopped at
-/// x=0.01 nm (~18.5 m short of the reference point).
-fn select_vstol_final_datums(track: &TrackResult) -> Vec<Datum> {
+/// The endpoint is interpolated exactly at x=0 when the aircraft crosses the
+/// touchdown/reference station. Keeping this as one time- and position-continuous
+/// run prevents an earlier overhead crossing from being joined to the real final.
+fn select_final_approach_datums(track: &TrackResult) -> Vec<Datum> {
+    if track.carrier_info.is_vstol() {
+        select_vstol_final_datums(&track.datums)
+    } else {
+        select_catobar_final_datums(&track.datums)
+    }
+}
+
+/// Preserve the original V/STOL policy: prefer the longest continuous branch
+/// that reaches the abeam-7.5 station, with the latest branch winning a span tie.
+fn select_vstol_final_datums(datums: &[Datum]) -> Vec<Datum> {
+    continuous_final_runs(datums)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, run)| {
+            inbound_span_nm(run) >= MIN_FINAL_SPAN_NM
+                && run
+                    .last()
+                    .map(|datum| m_to_nm(datum.x))
+                    .unwrap_or(f64::INFINITY)
+                    <= 0.01
+        })
+        .max_by(|(index_a, run_a), (index_b, run_b)| {
+            inbound_span_nm(run_a)
+                .partial_cmp(&inbound_span_nm(run_b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| index_a.cmp(index_b))
+        })
+        .map(|(_, run)| run)
+        .unwrap_or_default()
+}
+
+/// CATOBAR grading belongs to the terminal recovery, so prefer the latest
+/// substantial inbound branch and retain a shorter fallback for early waveoffs.
+fn select_catobar_final_datums(datums: &[Datum]) -> Vec<Datum> {
+    let mut runs = continuous_final_runs(datums);
+    let selected_index = runs
+        .iter()
+        .rposition(|run| inbound_span_nm(run) >= MIN_FINAL_SPAN_NM)
+        .or_else(|| runs.iter().rposition(|run| inbound_span_nm(run) > 0.0));
+
+    selected_index
+        .map(|index| runs.remove(index))
+        .unwrap_or_default()
+}
+
+fn inbound_span_nm(run: &[Datum]) -> f64 {
+    run.first()
+        .zip(run.last())
+        .map(|(first, last)| m_to_nm(first.x - last.x))
+        .unwrap_or(0.0)
+}
+
+fn continuous_final_runs(datums: &[Datum]) -> Vec<Vec<Datum>> {
     const MAX_DT_S: f64 = 1.0;
     const MAX_STEP_M: f64 = 60.0;
     const MAX_X_BACKTRACK_M: f64 = 20.0;
-    const MIN_FINAL_SPAN_NM: f64 = 0.20;
 
     let mut runs: Vec<Vec<Datum>> = Vec::new();
     let mut current: Vec<Datum> = Vec::new();
@@ -133,13 +208,13 @@ fn select_vstol_final_datums(track: &TrackResult) -> Vec<Datum> {
         }
     };
 
-    for d in &track.datums {
+    for d in datums {
         let x_nm = m_to_nm(d.x);
         let y_nm = m_to_nm(d.y);
         let alt_ft = m_to_ft(d.alt);
         let common_window = x_nm <= RANGE_X.end
             && TOP_RANGE_Y.contains(&y_nm)
-            && VSTOL_SIDE_RANGE_Y.contains(&alt_ft);
+            && FINAL_APPROACH_ALT_RANGE.contains(&alt_ft);
 
         if current.is_empty() {
             // A final branch must start on the approach side of the abeam station.
@@ -204,26 +279,7 @@ fn select_vstol_final_datums(track: &TrackResult) -> Vec<Datum> {
         }
     }
     finish_run(&mut current, &mut runs);
-
-    // Prefer the longest branch that reaches (or gets very close to) the
-    // abeam-7.5 station. If spans tie, prefer the latest run in the recording.
-    runs.into_iter()
-        .enumerate()
-        .filter(|(_, run)| {
-            let first_x = run.first().map(|d| m_to_nm(d.x)).unwrap_or(0.0);
-            let last_x = run.last().map(|d| m_to_nm(d.x)).unwrap_or(f64::INFINITY);
-            first_x - last_x >= MIN_FINAL_SPAN_NM && last_x <= 0.01
-        })
-        .max_by(|(ia, a), (ib, b)| {
-            let span_a = m_to_nm(a.first().unwrap().x - a.last().unwrap().x);
-            let span_b = m_to_nm(b.first().unwrap().x - b.last().unwrap().x);
-            span_a
-                .partial_cmp(&span_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| ia.cmp(ib))
-        })
-        .map(|(_, run)| run)
-        .unwrap_or_default()
+    runs
 }
 
 /// Post-x=0 V/STOL lateral translation, for the horizontal chart only.
@@ -334,40 +390,11 @@ pub fn draw_chart(
 ) -> Result<PathBuf, DrawError> {
     let path = out_dir.join(filename).with_extension("png");
 
-    // Preserve the original/native CATOBAR canvas geometry byte-for-byte in
-    // principle: same side-height calculation, same 130 px overlap and same
-    // top-view aspect ratio.  Only V/STOL gets the dedicated two-panel layout.
-    let (root_height, side_height, top_start) = if track.carrier_info.is_vstol() {
-        let root_height = VSTOL_VERTICAL_PLOT_HEIGHT
-            + VSTOL_PANEL_GAP
-            + VSTOL_HORIZONTAL_PLOT_HEIGHT
-            + X_LABEL_AREA_SIZE;
-        (
-            root_height,
-            VSTOL_VERTICAL_PLOT_HEIGHT,
-            VSTOL_VERTICAL_PLOT_HEIGHT + VSTOL_PANEL_GAP,
-        )
-    } else {
-        let side_height = ((ft_to_nm(SIDE_RANGE_Y.end - SIDE_RANGE_Y.start) * 5.0
-            / (RANGE_X.end - RANGE_X.start))
-            * (WIDTH as f64))
-            .floor() as u32;
+    // Both recovery types use independent vertical-profile and lineup panels.
+    // Their plot heights retain the original axis aspect ratios.
+    let (root_height, side_height, top_start) = chart_layout(track.carrier_info.is_vstol());
 
-        let top_height = (((TOP_RANGE_Y.end - TOP_RANGE_Y.start)
-            / (RANGE_X.end - RANGE_X.start))
-            * (WIDTH as f64))
-            .floor() as u32
-            - OVERLAP_OFFSET;
-
-        (
-            top_height + side_height + X_LABEL_AREA_SIZE,
-            side_height,
-            side_height - OVERLAP_OFFSET,
-        )
-    };
-
-    let root_drawing_area =
-        BitMapBackend::new(&path, (WIDTH, root_height)).into_drawing_area();
+    let root_drawing_area = BitMapBackend::new(&path, (WIDTH, root_height)).into_drawing_area();
     root_drawing_area.fill(&THEME_BG)?;
 
     let (side, _) = root_drawing_area.split_vertically(side_height);
@@ -379,15 +406,11 @@ pub fn draw_chart(
     draw_side_view(track, side)?;
     draw_top_view(track, top)?;
 
-    // A subtle separator is V/STOL-only. It makes the two independent frames
-    // explicit without changing any CATOBAR pixel geometry.
-    if track.carrier_info.is_vstol() {
-        let sep_y = VSTOL_VERTICAL_PLOT_HEIGHT + VSTOL_PANEL_GAP / 2;
-        root_drawing_area.draw(&PathElement::new(
-            vec![(0, sep_y as i32), (WIDTH as i32, sep_y as i32)],
-            THEME_GUIDE_GRAY.mix(0.35),
-        ))?;
-    }
+    let sep_y = side_height + PANEL_GAP / 2;
+    root_drawing_area.draw(&PathElement::new(
+        vec![(0, sep_y as i32), (WIDTH as i32, sep_y as i32)],
+        THEME_GUIDE_GRAY.mix(0.35),
+    ))?;
 
     let text_style = TextStyle::from(("sans-serif", 24).into_font()).color(&THEME_FG);
 
@@ -403,7 +426,11 @@ pub fn draw_chart(
         format!("{:.1}", track.grade_points)
     };
     root_drawing_area.draw_text(
-        &format!("Grade: {}  ({} pts)", track.pass_grade.label(), grade_points_text),
+        &format!(
+            "Grade: {}  ({} pts)",
+            track.pass_grade.label(),
+            grade_points_text
+        ),
         &text_style,
         (16, 48),
     )?;
@@ -428,7 +455,7 @@ pub fn draw_chart(
                         .map(|c| Cow::Owned(format!("Cable {}", c)))
                         .unwrap_or(Cow::Borrowed("(failed to detect cable)"))
                 }
-            },
+            }
         },
         &text_style,
         (16, 112),
@@ -446,7 +473,11 @@ pub fn draw_chart(
         let (label, gate) = (*label, *gate);
         let y_pos = 144 + (index as i32) * 28;
         root_drawing_area.draw_text(
-            &format!("{}: {}", label, fmt_gate(gate, track.carrier_info.is_vstol())),
+            &format!(
+                "{}: {}",
+                label,
+                fmt_gate(gate, track.carrier_info.is_vstol())
+            ),
             &text_style_small,
             (16, y_pos),
         )?;
@@ -487,7 +518,11 @@ pub fn draw_top_view(
         .x_label_area_size(X_LABEL_AREA_SIZE)
         .y_label_area_size(0u32)
         .build_cartesian_2d(
-            CustomRange(chart_range_x.clone().with_key_points(vec![0.25f64, 0.5, 0.75, 1.0])),
+            CustomRange(
+                chart_range_x
+                    .clone()
+                    .with_key_points(vec![0.25f64, 0.5, 0.75, 1.0]),
+            ),
             TOP_RANGE_Y,
         )?;
 
@@ -502,7 +537,12 @@ pub fn draw_top_view(
 
     let mut vstol_visual_ref_y_nm: Option<f64> = None;
 
-    if let CarrierRecovery::Vstol { landing_point, approach_axis_port_m, .. } = &track.carrier_info.recovery {
+    if let CarrierRecovery::Vstol {
+        landing_point,
+        approach_axis_port_m,
+        ..
+    } = &track.carrier_info.recovery
+    {
         // V/STOL keeps the native CATOBAR visual grammar but uses the user-provided
         // Tarawa top-down artwork.  The pink-square reference supplied by the user
         // was used off-line to calibrate the spot-7.5 pixel location; the production
@@ -534,8 +574,7 @@ pub fn draw_top_view(
         // at landing_point.x = -3.10 m, its actual distance to that edge is
         // 18.0 - 3.10 = 14.90 m.  Derive this from the recovery geometry so
         // the artwork and the scoring reference cannot drift apart.
-        let ref_to_port_edge_m =
-            (*approach_axis_port_m - AV8B_WINGSPAN_M + landing_point.x).abs();
+        let ref_to_port_edge_m = (*approach_axis_port_m - AV8B_WINGSPAN_M + landing_point.x).abs();
         let port_edge_to_hover_px = if ref_to_port_edge_m > 1.0e-9 {
             ref_to_port_edge_px * (AV8B_WINGSPAN_M / ref_to_port_edge_m)
         } else {
@@ -619,8 +658,8 @@ pub fn draw_top_view(
     }
 
     let vstol = track.carrier_info.is_vstol();
+    let final_run = select_final_approach_datums(track);
     let track_in_nm: Vec<Datum> = if vstol {
-        let final_run = select_vstol_final_datums(track);
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
@@ -672,9 +711,8 @@ pub fn draw_top_view(
                 // origin at exact spot 7.5 is fixed to the yellow 7.5 marker. This
                 // transform therefore cannot become singular and is independent of
                 // when the pilot starts the lateral translation.
-                let physical_75_y_m = *approach_axis_port_m
-                    + landing_point.x
-                    - track.plane_info.landing_reference.x;
+                let physical_75_y_m =
+                    *approach_axis_port_m + landing_point.x - track.plane_info.landing_reference.x;
                 let physical_75_y_nm = m_to_nm(physical_75_y_m);
                 let visual_75_y_nm = vstol_visual_ref_y_nm.unwrap_or(physical_75_y_nm);
                 let scale = if physical_75_y_nm.abs() > 1.0e-9 {
@@ -706,8 +744,7 @@ pub fn draw_top_view(
         }
         combined
     } else {
-        let mut raw = track
-            .datums
+        final_run
             .iter()
             .map(|d| Datum {
                 time: d.time,
@@ -716,17 +753,7 @@ pub fn draw_top_view(
                 aoa: d.aoa,
                 alt: d.alt,
             })
-            .filter(|d| RANGE_X.contains(&d.x) && TOP_RANGE_Y.contains(&d.y));
-
-        let mut selected = Vec::new();
-        let mut x_before = f64::MAX;
-        for datum in &mut raw {
-            if datum.x < x_before {
-                x_before = datum.x;
-                selected.push(datum);
-            }
-        }
-        selected
+            .collect()
     };
 
     // draw approach shadow
@@ -797,7 +824,11 @@ pub fn draw_side_view(
         .x_label_area_size(0u32)
         .y_label_area_size(0u32)
         .build_cartesian_2d(
-            CustomRange(chart_range_x.clone().with_key_points(vec![0.25f64, 0.5, 0.75, 1.0])),
+            CustomRange(
+                chart_range_x
+                    .clone()
+                    .with_key_points(vec![0.25f64, 0.5, 0.75, 1.0]),
+            ),
             side_range.clone(),
         )?;
 
@@ -811,7 +842,10 @@ pub fn draw_side_view(
         .x_label_style(text_style())
         .draw()?;
 
-    if let CarrierRecovery::Vstol { target_altitude_ft, .. } = &track.carrier_info.recovery {
+    if let CarrierRecovery::Vstol {
+        target_altitude_ft, ..
+    } = &track.carrier_info.recovery
+    {
         // Use the user-provided Tarawa side profile.  The clean asset is stored
         // under /img as a recovery-only asset while the pink-square copy was used
         // only to calibrate the spot-7.5 pixel reference.
@@ -856,11 +890,9 @@ pub fn draw_side_view(
 
         for (deg, color) in lines {
             let mut x = chart_range_x.end;
-            let mut y = *target_altitude_ft
-                + nm_to_ft(deg.to_radians().tan() * chart_range_x.end);
+            let mut y = *target_altitude_ft + nm_to_ft(deg.to_radians().tan() * chart_range_x.end);
             if y > side_range.end {
-                x = ft_to_nm(side_range.end - *target_altitude_ft)
-                    / deg.to_radians().tan();
+                x = ft_to_nm(side_range.end - *target_altitude_ft) / deg.to_radians().tan();
                 y = side_range.end;
             }
             chart.draw_series(LineSeries::new(
@@ -911,8 +943,8 @@ pub fn draw_side_view(
     }
 
     let vstol = track.carrier_info.is_vstol();
+    let final_run = select_final_approach_datums(track);
     let track_descent: Vec<Datum> = if vstol {
-        let final_run = select_vstol_final_datums(track);
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
@@ -931,8 +963,12 @@ pub fn draw_side_view(
         // the user-marked 7.5 deck point, visually 50 ft below the hover datum.
         let translation = select_vstol_translation_datums(track, &final_run);
         if translation.len() > 1 {
-            if let (Some(endpoint), CarrierRecovery::Vstol { target_altitude_ft, .. }) =
-                (final_run.last(), &track.carrier_info.recovery)
+            if let (
+                Some(endpoint),
+                CarrierRecovery::Vstol {
+                    target_altitude_ft, ..
+                },
+            ) = (final_run.last(), &track.carrier_info.recovery)
             {
                 let start_alt_ft = m_to_ft(endpoint.alt);
                 // The exact land-event datum appended by Track::landed() is
@@ -942,11 +978,12 @@ pub fn draw_side_view(
                 let physical_touchdown_alt_ft = translation
                     .last()
                     .map(|d| m_to_ft(d.alt))
-                    .unwrap_or_else(|| m_to_ft(
-                        track.carrier_info.deck_altitude - track.plane_info.landing_reference.y,
-                    ));
-                let visual_deck_alt_ft =
-                    *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
+                    .unwrap_or_else(|| {
+                        m_to_ft(
+                            track.carrier_info.deck_altitude - track.plane_info.landing_reference.y,
+                        )
+                    });
+                let visual_deck_alt_ft = *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
                 let denom = physical_touchdown_alt_ft - start_alt_ft;
                 let scale = if denom.abs() > 1.0e-9 {
                     (visual_deck_alt_ft - start_alt_ft) / denom
@@ -968,8 +1005,7 @@ pub fn draw_side_view(
         }
         combined
     } else {
-        let mut raw = track
-            .datums
+        final_run
             .iter()
             .map(|d| Datum {
                 time: d.time,
@@ -978,17 +1014,7 @@ pub fn draw_side_view(
                 aoa: d.aoa,
                 alt: m_to_ft(d.alt),
             })
-            .filter(|d| RANGE_X.contains(&d.x) && side_range.contains(&d.alt));
-
-        let mut selected = Vec::new();
-        let mut x_before = f64::MAX;
-        for datum in &mut raw {
-            if datum.x < x_before {
-                x_before = datum.x;
-                selected.push(datum);
-            }
-        }
-        selected
+            .collect()
     };
 
     // draw approach shadow
@@ -1033,9 +1059,11 @@ pub fn draw_side_view(
 
     // Draw the deck-level 7.5 marker last so it remains visible even when the
     // touchdown trace terminates on the exact same point.
-    if let CarrierRecovery::Vstol { target_altitude_ft, .. } = &track.carrier_info.recovery {
-        let visual_deck_alt_ft =
-            *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
+    if let CarrierRecovery::Vstol {
+        target_altitude_ft, ..
+    } = &track.carrier_info.recovery
+    {
+        let visual_deck_alt_ft = *target_altitude_ft - VSTOL_TERMINAL_DESCENT_DISPLAY_FT;
         chart.draw_series(std::iter::once(Circle::new(
             (0.0, visual_deck_alt_ft),
             VSTOL_MARKER_RADIUS_PX,
@@ -1052,10 +1080,7 @@ fn text_style() -> TextStyle<'static> {
 
 fn fmt_gate(gate: Option<&GateDatum>, vstol: bool) -> String {
     match gate {
-        Some(g) if vstol => format!(
-            "ALT {:+.0}ft  LAT {:+.0}ft",
-            g.gs_deviation_ft, g.lineup_ft
-        ),
+        Some(g) if vstol => format!("ALT {:+.0}ft  LAT {:+.0}ft", g.gs_deviation_ft, g.lineup_ft),
         Some(g) => format!(
             "GS {:+.1}\u{00B0}  LU {:+.1}\u{00B0}",
             g.gs_deviation_deg, g.lineup_deg
@@ -1110,6 +1135,84 @@ impl ValueFormatter<f64> for CustomRange {
         }
     }
 }
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{
+        chart_layout, select_catobar_final_datums, select_vstol_final_datums, Datum, PANEL_GAP,
+    };
+
+    fn two_complete_final_approach_runs() -> Vec<Datum> {
+        let mut datums = Vec::new();
+
+        // The earlier branch deliberately spans farther than the later branch.
+        for (index, x_m) in (0..=24).map(|index| (index, 1_200.0 - index as f64 * 50.0)) {
+            datums.push(Datum {
+                time: index as f64 * 0.1,
+                x: x_m,
+                y: 180.0,
+                aoa: 2.0,
+                alt: 100.0,
+            });
+        }
+
+        // Leave the shared chart window before commencing the later final.
+        datums.push(Datum {
+            time: 10.0,
+            x: 1_300.0,
+            y: 400.0,
+            aoa: 2.0,
+            alt: 100.0,
+        });
+
+        for (index, x_m) in (0..=22).map(|index| (index, 1_100.0 - index as f64 * 50.0)) {
+            datums.push(Datum {
+                time: 100.0 + index as f64 * 0.1,
+                x: x_m,
+                y: 4.0,
+                aoa: 7.0,
+                alt: 100.0,
+            });
+        }
+
+        datums
+    }
+
+    #[test]
+    fn catobar_chart_panels_do_not_overlap() {
+        let (_root_height, side_height, top_start) = chart_layout(false);
+
+        assert_eq!(top_start - side_height, PANEL_GAP);
+    }
+
+    #[test]
+    fn vstol_chart_panels_do_not_overlap() {
+        let (_root_height, side_height, top_start) = chart_layout(true);
+
+        assert_eq!(top_start - side_height, PANEL_GAP);
+    }
+
+    #[test]
+    fn catobar_final_approach_selection_uses_latest_continuous_inbound_run() {
+        let selected = select_catobar_final_datums(&two_complete_final_approach_runs());
+
+        assert!(!selected.is_empty());
+        assert!(selected.iter().all(|datum| datum.time >= 100.0));
+        assert!(selected.iter().all(|datum| datum.y == 4.0));
+        assert_eq!(selected.last().map(|datum| datum.x), Some(0.0));
+    }
+
+    #[test]
+    fn vstol_final_approach_selection_preserves_longest_completed_branch_policy() {
+        let selected = select_vstol_final_datums(&two_complete_final_approach_runs());
+
+        assert!(!selected.is_empty());
+        assert!(selected.iter().all(|datum| datum.time < 100.0));
+        assert!(selected.iter().all(|datum| datum.y == 180.0));
+        assert_eq!(selected.last().map(|datum| datum.x), Some(0.0));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pattern (circuit) overview chart
 // ---------------------------------------------------------------------------
@@ -1118,7 +1221,7 @@ impl ValueFormatter<f64> for CustomRange {
 const PAT_WIDTH_NM: f64 = 5.0;
 /// Height in nm of the pattern chart (ahead–astern, 0 = carrier).
 const PAT_ASTERN_NM: f64 = 3.0; // astern (bottom of chart)
-const PAT_AHEAD_NM: f64 = 3.0;  // ahead  (top of chart)
+const PAT_AHEAD_NM: f64 = 3.0; // ahead  (top of chart)
 /// Physical size of the pattern PNG.
 const PAT_IMG_W: u32 = 900;
 const PAT_IMG_H: u32 = 900;
@@ -1138,10 +1241,11 @@ pub fn draw_pattern_chart(
     filename: &str,
     track: &TrackResult,
 ) -> Result<PathBuf, DrawError> {
-    let path = out_dir.join(format!("{filename}-pattern")).with_extension("png");
+    let path = out_dir
+        .join(format!("{filename}-pattern"))
+        .with_extension("png");
 
-    let root =
-        BitMapBackend::new(&path, (PAT_IMG_W, PAT_IMG_H)).into_drawing_area();
+    let root = BitMapBackend::new(&path, (PAT_IMG_W, PAT_IMG_H)).into_drawing_area();
     root.fill(&THEME_BG)?;
 
     // Title
@@ -1183,7 +1287,7 @@ pub fn draw_pattern_chart(
 
     // BRC reference line through carrier
     chart.draw_series(LineSeries::new(
-        [( 0.0, y_range.start), (0.0, y_range.end)],
+        [(0.0, y_range.start), (0.0, y_range.end)],
         THEME_GUIDE_GRAY.mix(0.3).stroke_width(1),
     ))?;
 
@@ -1228,11 +1332,8 @@ pub fn draw_pattern_chart(
 
         let anchor_x = -m_to_nm(ship_wid_m * vs / 2.0);
         let anchor_y = m_to_nm(ship_len_m * vs / 2.0);
-        let elem: BitMapElement<_> = (
-            (anchor_x, anchor_y),
-            image::DynamicImage::ImageRgba8(bg),
-        )
-            .into();
+        let elem: BitMapElement<_> =
+            ((anchor_x, anchor_y), image::DynamicImage::ImageRgba8(bg)).into();
         chart.draw_series(std::iter::once(elem))?;
     }
 
@@ -1259,14 +1360,16 @@ pub fn draw_pattern_chart(
         .map(|d| PatternDatum {
             time: d.time,
             // chart coords: port on left (negate port_m), ahead at top (negate astern_m)
-            astern_m: -m_to_nm(d.astern_m),  // chart_y = -astern_m
-            port_m:   -m_to_nm(d.port_m),    // chart_x = -port_m
+            astern_m: -m_to_nm(d.astern_m), // chart_y = -astern_m
+            port_m: -m_to_nm(d.port_m),     // chart_x = -port_m
             alt_ft: d.alt_ft,
             aoa: d.aoa,
         })
         .filter(|d| {
-            d.port_m  >= -PAT_WIDTH_NM / 2.0 && d.port_m  <= PAT_WIDTH_NM / 2.0
-                && d.astern_m >= -PAT_ASTERN_NM   && d.astern_m <= PAT_AHEAD_NM
+            d.port_m >= -PAT_WIDTH_NM / 2.0
+                && d.port_m <= PAT_WIDTH_NM / 2.0
+                && d.astern_m >= -PAT_ASTERN_NM
+                && d.astern_m <= PAT_AHEAD_NM
         })
         .collect();
 
@@ -1285,7 +1388,7 @@ pub fn draw_pattern_chart(
                 seg_pts.push(pt);
             }
             chart.draw_series(LineSeries::new(
-                seg_pts.drain(..).collect::<Vec<_>>(),
+                std::mem::take(&mut seg_pts),
                 seg_color.stroke_width(2),
             ))?;
             seg_color = color;
@@ -1293,10 +1396,7 @@ pub fn draw_pattern_chart(
         seg_pts.push(pt);
     }
     if !seg_pts.is_empty() {
-        chart.draw_series(LineSeries::new(
-            seg_pts,
-            seg_color.stroke_width(2),
-        ))?;
+        chart.draw_series(LineSeries::new(seg_pts, seg_color.stroke_width(2)))?;
     }
 
     // Touchdown marker (last datum)

@@ -8,7 +8,8 @@ and describe the expected and observed wire.
 ## Development setup
 
 Install a stable Rust toolchain, clone the repository, and run from the repository root. Cargo
-fetches the DCS-gRPC stubs from the exact fork commit pinned in `Cargo.toml`.
+fetches the DCS-gRPC stubs from the official fork release tag selected in `Cargo.toml`; the committed
+`Cargo.lock` records the exact resolved commit.
 
 ```powershell
 cargo build
@@ -50,8 +51,8 @@ cargo test generate_chart_images -- --nocapture
 The images are written under `target/test-charts/` and are not source files.
 
 When dependencies change, also run `cargo audit` if `cargo-audit` is installed. Do not update the
-pinned DCS-gRPC commit without reviewing protobuf compatibility and updating the migration and
-administrator documentation.
+DCS-gRPC release tag or its resolved commit without reviewing protobuf compatibility and updating
+the migration and administrator documentation.
 
 ## Change guidelines
 

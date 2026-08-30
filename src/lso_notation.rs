@@ -83,10 +83,7 @@ pub fn to_english(notation: &str) -> String {
         .trim();
 
     // flat_map because one token (e.g. "(EGIW)") can produce multiple phrases.
-    let phrases: Vec<String> = base
-        .split_whitespace()
-        .flat_map(token_to_phrases)
-        .collect();
+    let phrases: Vec<String> = base.split_whitespace().flat_map(token_to_phrases).collect();
 
     if phrases.is_empty() {
         return String::new();
@@ -128,7 +125,11 @@ fn token_to_phrases(token: &str) -> Vec<String> {
             let dev_code = before_pos.trim_end_matches('_');
             let had_trail = dev_code.len() < before_pos.len();
             if let Some(dev_en) = lookup_deviation(dev_code) {
-                let adverb = if had_lead || had_trail { "slightly " } else { "" };
+                let adverb = if had_lead || had_trail {
+                    "slightly "
+                } else {
+                    ""
+                };
                 return vec![build_phrase(adverb, dev_en, pos_en)];
             }
         }
@@ -137,7 +138,11 @@ fn token_to_phrases(token: &str) -> Vec<String> {
     // No position code — strip trailing underscores and match deviation(s).
     let dev_part = lead_stripped.trim_end_matches('_');
     let had_trail = dev_part.len() < lead_stripped.len();
-    let adverb = if had_lead || had_trail { "slightly " } else { "" };
+    let adverb = if had_lead || had_trail {
+        "slightly "
+    } else {
+        ""
+    };
 
     // Fast path: entire token is a single known code.
     if let Some(dev_en) = lookup_deviation(dev_part) {
@@ -146,7 +151,11 @@ fn token_to_phrases(token: &str) -> Vec<String> {
 
     // Fallback: greedy multi-code decode (handles concatenated codes without parens).
     let decoded = greedy_decode(dev_part, adverb, "");
-    if decoded.is_empty() { vec![] } else { decoded }
+    if decoded.is_empty() {
+        vec![]
+    } else {
+        decoded
+    }
 }
 
 /// Greedily consume `s`, matching known deviation codes longest-first.
@@ -207,10 +216,7 @@ fn lookup_position(code: &str) -> Option<&'static str> {
     if code.is_empty() {
         return None;
     }
-    POSITIONS
-        .iter()
-        .find(|&&(k, _)| k == code)
-        .map(|&(_, v)| v)
+    POSITIONS.iter().find(|&&(k, _)| k == code).map(|&(_, v)| v)
 }
 
 #[cfg(test)]
@@ -251,7 +257,10 @@ mod tests {
     #[test]
     fn unknown_token_is_skipped() {
         // XYZQ contains no letter that maps to a known deviation code.
-        assert_eq!(to_english("_H_IC XYZQ FAW"), "Slightly high in close, fast all the way");
+        assert_eq!(
+            to_english("_H_IC XYZQ FAW"),
+            "Slightly high in close, fast all the way"
+        );
     }
 
     #[test]

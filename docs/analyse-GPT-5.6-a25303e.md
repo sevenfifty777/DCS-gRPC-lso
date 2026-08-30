@@ -18,7 +18,7 @@ Catégories : **Confirmé par le code**, **Confirmé par la documentation**, **D
 ### Révision et delta
 
 - HEAD `a25303e`; ancienne base `30f3f4d`; 21 commits nouveaux.
-- Migration vers le fork `sevenfifty777/rust-server`, `dcs-grpc-stubs 0.9.0`, commit exact `11aea3484099c2dd21d41a53db2e510f6e5e84c5` (`Cargo.toml:31,37-41`; `Cargo.lock:647-649`).
+- Migration vers le fork `sevenfifty777/rust-server`, `dcs-grpc-stubs 0.9.0`, tag officiel `v0.9.0` verrouillé au commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b` (`Cargo.toml:31,37-41`; `Cargo.lock:647-649`).
 - Ajout V/STOL, séparation des grades, nouveaux champs de persistance et rendu Tarawa.
 
 ### Éléments inspectés
@@ -76,7 +76,7 @@ README, `docs/LSO_ANALYSIS.md` et `docs/GRADING_REFERENCE.md` sont partiellement
 ## 4. Architecture technique
 
 ```text
-DCS/MSE Lua → DCS-gRPC 0.9.0 (11aea348) → tonic/Tokio
+DCS/MSE Lua → DCS-gRPC v0.9.0 (5bd6d6e) → tonic/Tokio
   → full-sync → une tâche par avion × navire
   → Track CATOBAR ou V/STOL → grade → JSON/PNG/DB/Discord/ACMI
 ```
@@ -89,7 +89,7 @@ Une paire inactive fait deux `GetTransform` toutes les 2 s. Une active ouvre son
 
 ## 5. Intégration avec DCS-gRPC
 
-Le client et le serveur doivent correspondre au commit `11aea348`, pas seulement au label 0.9.0. Le dépôt embarque DLL/PDB/Lua/protobuf ; leurs hashes doivent être tracés au déploiement.
+Le client et le serveur doivent correspondre au tag officiel `v0.9.0` et au commit verrouillé `5bd6d6e`, pas seulement au numéro de version. Le dépôt embarque DLL/PDB/Lua/protobuf ; leurs hashes doivent être tracés au déploiement.
 
 `GetTransform` exporte `timer.getTime()`, `getPosition()` et `getVelocity()` (`methods/unit.lua:74-84`; `exporters/object.lua:37-48`). La crosse utilise draw argument 25 (`unit.lua:49-58`). Les événements DCS sont relayés sans garantie visible de déduplication (`methods/mission.lua:113-130,443-451`; `grpc.lua:237-256`).
 
@@ -405,7 +405,7 @@ Sources doctrinales :
 
 ## Synthèse — dix points avant toute modification
 
-1. Exiger DCS-gRPC fork 0.9.0 commit `11aea348`, pas l'ancien 0.8.1.
+1. Exiger le tag officiel DCS-gRPC fork `v0.9.0`, verrouillé au commit `5bd6d6e`, pas l'ancien 0.8.1.
 2. AV-8B/Tarawa existe mais reste expérimental et sans corpus live local.
 3. Corriger d'abord le produit cartésien sans compatibilité.
 4. Deux touchers simultanés sont isolés par IDs, mais faux trackers/charge/erreur globale peuvent interférer.

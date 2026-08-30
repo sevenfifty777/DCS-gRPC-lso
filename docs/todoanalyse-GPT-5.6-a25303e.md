@@ -543,7 +543,7 @@ La doctrine 2004 décrit un jugement humain par phases/tendances, hover, cross, 
 
 ### Arbitrage Y — Version DCS-gRPC de référence
 
-**Recommandation :** figer client, DLL et Lua sur le commit `11aea348…`, enregistrer leurs hashes et refuser le démarrage ou avertir fortement si version/session attendue non vérifiable.
+**Recommandation :** figer client, DLL et Lua sur le tag `v0.9.0` et le commit verrouillé `5bd6d6e…`, enregistrer leurs hashes et refuser le démarrage ou avertir fortement si version/session attendue non vérifiable.
 
 - [ ] Recommandation acceptée
 - [ ] Une autre version doit être supportée : `______________________________`

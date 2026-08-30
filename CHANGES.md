@@ -30,8 +30,9 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   below 1,100 ft MSL, without nose-pointing or rear-hemisphere checks.
 - Gate sampling is restricted to inbound crossings below 500 ft above the deck, and groove entry
   also requires lineup within 10 degrees.
-- The DCS-gRPC client stubs now come from the sevenfifty777 fork at version 0.9.0, commit
-  `11aea3484099c2dd21d41a53db2e510f6e5e84c5`; `tonic` was updated to 0.13.
+- The DCS-gRPC client stubs now come from the official sevenfifty777 fork release tag `v0.9.0`,
+  resolved in `Cargo.lock` to commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`; `tonic` was
+  updated to 0.13.
 - Unit discovery safely ignores DCS units whose optional type field is absent.
 - T-45 AoA brackets now use values derived from the VNAO T-45 display-electronics data instead of
   the former F/A-18C copy.
@@ -44,6 +45,8 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   ACMI capture after a missed approach or mission change.
 - Carrier-position smoothing reduces periodic sawtooth artifacts in final-approach charts and gate
   measurements.
+- CATOBAR charts select the latest continuous inbound branch, preventing earlier overhead-pattern
+  points from joining the real final as a false vertical drop.
 - F-14B(U) identification and trap-sheet naming.
 
 ### Security and dependencies
