@@ -46,6 +46,12 @@ La CI exécute ces contrôles (`.github/workflows/ci.yml:40-50`) et ne peut donc
 - 00-80T-111 ne démontre pas que plusieurs AV-8B peuvent rester sur 7/7½/8 pendant d'autres recoveries : SOP, Air Boss, deck handling et 00-80T-106 sont aussi requis.
 - La fiabilité `RunwayTouch` du Tarawa reste à reproduire sur la build déployée.
 
+### Correction méthodologique issue de l'audit ciblé des gates
+
+L'analyse initiale avait correctement identifié qu'un `Option<GateDatum>` absent n'était pas pénalisé par le grading, mais elle n'avait pas estimé sa fréquence ni vérifié si un gate présent avait réellement été mesuré à sa distance. Elle examinait surtout les branches d'erreur et la conséquence d'un `None`, sans confronter les valeurs du corpus ni suivre la sémantique exacte de `x <= gate`. Cela a laissé subsister une confusion entre **complétude syntaxique** (champ `Some`) et **validité métrologique** (mesure prise au bon endroit, au bon moment et indépendamment des autres gates).
+
+L'audit ciblé corrige cette lacune : toute future conclusion de fiabilité devra vérifier séparément (1) présence, (2) condition et provenance de capture, (3) distance/temps réels, (4) indépendance des observations, (5) fraîcheur/skew et (6) distribution sur le corpus. Les commentaires, noms de fonctions et types `Option` ne seront plus considérés comme preuve que la mesure correspond à l'événement métier annoncé.
+
 ## 3. Cartographie du dépôt
 
 | Zone | Rôle |
@@ -128,7 +134,7 @@ La taxonomie commune contient `Bolter`; un V/STOL qui repart peut donc recevoir 
 3. Tâche par couple cartésien.
 4. Détection toutes les 2 s : <1 100 ft MSL, ≤3,5 NM, >200 m (`detect_recovery_attempt.rs:52-89`).
 5. `Track`, `StreamEvents`, échantillonnage 10 Hz.
-6. Projection repère navire, gates et datums.
+6. Projection repère navire, gates et datums. Un gate est actuellement rempli au premier échantillon admissible vérifiant `x <= seuil`, pas nécessairement lors d'un franchissement encadré du seuil (`track.rs:430-483`).
 7. `RunwayTouch` aux IDs exacts → `Track::landed`.
 8. Surveillance dix secondes; départ >150 m peut modifier l'outcome.
 9. `finish`, grade et sorties.
@@ -155,6 +161,25 @@ Risques confirmés :
 - plusieurs `RunwayTouch` remplacent heure/distance et relancent le délai;
 - **zéro gate V/STOL** → `grade_from_gates(empty) == OK`, puis spot A → `_OK_`/5 possible (`grading.rs:202-243,282-333`);
 - une/deux gates absentes ne sont pas pénalisées.
+
+### Complétude et validité des gates
+
+**Mesure sur le corpus local** : les 33 JSON de `trap sample/` ont tous trois champs de gate présents, soit 0/33 rapport avec gate absent. Ce corpus ne contient aucun exemple V/STOL et ne mesure pas les pertes réseau du serveur déployé. Il permet donc seulement d'estimer **faible** le risque d'un `None` dans un rapport CATOBAR nominal déjà finalisé, avec un niveau de confiance modéré.
+
+Cette présence est trompeuse : 6/33 rapports ont au moins deux `GateDatum` strictement identiques et 5/33 ont les trois identiques. Certains portent des valeurs incompatibles avec un prélèvement dans le groove (par exemple lineup proche de ±90°). La cause est **confirmée par le code** : les trois tests utilisent `x <= gate`; si le premier échantillon admissible est déjà à l'intérieur de plusieurs seuils, plusieurs gates reçoivent le même état (`track.rs:435-483`). Le garde `in_approach <= 500 ft` ne suffit pas à exclure toute portion basse du pattern et `gate_lined_up` n'est appliqué qu'au V/STOL.
+
+Estimation corrigée :
+
+| Risque | Estimation | Justification |
+|---|---|---|
+| gate absent dans un rapport nominal terminé | **Faible** | seuil cumulatif `x <=`; 0/33 dans le corpus CATOBAR |
+| gate présent mais tardif, dupliqué ou hors phase | **Modérée**, déjà observée | 6/33 dupliqués; aucune distance/heure de capture persistée |
+| passe entière perdue sur erreur transitoire | **Modérée à mesurer** | `GetTransform(...).await?` fait sortir `record_recovery`, puis la tâche de paire (`record_recovery.rs:192-196`; `detect_recovery_attempt.rs:33-45`) |
+| fiabilité AV-8B/Tarawa | **Indéterminée à modérée** | aucun JSON V/STOL réel; garde lineup spécifique susceptible de différer/retarder la capture |
+
+Une cadence nominale de 10 Hz rend improbable le saut géométrique d'un gate lors d'un fonctionnement sain, mais elle n'est pas garantie : chaque tick attend les RPC et `MissedTickBehavior::Delay` décale les ticks suivants (`record_recovery.rs:186-204`; `utils/interval.rs:8-12`). En outre, la détection à 2 s et les appels de métadonnées exécutés avant la boucle peuvent commencer le suivi tardivement (`detect_recovery_attempt.rs:21-36`; `record_recovery.rs:94-175`). Les transforms avion/navire peuvent aussi avoir des timestamps différents sans limite de skew.
+
+**Conclusion d'architecture** : DCS, DCS-gRPC, le réseau et la charge empêchent une garantie absolue et une longue coupure ne peut pas être reconstruite sans source enregistrée. Ils n'empêchent pas une récupération robuste au sens logiciel. Le module peut encadrer les franchissements, interpoler les trous courts, qualifier chaque mesure et refuser de noter les données insuffisantes. Le défaut actuel est donc principalement partagé entre temporalité externe et validation Rust insuffisante, non une fatalité imposée par DCS.
 
 ## 9. Calculs, unités et repères
 
@@ -192,11 +217,19 @@ Défauts prioritaires :
 
 ## 12. Analyse LSO US Navy — début des années 2000
 
-Le CATOBAR représente une partie géométrique du groove, pas une observation LSO complète. Il capture gates GS/LU, AoA visuel, toucher/câble et LQM DCS, mais ignore/simplifie tendances, corrections, power, deck motion, start/middle/in-close détaillé, qualité du touchdown, OWO/LSO WO/foul deck et pattern.
+### Doctrine CATOBAR vérifiée
+
+Le NAVAIR 00-80T-104 du 15 décembre 2001 place explicitement sous la responsabilité du LSO la détermination de la performance acceptable pendant la **final approach** (§6.4, p.6-7). En Case I/II, le contrôle LSO commence toutefois dès la position 180° (§6.4.3.1, p.6-10) : le LSO surveille l'approach turn et doit notamment déclencher un waveoff si la trajectoire produira un groove trop court. Il ne se limite donc pas à regarder l'appareil une fois wings-level.
+
+La consignation officielle reste principalement structurée autour de l'approche finale. La figure 11-2 (p.11-3) sépare le grade, les erreurs de glideslope/speed aux phases `AW`, `X`, `IM`, `IC`, `AR`, les erreurs de contrôle, lineup/wing, autres commentaires et le câble. Les suffixes (§11.4.3, p.11-7) définissent `X` comme le premier tiers du glideslope, `IM` le tiers central, `IC` le dernier tiers et `AR` la rampe.
+
+Le pattern n'est cependant pas ignoré dans la pratique LSO : les symboles officiels comprennent `PATT` (pattern), `WOP` (waveoff pattern), `OT` (out of turn), `TWA`/`TCA` (too wide/close abeam) et `TTS`/`TTL` (turned too soon/late), pp.11-4 à 11-7. Le manuel ne fournit en revanche ni formule ni pondération permettant de convertir automatiquement ces écarts en points ajoutés ou retranchés au grade global. **Déduction raisonnable** : un défaut de pattern peut être consigné, débriefé ou provoquer un `WOP`, mais une sous-note automatique du Case I complet serait une convention locale à spécifier et valider.
+
+Le CATOBAR du projet représente une partie géométrique du groove, pas une observation LSO complète. Il capture gates GS/LU, AoA visuel, toucher/câble et LQM DCS, mais ignore/simplifie tendances, corrections, power, deck motion, start/middle/in-close détaillé, qualité du touchdown, OWO/LSO WO/foul deck, l'approach turn et les annotations de pattern prévues par le 00-80T-104.
 
 Un 3-wire ne justifie pas seul `_OK_`. La règle locale câble 3 + groove 15–18,99 s doit être approuvée comme convention. Seuils et points doivent être versionnés dans une spécification métier signée.
 
-Conclusion : outil de débrief utile, grade autonome non certifié.
+Conclusion : outil de débrief utile, grade autonome non certifié. Pour une première version, limiter le calcul automatique au groove est cohérent avec la structure du suivi NATOPS, à condition de conserver séparément les observations de l'approach turn/pattern et les outcomes tels que `WOP`. Les intégrer ultérieurement au score exige une règle métier approuvée, car le 00-80T-104 ne donne pas de pondération numérique.
 
 ## 13. Analyse LSO USMC — AV-8B/LHA, contexte 2004
 
@@ -302,6 +335,7 @@ Autres limites : UCID/homonymes, filename simultané, slot changes, unités tard
 |---|---|---|
 | couples incompatibles | implémentation Rust | Très élevée |
 | grade positif incomplet | Rust + modèle métier | Très élevée |
+| gates présents mais dupliqués/tardifs | implémentation Rust + temporalité | Très élevée, observé dans 6/33 JSON |
 | Bolter V/STOL | implémentation Rust | Élevée |
 | Birth non enrichi | implémentation Rust | Très élevée |
 | session/skew/deadline absents | réseau/temporalité + Rust | Très élevée |
@@ -315,12 +349,12 @@ Autres limites : UCID/homonymes, filename simultané, slot changes, unités tard
 
 ## 20. Tests existants et stratégie future
 
-Les tests couvrent quelques points/limites de spot, outcomes et DB, pas le chemin DCS, repères complets, incomplétude, couples croisés, multi-spots, simultanéité, reconnexion ou rendu. Fixtures absentes = suite non compilable.
+Les tests couvrent quelques points/limites de spot, outcomes et DB, pas le chemin DCS, les franchissements exacts de gates, repères complets, incomplétude, couples croisés, multi-spots, simultanéité, reconnexion ou rendu. Fixtures absentes = suite non compilable.
 
 Priorités :
 
 1. CVN+Tarawa éloignés puis <3,5 NM; Hornet+AV-8B simultanés; exactement 2 rapports.
-2. AV-8B avec 0/1/2/3 gates; aucun grade favorable incomplet.
+2. CATOBAR et AV-8B avec 0/1/2/3 gates; franchissements encadrés, démarrage à l'intérieur de ¾/½/¼ NM, plusieurs seuils franchis pendant un trou et aucun grade favorable incomplet.
 3. 7/7½/8 avec spot assigné distinct du nearest.
 4. 2/3 AV-8B successifs restant au pont, taxi/takeoff/libération.
 5. VL, rolling, bounce, double touch, touch-and-go, taxi >150 m.
@@ -331,6 +365,7 @@ Priorités :
 10. benchmark 1/5/10/20 joueurs×2 navires.
 11. calibration spots et point avion-sol sous attitude navire.
 12. validation aveugle par LSO USN/USMC.
+13. contrôle de corpus interdisant des gates identiques sans interpolation explicite et vérifiant distance, timestamp, ordre, sample gap et skew de chaque observation.
 
 ## 21. Questions ouvertes
 
@@ -363,6 +398,7 @@ Priorités :
 
 Sources doctrinales :
 
+- [NAVAIR 00-80T-104, 15 Dec 2001 — miroir public](https://www.yumpu.com/en/document/view/62004951/lso-natops-manual)
 - [NAVAIR 00-80T-111, 1 Jul 2004 — miroir public](https://feral-hogs.com/Downloads/NATOPS%2000-80T-111%20VSTOL%20Shipboard%20%26%20LSO%20Manual%20Jul%202004%20pp148.pdf)
 - [A1-AV8BB-NFM-000 AV-8B/TAV-8B, 15 Mar 2008 — miroir public](https://info.publicintelligence.net/AV-8B-000.pdf)
 - [NAVMC 3500.51B Ch.1 — source officielle USMC](https://www.marines.mil/Portals/1/NAVMAC%203500.51B%20W%20CH%201.pdf)
