@@ -125,13 +125,7 @@ fn themed_png_from_bytes(bytes: &[u8]) -> Result<image::DynamicImage, DrawError>
 
 /// Small owned copy helper for rendering-only approach selections.
 fn copy_datum(d: &Datum) -> Datum {
-    Datum {
-        time: d.time,
-        x: d.x,
-        y: d.y,
-        aoa: d.aoa,
-        alt: d.alt,
-    }
+    d.clone()
 }
 
 /// Select the single continuous final-approach branch used by both plots.
@@ -267,6 +261,7 @@ fn continuous_final_runs(datums: &[Datum]) -> Vec<Vec<Datum>> {
                 y: prev_y + (d.y - prev_y) * t,
                 aoa: prev_aoa + (d.aoa - prev_aoa) * t,
                 alt: prev_alt + (d.alt - prev_alt) * t,
+                ..copy_datum(prev)
             });
             finish_run(&mut current, &mut runs);
             continue;
@@ -420,10 +415,10 @@ pub fn draw_chart(
         (16, 16),
     )?;
 
-    let grade_points_text = if track.carrier_info.is_vstol() {
-        format!("{:.2}", track.grade_points)
-    } else {
-        format!("{:.1}", track.grade_points)
+    let grade_points_text = match track.grade_points {
+        Some(points) if track.carrier_info.is_vstol() => format!("{points:.2}"),
+        Some(points) => format!("{points:.1}"),
+        None => "no".to_string(),
     };
     root_drawing_area.draw_text(
         &format!(
@@ -445,14 +440,16 @@ pub fn draw_chart(
         &match track.grading {
             Grading::Unknown => Cow::Borrowed(""),
             Grading::Bolter => Cow::Borrowed("Bolter"),
-            Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-            Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
-            Grading::Recovered { cable, .. } => {
+            Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
+            Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
+            Grading::Recovered {
+                cable_estimated, ..
+            } => {
                 if track.carrier_info.is_vstol() {
                     Cow::Borrowed("V/STOL recovery")
                 } else {
-                    cable
-                        .map(|c| Cow::Owned(format!("Cable {}", c)))
+                    cable_estimated
+                        .map(|wire| Cow::Owned(format!("Wire {} (estimated)", wire)))
                         .unwrap_or(Cow::Borrowed("(failed to detect cable)"))
                 }
             }
@@ -663,11 +660,9 @@ pub fn draw_top_view(
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
-                time: d.time,
                 x: m_to_nm(d.x),
                 y: m_to_nm(d.y),
-                aoa: d.aoa,
-                alt: d.alt,
+                ..copy_datum(d)
             })
             .collect::<Vec<_>>();
 
@@ -733,11 +728,9 @@ pub fn draw_top_view(
                 combined.extend(translation.into_iter().skip(1).map(|d| {
                     let real_y_nm = m_to_nm(d.y);
                     Datum {
-                        time: d.time,
                         x: m_to_nm(d.x),
                         y: real_y_nm * scale,
-                        aoa: d.aoa,
-                        alt: d.alt,
+                        ..copy_datum(&d)
                     }
                 }));
             }
@@ -747,11 +740,9 @@ pub fn draw_top_view(
         final_run
             .iter()
             .map(|d| Datum {
-                time: d.time,
                 x: m_to_nm(d.x),
                 y: m_to_nm(d.y),
-                aoa: d.aoa,
-                alt: d.alt,
+                ..copy_datum(d)
             })
             .collect()
     };
@@ -948,11 +939,9 @@ pub fn draw_side_view(
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
-                time: d.time,
                 x: m_to_nm(d.x),
-                y: d.y,
-                aoa: d.aoa,
                 alt: m_to_ft(d.alt),
+                ..copy_datum(d)
             })
             .collect::<Vec<_>>();
 
@@ -994,11 +983,9 @@ pub fn draw_side_view(
                 combined.extend(translation.into_iter().skip(1).map(|d| {
                     let real_alt_ft = m_to_ft(d.alt);
                     Datum {
-                        time: d.time,
                         x: m_to_nm(d.x),
-                        y: d.y,
-                        aoa: d.aoa,
                         alt: start_alt_ft + (real_alt_ft - start_alt_ft) * scale,
+                        ..copy_datum(&d)
                     }
                 }));
             }
@@ -1008,11 +995,9 @@ pub fn draw_side_view(
         final_run
             .iter()
             .map(|d| Datum {
-                time: d.time,
                 x: m_to_nm(d.x),
-                y: d.y,
-                aoa: d.aoa,
                 alt: m_to_ft(d.alt),
+                ..copy_datum(d)
             })
             .collect()
     };
@@ -1153,6 +1138,7 @@ mod layout_tests {
                 y: 180.0,
                 aoa: 2.0,
                 alt: 100.0,
+                ..Datum::default()
             });
         }
 
@@ -1163,6 +1149,7 @@ mod layout_tests {
             y: 400.0,
             aoa: 2.0,
             alt: 100.0,
+            ..Datum::default()
         });
 
         for (index, x_m) in (0..=22).map(|index| (index, 1_100.0 - index as f64 * 50.0)) {
@@ -1172,6 +1159,7 @@ mod layout_tests {
                 y: 4.0,
                 aoa: 7.0,
                 alt: 100.0,
+                ..Datum::default()
             });
         }
 
@@ -1254,10 +1242,10 @@ pub fn draw_pattern_chart(
         &format!(
             "Pattern — {}  {} pts",
             track.pass_grade.label(),
-            if track.carrier_info.is_vstol() {
-                format!("{:.2}", track.grade_points)
-            } else {
-                format!("{:.1}", track.grade_points)
+            match track.grade_points {
+                Some(points) if track.carrier_info.is_vstol() => format!("{points:.2}"),
+                Some(points) => format!("{points:.1}"),
+                None => "no".to_string(),
             }
         ),
         &title_style,

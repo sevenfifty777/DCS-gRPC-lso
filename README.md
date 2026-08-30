@@ -10,19 +10,19 @@ or through Discord.
 
 ## Current capabilities
 
-- Live monitoring of every supported carrier and player aircraft pair, including units spawned
-  after LSO starts.
+- Strict compatible-pair monitoring, including units spawned after LSO starts: AV-8B/Tarawa V/STOL
+  and supported hook aircraft on arrested carriers.
 - Full-pattern detection inside 3.5 nm and below 1,100 ft MSL, followed by 10 Hz recording.
 - Carrier-relative final-approach and overhead-pattern PNG charts with AoA-coloured tracks.
-- Gate samples at 3/4, 1/2, and 1/4 nm and simplified grades `_OK_`, `OK`, `(OK)`, `--`, `C`, `B`,
-  and `WO`.
-- Recovered, bolter, pilot-waveoff, and hook-up qualification/touch-and-go outcomes.
+- Bracketed/interpolated gates at 3/4, 1/2, and 1/4 nm with freshness/skew evidence. Incomplete
+  observations receive `NC` and no points.
+- Separate outcome, grade, points, cause, confidence, completeness, rule version and wire provenance.
 - JSON reports, optional compressed Tacview ACMI recordings, and persistent SQLite history.
 - Optional Discord reports, terminal session summary, and HTTP greenie board.
 - Offline regeneration of the approach chart from ACMI files created by LSO.
 
-The pass grade is geometric and intentionally simplified. It uses glideslope and lineup deviations
-at three gates; AoA colours the charts but does not currently change the grade. See
+The pass grade is a `PROJECT-DERIVED` training score, never an official USN/USMC certification. It
+uses glideslope and lineup deviations at three gates; AoA colours the charts but does not change the grade. See
 [the grading reference](docs/GRADING_REFERENCE.md) for the exact behavior.
 
 ## Requirements
@@ -75,10 +75,10 @@ A completed live pass writes or updates the following items in `--out-dir`:
 
 | Artifact | Purpose |
 |---|---|
-| `LSO-<date>-<time>-<pilot>.png` | Final-approach trap sheet |
-| `LSO-<date>-<time>-<pilot>-pattern.png` | Overhead pattern chart |
-| `LSO-<date>-<time>-<pilot>.json` | Pilot, outcome, grade enum, gate deviations, final-approach datums, and mission time |
-| `LSO-<date>-<time>-<pilot>.zip.acmi` | Compressed Tacview recording; omitted with `--no-acmi` |
+| `LSO-<date>-<pilot>-<recovery-id>.png` | Final-approach trap sheet |
+| `LSO-<date>-<pilot>-<recovery-id>-pattern.png` | Overhead pattern chart |
+| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v2 result, gates, event/time/wire evidence and telemetry quality |
+| `LSO-<date>-<pilot>-<recovery-id>.zip.acmi` | Compressed Tacview recording; omitted with `--no-acmi` |
 | `lso.db` | Shared SQLite history; one row is inserted per saved pass |
 
 Pilot names in filenames are reduced to ASCII alphanumeric characters. Offline `file` mode writes
@@ -94,20 +94,20 @@ SQLite, Discord, or the pattern chart.
 | F-14B Tomcat | `F-14B`, `F-14A/B` |
 | F-14B(U) Tomcat | `F-14B(U)`, `F-14BU` |
 | VNAO T-45C Goshawk | `T-45` |
+| AV-8B NA (Tarawa only) | `AV8BNA` |
 
 | Carrier geometry | DCS type names |
 |---|---|
 | Nimitz-class | `CVN_71`, `CVN_72`, `CVN_73`, `CVN_75`, `Stennis` |
 | Forrestal | `Forrestal` |
+| Tarawa (AV-8B only) | `LHA_Tarawa` |
 
 Unsupported types are ignored. `Stennis` is DCS's type name for CVN-74.
 
 ## Web and Discord
 
-`--web-port <PORT>` serves `/` and `/api/passes` and refreshes the browser board every 10 seconds.
-The server binds to `0.0.0.0`, has no authentication or TLS, and should not be exposed directly to
-the public internet. Restrict it with a firewall or place it behind an authenticated reverse proxy
-on a different listening port.
+`--web-port <PORT>` serves `/` and `/api/passes` on `127.0.0.1` and refreshes the browser board every
+10 seconds. Phase 1 intentionally has no remote bind, OAuth2 or TLS.
 
 Discord delivery is enabled with `--discord-webhook`. Keep webhook URLs out of source control,
 screenshots, logs, and shared command transcripts. `--discord-users` accepts a JSON map from DCS
@@ -117,7 +117,12 @@ pilot names to Discord numeric user IDs; it is optional.
 
 - [Installation and administration](docs/ADMIN_GUIDE.md)
 - [Technical architecture](docs/LSO_ANALYSIS.md)
+- [Reliability model](docs/RELIABILITY_ARCHITECTURE.md)
 - [Grading behavior](docs/GRADING_REFERENCE.md)
+- [Data contracts and migrations](docs/DATA_CONTRACTS.md)
+- [Benchmark protocol](docs/BENCHMARK_PROTOCOL.md)
+- [Live validation and version manifest](docs/LIVE_VALIDATION.md)
+- [Deployment and rollback](docs/DEPLOYMENT_ROLLBACK.md)
 - [DCS-gRPC fork migration](docs/DCS_GRPC_FORK_MIGRATION.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGES.md)

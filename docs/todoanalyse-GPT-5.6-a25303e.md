@@ -65,6 +65,8 @@ timeout /t 3 /nobreak
 - [x] script/service de lancement de LSO ;
 - [x] extrait pertinent de `dcs.log` et `grpc.log` couvrant démarrage, mission et au moins un trap.
 
+[REPONSE:] Les fichiers demandés ci-dessus sont placés dans le dossier .ignore\docs-prompt
+
 ## 3. Définir le périmètre matériel et logiciel
 
 - [x] Lister les appareils à supporter lors de la première version corrigée ; [REPONSE:] F/A-18C, F-14A/B/B(U), T-45, AV-8B NA.

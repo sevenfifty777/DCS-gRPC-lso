@@ -1,4 +1,4 @@
-use axum::{extract::State, response::Html, routing::get, Json, Router};
+use axum::{extract::State, http::StatusCode, response::Html, routing::get, Json, Router};
 use tokio::net::TcpListener;
 
 use crate::db::{SharedDb, StoredPass};
@@ -8,7 +8,7 @@ struct AppState {
     db: SharedDb,
 }
 
-/// Serve the LSO web greenie board on `0.0.0.0:<port>`.
+/// Serve the phase-1 LSO web greenie board on loopback only.
 ///
 /// The server runs until an OS-level error occurs (e.g. port in use).
 /// It is intended to be spawned as a background tokio task.
@@ -19,7 +19,7 @@ pub async fn serve(db: SharedDb, port: u16) -> std::io::Result<()> {
         .route("/api/passes", get(handler_passes))
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("127.0.0.1:{}", port);
     tracing::info!(addr = %addr, "LSO web dashboard listening");
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await
@@ -29,12 +29,26 @@ async fn handler_html() -> Html<&'static str> {
     Html(DASHBOARD_HTML)
 }
 
-async fn handler_passes(State(state): State<AppState>) -> Json<Vec<StoredPass>> {
+async fn handler_passes(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<StoredPass>>, (StatusCode, String)> {
     let passes = tokio::task::spawn_blocking(move || state.db.all_passes())
         .await
-        .unwrap_or_else(|_| Ok(vec![]))
-        .unwrap_or_default();
-    Json(passes)
+        .map_err(|err| {
+            tracing::error!(?err, "dashboard database task panicked");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "dashboard database task failed".to_string(),
+            )
+        })?
+        .map_err(|err| {
+            tracing::error!(?err, "dashboard database query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "dashboard database query failed".to_string(),
+            )
+        })?;
+    Ok(Json(passes))
 }
 
 const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
@@ -88,7 +102,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     function gradeClass(g) {
       return ({'_OK_':'UNI','OK':'OK','(OK)':'OKP','--':'NG','C':'Cut','B':'B','WO':'WO'})[g] || '';
     }
-    // NAVAIR points table — used client-side when the server field is absent.
+    // Legacy project points fallback — used only when the server field is absent.
     function gradePoints(g) {
       return ({'_OK_':5.0,'OK':4.0,'(OK)':3.0,'--':2.0,'C':0.0,'B':2.5,'WO':1.0})[g];
     }
@@ -104,8 +118,11 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
           tbody.innerHTML = passes.map((p, i) => {
             const n = passes.length - i;
             const gc = gradeClass(p.pass_grade);
-            // Use server-provided grade_points; fall back to client-side table if absent.
-            const pts = (p.grade_points !== undefined && p.grade_points !== null)
+            // New records explicitly say whether points were awarded. Older rows
+            // retain the historical fallback for dashboard compatibility.
+            const pts = p.points_awarded === false
+              ? undefined
+              : (p.grade_points !== undefined && p.grade_points !== null)
               ? p.grade_points
               : gradePoints(p.pass_grade);
             const ptsStr = pts !== undefined ? Number(pts).toFixed(p.spot != null ? 2 : 1) : '-';
@@ -137,3 +154,22 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   </script>
 </body>
 </html>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::RecoveryDb;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn database_failure_is_an_http_500_not_an_empty_board() {
+        let db = Arc::new(RecoveryDb::open(Path::new(":memory:")).expect("open test database"));
+        db.force_query_failure_for_test();
+
+        let error = handler_passes(State(AppState { db }))
+            .await
+            .expect_err("query must fail");
+        assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}

@@ -7,10 +7,19 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Added
 
+- Session/generation-aware supervision, two-second RPC/watchdog deadlines, monotonic freshness and
+  explicit skew/gap diagnostics with conservative short extrapolation.
+- Strict AV-8B/Tarawa and hook-aircraft/arrested-carrier pairing, slot/UCID human identity and
+  session-scoped AI identity.
+- Bracketed gate interpolation with `Valid`, `Late`, `Missing` and `Invalid` evidence, plus ordered
+  raw `Land`/`RunwayTouch`/LQM evidence and raw hook observations.
+- Separate estimated/DCS wire provenance, divergence, confidence, completeness, cause and grading
+  version in schema-v2 reports and additive SQLite migrations.
+- Bounded telemetry/event buffers and runtime RPC, stream, queue, IO and render metrics.
 - Simplified NAVAIR-style grading from 3/4, 1/2, and 1/4 nm glideslope and lineup samples, with
   `_OK_`, `OK`, `(OK)`, `--`, `C`, `B`, and `WO` labels and numeric points.
-- Pilot waveoff detection, hook-up qualification/touch-and-go detection, and explicit pass outcome
-  storage.
+- Neutral unknown-initiator waveoff/go-around evidence, conservative touch-and-go handling, and
+  explicit pass outcome storage.
 - A second PNG showing the overhead carrier pattern in the BRC frame.
 - Pretty-printed JSON recovery reports with gate samples, final-approach datums, and mission time.
 - Persistent `<out-dir>/lso.db` storage, automatic migrations for older databases, and pilot UCID,
@@ -26,6 +35,11 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Changed
 
+- The former automatic wire-3/groove-time `_OK_` rule is disabled. `_OK_` is reserved for an
+  explicit official/manual grade; incomplete passes and touch-and-go outcomes receive no points.
+- PNG rendering and SQLite work run outside latency-sensitive sampling tasks. Atomic artifact names
+  include session/generation/unit identity and database inserts are idempotent.
+- The HTTP dashboard now binds to `127.0.0.1` and returns HTTP 500 on database failure.
 - The detection envelope now captures the full pattern: 200 m to 3.5 nm from the carrier and at or
   below 1,100 ft MSL, without nose-pointing or rear-hemisphere checks.
 - Gate sampling is restricted to inbound crossings below 500 ft above the deck, and groove entry

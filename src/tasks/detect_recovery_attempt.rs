@@ -33,7 +33,13 @@ pub async fn detect_recovery_attempt(params: TaskParams<'_>) -> Result<(), crate
                 if is_recovery_attempt(&carrier, &plane) {
                     // record_recovery runs to completion (landed / bolter / waveoff /
                     // crash) before we check again — no cooldown needed here.
-                    super::record_recovery::record_recovery(params.clone()).await?;
+                    if let Err(err) = super::record_recovery::record_recovery(params.clone()).await
+                    {
+                        tracing::error!(
+                            %err,
+                            "recovery failed locally; keeping this detector and other pairs alive"
+                        );
+                    }
                 }
             }
             Err(status) if status.code() == Code::NotFound => {
@@ -41,7 +47,11 @@ pub async fn detect_recovery_attempt(params: TaskParams<'_>) -> Result<(), crate
                 return Ok(());
             }
             Err(err) => {
-                return Err(err.into());
+                tracing::warn!(
+                    ?err,
+                    "transient detector polling error; keeping pair isolated"
+                );
+                continue;
             }
         }
     }
