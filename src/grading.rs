@@ -1,35 +1,37 @@
 use crate::track::{GateDeviations, Grading};
 
 // ---------------------------------------------------------------------------
-// Thresholds — NAVAIR 00-80T-104 / MOOSE Airboss CVN values (degrees)
+// SOURCE: PROJECT-DERIVED grading contract v1.
+// Thresholds retained from the historical module pending live validation;
+// they are not represented as NAVAIR-prescribed numerical boundaries.
 // ---------------------------------------------------------------------------
 
 /// Glideslope deviation thresholds (degrees).
-/// Source: MOOSE Airboss `gle` table CVN defaults; NAVAIR 00-80T-104.
-/// Thresholds are asymmetric: being high is penalised slightly later than being low.
-const GS_SLIGHT_HIGH: f64 = 0.5; // (H) — "slightly high"   NAVAIR ~+0.5°
-const GS_SLIGHT_LOW: f64 = 0.5; // (L) — "slightly low"    symmetric V/STOL/CATOBAR threshold
-const GS_SIGNIFICANT: f64 = 1.0; // H / L — "high/low"      symmetric
+/// PROJECT-DERIVED: historical module/MOOSE-inspired values, not a NAVAIR table.
+const GS_SLIGHT_HIGH: f64 = 0.5;
+const GS_SLIGHT_LOW: f64 = 0.5;
+const GS_SIGNIFICANT: f64 = 1.0;
 /// Dangerously low at the 1/4-nm gate — triggers a Cut pass.
 const GS_CUT_LOW_DEG: f64 = -2.5;
 
 /// Lineup deviation thresholds (degrees, absolute value).
-/// Source: MOOSE Airboss `lue` table, CVN defaults.
-const LU_SLIGHT: f64 = 1.0; // (LUL) / (LUR) — "slightly lined up left/right"
-const LU_MEDIUM: f64 = 2.0; // LUL / LUR     — "lined up left/right" (medium, MOOSE + NAVAIR)
-                            // const LU_SIGNIFICANT: f64 = 3.0;  // LUL / LUR     — "lined up left/right" (large) — NoGrade already triggered at LU_MEDIUM
+/// PROJECT-DERIVED: historical module/MOOSE-inspired values, not a NAVAIR table.
+const LU_SLIGHT: f64 = 1.0;
+const LU_MEDIUM: f64 = 2.0;
+// const LU_SIGNIFICANT: f64 = 3.0;  // LUL / LUR     — "lined up left/right" (large) — NoGrade already triggered at LU_MEDIUM
 
 // ---------------------------------------------------------------------------
-// PassGrade — NAVAIR 00-80T-104 aligned
+// PassGrade — project score using selected official display symbols
 // ---------------------------------------------------------------------------
 
-/// NAVAIR 00-80T-104 pass grade.
+/// Project pass grade. See `docs/GRADING_REFERENCE.md` for rule provenance.
 ///
-/// Points and labels match the real-world LSO grade sheet:
+/// Display labels follow the documented LSO symbols; automatic classification and score
+/// computation remain PROJECT-DERIVED:
 ///
 /// | Label   | Points | Meaning |
 /// |---------|--------|---------|
-/// | `_OK_`  | 5.0    | Unicorn — zero deviations, groove time 15–19 s, wire 3 |
+/// | `_OK_`  | 5.0    | Reserved for an explicit official/manual perfect grade |
 /// | `OK`    | 4.0    | Okay pass — no significant deviations |
 /// | `(OK)`  | 3.0    | Fair pass — slight deviations only |
 /// | `--`    | 2.0    | No grade — significant deviations |
@@ -38,8 +40,12 @@ const LU_MEDIUM: f64 = 2.0; // LUL / LUR     — "lined up left/right" (medium, 
 /// | `WO`    | 1.0    | Waveoff |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum PassGrade {
-    /// Unicorn — perfect pass (NAVAIR label `_OK_`, 5.0 pts).
-    Unicorn,
+    /// Perfect pass (official `_OK_` symbol). No automatic rule currently emits it.
+    #[expect(
+        dead_code,
+        reason = "reserved for an explicit official/manual _OK_ grade"
+    )]
+    Perfect,
     Ok,
     OkParentheses,
     /// No grade — significant deviations (NAVAIR label `--`).
@@ -47,34 +53,37 @@ pub enum PassGrade {
     /// Cut pass — dangerously low at the ramp, or landed after being waved off.
     Cut,
     Bolter,
-    WaveoffPilot,
+    WaveoffUnknown,
+    /// Project use of `NC` for insufficient telemetry; never carries points.
+    Incomplete,
 }
 
 impl PassGrade {
     /// Short display label used in charts and the greenie board.
-    /// These match the standard NAVAIR LSO grade sheet symbols.
+    /// These are the documented LSO display symbols plus project `NC`/`WO?` states.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Unicorn => "_OK_",
+            Self::Perfect => "_OK_",
             Self::Ok => "OK",
             Self::OkParentheses => "(OK)",
             Self::NoGrade => "--",
             Self::Cut => "C",
             Self::Bolter => "B",
-            Self::WaveoffPilot => "WO",
+            Self::WaveoffUnknown => "WO?",
+            Self::Incomplete => "NC",
         }
     }
 
-    /// Numeric score used for greenie-board averaging (NAVAIR 00-80T-104).
-    pub fn points(self) -> f64 {
+    /// Numeric project score used for greenie-board averaging.
+    pub fn points(self) -> Option<f64> {
         match self {
-            Self::Unicorn => 5.0,
-            Self::Ok => 4.0,
-            Self::OkParentheses => 3.0,
-            Self::NoGrade => 2.0,
-            Self::Cut => 0.0,
-            Self::Bolter => 2.5,
-            Self::WaveoffPilot => 1.0,
+            Self::Perfect => Some(5.0),
+            Self::Ok => Some(4.0),
+            Self::OkParentheses => Some(3.0),
+            Self::NoGrade => Some(2.0),
+            Self::Cut => Some(0.0),
+            Self::Bolter => Some(2.5),
+            Self::WaveoffUnknown | Self::Incomplete => None,
         }
     }
 }
@@ -139,9 +148,7 @@ pub fn compute_vstol_final_grade_from_points(
     spot_grade: SpotGrade,
 ) -> (PassGrade, f64) {
     let points = (approach_points + spot_grade.bonus_points()).min(5.0);
-    let final_grade = if points >= 5.0 {
-        PassGrade::Unicorn
-    } else if points >= 4.0 {
+    let final_grade = if points >= 4.0 {
         PassGrade::Ok
     } else if points >= 3.0 {
         PassGrade::OkParentheses
@@ -157,11 +164,6 @@ pub fn compute_vstol_final_grade_from_points(
 // Grade computation
 // ---------------------------------------------------------------------------
 
-/// NAVAIR groove-time window for a Unicorn pass (seconds, Case I/II CVN).
-/// Source: NAVAIR 00-80T-104. MOOSE Airboss original values: 15.0–18.99 s.
-const UNICORN_GROOVE_MIN: f64 = 15.0;
-const UNICORN_GROOVE_MAX: f64 = 18.99;
-
 /// Derive a `PassGrade` from the overall `Grading` outcome, gate deviations,
 /// and the groove time (seconds from groove entry to touchdown).
 ///
@@ -170,37 +172,18 @@ const UNICORN_GROOVE_MAX: f64 = 18.99;
 pub fn compute_pass_grade(
     grading: &Grading,
     gates: &GateDeviations,
-    groove_time_secs: Option<f64>,
+    _groove_time_secs: Option<f64>,
 ) -> PassGrade {
     match grading {
-        Grading::Unknown => PassGrade::NoGrade,
-        Grading::WaveoffPilot => PassGrade::WaveoffPilot,
-        Grading::Bolter => PassGrade::Bolter,
-        Grading::Recovered { cable, .. }
-        | Grading::IntentionalBolter {
-            cable_estimated: cable,
-        } => {
-            if let Grading::IntentionalBolter {
-                cable_estimated: None,
-            } = grading
-            {
-                // For a qualification touch-and-go, if they miss the wires completely,
-                // it is graded as a Bolter (B), but the outcome still reflects it was a Qualif Bolter.
-                return PassGrade::Bolter;
-            }
-
-            let base = grade_from_gates(gates);
-            // Unicorn: zero deviations (base == Ok), wire 3, groove time in window.
-            if base == PassGrade::Ok
-                && *cable == Some(3)
-                && groove_time_secs
-                    .map(|t| (UNICORN_GROOVE_MIN..=UNICORN_GROOVE_MAX).contains(&t))
-                    .unwrap_or(false)
-            {
-                PassGrade::Unicorn
-            } else {
-                base
-            }
+        Grading::Unknown => PassGrade::Incomplete,
+        Grading::WaveoffUnknown => PassGrade::WaveoffUnknown,
+        Grading::Bolter if gates.all_valid() => PassGrade::Bolter,
+        Grading::Recovered { .. } if gates.all_valid() => grade_from_gates(gates),
+        // A qualification touch-and-go keeps the independently measured
+        // approach grade, but can never receive a trap/wire-specific upgrade.
+        Grading::TouchAndGo { .. } if gates.all_valid() => grade_from_gates(gates),
+        Grading::TouchAndGo { .. } | Grading::Bolter | Grading::Recovered { .. } => {
+            PassGrade::Incomplete
         }
     }
 }
@@ -214,24 +197,22 @@ pub fn compute_pass_grade(
 pub fn compute_vstol_approach_grade_points(
     grading: &Grading,
     gates: &GateDeviations,
-) -> (PassGrade, f64) {
+) -> (PassGrade, Option<f64>) {
     match grading {
-        Grading::Unknown => (PassGrade::NoGrade, PassGrade::NoGrade.points()),
-        Grading::WaveoffPilot => (PassGrade::WaveoffPilot, PassGrade::WaveoffPilot.points()),
-        Grading::Bolter => (PassGrade::Bolter, PassGrade::Bolter.points()),
-        // Defensive only: Track normalizes this arrested-recovery-only outcome
-        // before dispatching V/STOL grading.
-        Grading::IntentionalBolter { .. } => (PassGrade::Bolter, PassGrade::Bolter.points()),
-        Grading::Recovered { .. } => {
+        Grading::Unknown => (PassGrade::Incomplete, None),
+        Grading::WaveoffUnknown => (PassGrade::WaveoffUnknown, None),
+        Grading::Bolter if gates.all_valid() => (PassGrade::Bolter, PassGrade::Bolter.points()),
+        Grading::TouchAndGo { .. } => (PassGrade::Incomplete, None),
+        Grading::Recovered { .. } if gates.all_valid() => {
             let mut gate_scores = Vec::with_capacity(3);
             if let Some(gate) = gates.at_three_quarter_nm.as_ref() {
-                gate_scores.push(grade_single_gate(gate, false).points());
+                gate_scores.push(grade_single_gate(gate, false).points().unwrap_or_default());
             }
             if let Some(gate) = gates.at_half_nm.as_ref() {
-                gate_scores.push(grade_single_gate(gate, false).points());
+                gate_scores.push(grade_single_gate(gate, false).points().unwrap_or_default());
             }
             if let Some(gate) = gates.at_quarter_nm.as_ref() {
-                gate_scores.push(grade_single_gate(gate, true).points());
+                gate_scores.push(grade_single_gate(gate, true).points().unwrap_or_default());
             }
 
             if gate_scores.is_empty() {
@@ -241,10 +222,11 @@ pub fn compute_vstol_approach_grade_points(
                 let average_points = gate_scores.iter().sum::<f64>() / gate_scores.len() as f64;
                 (
                     map_vstol_approach_points_to_grade(average_points),
-                    average_points,
+                    Some(average_points),
                 )
             }
         }
+        Grading::Bolter | Grading::Recovered { .. } => (PassGrade::Incomplete, None),
     }
 }
 
@@ -336,7 +318,7 @@ fn grade_from_gates(gates: &GateDeviations) -> PassGrade {
     .flatten()
     .fold(0.0_f64, f64::max);
 
-    // Apply NAVAIR/MOOSE grade tiers.
+    // Apply the PROJECT-DERIVED grade tiers.
     // GS uses the CATOBAR-derived tiers retained for both paths: slight at 0.5°, significant at 1.0°.
     // Lineup has three tiers: slight (1.0°) → (OK), medium (2.0°) → --, large (3.0°) → --
     if worst_gs_high >= GS_SIGNIFICANT || worst_gs_low >= GS_SIGNIFICANT || worst_lu >= LU_MEDIUM {
@@ -358,7 +340,7 @@ fn grade_from_gates(gates: &GateDeviations) -> PassGrade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::track::{GateDatum, GateDeviations};
+    use crate::track::{GateCaptureMethod, GateDatum, GateDeviations, GateQuality, GateStatus};
 
     /// Build a `GateDeviations` from degree values (the unit used for grading).
     /// Foot values are set to 0.0 as they are not used in grading logic.
@@ -370,18 +352,35 @@ mod tests {
         gs_q: f64,
         lu_q: f64,
     ) -> GateDeviations {
-        let datum = |gs_deg, lu_deg| {
+        let datum = |gs_deg, lu_deg, timestamp_dcs| {
             Some(GateDatum {
                 gs_deviation_deg: gs_deg,
                 lineup_deg: lu_deg,
                 gs_deviation_ft: 0.0,
                 lineup_ft: 0.0,
+                timestamp_dcs,
+                distance_m: 0.0,
+                sample_gap_ms: 100.0,
+                skew_ms: 0.0,
+                method: GateCaptureMethod::Interpolated,
             })
         };
         GateDeviations {
-            at_three_quarter_nm: datum(gs_3q, lu_3q),
-            at_half_nm: datum(gs_h, lu_h),
-            at_quarter_nm: datum(gs_q, lu_q),
+            at_three_quarter_nm: datum(gs_3q, lu_3q, 1.0),
+            at_half_nm: datum(gs_h, lu_h, 2.0),
+            at_quarter_nm: datum(gs_q, lu_q, 3.0),
+            three_quarter_quality: GateQuality {
+                status: GateStatus::Valid,
+                reason: None,
+            },
+            half_quality: GateQuality {
+                status: GateStatus::Valid,
+                reason: None,
+            },
+            quarter_quality: GateQuality {
+                status: GateStatus::Valid,
+                reason: None,
+            },
         }
     }
 
@@ -482,28 +481,25 @@ mod tests {
     fn test_waveoff_outcome() {
         let g = GateDeviations::default();
         assert_eq!(
-            compute_pass_grade(&Grading::WaveoffPilot, &g, None),
-            PassGrade::WaveoffPilot
+            compute_pass_grade(&Grading::WaveoffUnknown, &g, None),
+            PassGrade::WaveoffUnknown
         );
     }
 
     #[test]
-    fn test_unicorn_wire3_correct_time() {
-        // Zero deviations, wire 3, groove time in window → Unicorn.
+    fn legacy_wire3_time_window_does_not_upgrade_to_perfect() {
+        // Former legacy trigger: it must remain OK, not become Perfect.
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
         let grading = Grading::Recovered {
             cable: Some(3),
             cable_estimated: Some(3),
         };
-        assert_eq!(
-            compute_pass_grade(&grading, &g, Some(16.5)),
-            PassGrade::Unicorn
-        );
+        assert_eq!(compute_pass_grade(&grading, &g, Some(16.5)), PassGrade::Ok);
     }
 
     #[test]
-    fn test_unicorn_wrong_wire() {
-        // Zero deviations but wire 4 → OK, not Unicorn.
+    fn clean_wire4_pass_remains_ok() {
+        // Zero deviations but wire 4: cable selection cannot emit Perfect.
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
         let grading = Grading::Recovered {
             cable: Some(4),
@@ -513,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unicorn_groove_time_too_short() {
+    fn clean_short_groove_remains_ok() {
         // Wire 3, no deviations, but groove time too short → OK.
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
         let grading = Grading::Recovered {
@@ -524,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unicorn_groove_time_too_long() {
+    fn clean_long_groove_remains_ok() {
         // Wire 3, no deviations, but groove time too long → OK.
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
         let grading = Grading::Recovered {
@@ -535,8 +531,8 @@ mod tests {
     }
 
     #[test]
-    fn test_unicorn_with_deviation_is_ok_not_unicorn() {
-        // Slight deviation → (OK) base grade, can never be Unicorn.
+    fn slight_deviation_remains_ok_parentheses() {
+        // Slight deviation keeps the (OK) project grade.
         let g = gates_deg(0.9, 0.1, 0.1, 0.1, 0.1, 0.1);
         let grading = Grading::Recovered {
             cable: Some(3),
@@ -549,8 +545,8 @@ mod tests {
     }
 
     #[test]
-    fn test_unicorn_no_groove_time() {
-        // groove_time_secs = None → OK, not Unicorn.
+    fn clean_pass_without_groove_time_remains_ok() {
+        // Missing groove time does not affect this clean OK project grade.
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
         let grading = Grading::Recovered {
             cable: Some(3),
@@ -560,9 +556,9 @@ mod tests {
     }
 
     #[test]
-    fn test_intentional_bolter_with_estimated_wire_uses_catobar_gate_grade() {
+    fn test_touch_and_go_keeps_the_measured_approach_grade() {
         let g = gates_deg(0.6, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let grading = Grading::IntentionalBolter {
+        let grading = Grading::TouchAndGo {
             cable_estimated: Some(3),
         };
 
@@ -573,31 +569,28 @@ mod tests {
     }
 
     #[test]
-    fn test_intentional_bolter_without_estimated_wire_is_bolter() {
+    fn test_touch_and_go_does_not_require_an_estimated_wire() {
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let grading = Grading::IntentionalBolter {
+        let grading = Grading::TouchAndGo {
             cable_estimated: None,
         };
 
-        assert_eq!(
-            compute_pass_grade(&grading, &g, Some(16.5)),
-            PassGrade::Bolter
-        );
+        assert_eq!(compute_pass_grade(&grading, &g, Some(16.5)), PassGrade::Ok);
     }
 
     #[test]
     fn test_points_bolter() {
-        assert_eq!(PassGrade::Bolter.points(), 2.5);
+        assert_eq!(PassGrade::Bolter.points(), Some(2.5));
     }
 
     #[test]
     fn test_points_waveoff() {
-        assert_eq!(PassGrade::WaveoffPilot.points(), 1.0);
+        assert_eq!(PassGrade::WaveoffUnknown.points(), None);
     }
 
     #[test]
     fn test_points_no_grade() {
-        assert_eq!(PassGrade::NoGrade.points(), 2.0);
+        assert_eq!(PassGrade::NoGrade.points(), Some(2.0));
     }
 
     #[test]
@@ -628,19 +621,25 @@ mod tests {
     #[test]
     fn test_vstol_spot_bonus_maps_to_display_grades() {
         assert_eq!(
-            compute_vstol_final_grade_from_points(PassGrade::Ok.points(), SpotGrade::A),
-            (PassGrade::Unicorn, 5.0)
+            compute_vstol_final_grade_from_points(PassGrade::Ok.points().unwrap(), SpotGrade::A),
+            (PassGrade::Ok, 5.0)
         );
         assert_eq!(
-            compute_vstol_final_grade_from_points(PassGrade::Ok.points(), SpotGrade::B),
+            compute_vstol_final_grade_from_points(PassGrade::Ok.points().unwrap(), SpotGrade::B),
             (PassGrade::Ok, 4.75)
         );
         assert_eq!(
-            compute_vstol_final_grade_from_points(PassGrade::OkParentheses.points(), SpotGrade::A),
+            compute_vstol_final_grade_from_points(
+                PassGrade::OkParentheses.points().unwrap(),
+                SpotGrade::A
+            ),
             (PassGrade::Ok, 4.0)
         );
         assert_eq!(
-            compute_vstol_final_grade_from_points(PassGrade::NoGrade.points(), SpotGrade::C),
+            compute_vstol_final_grade_from_points(
+                PassGrade::NoGrade.points().unwrap(),
+                SpotGrade::C
+            ),
             (PassGrade::NoGrade, 2.5)
         );
     }
@@ -656,7 +655,7 @@ mod tests {
         let (grade, points) = compute_vstol_approach_grade_points(&grading, &gates);
 
         assert_eq!(grade, PassGrade::Ok);
-        assert!((points - 4.0).abs() < 1e-9);
+        assert!((points.unwrap() - 4.0).abs() < 1e-9);
     }
 
     #[test]
@@ -671,7 +670,7 @@ mod tests {
         let (grade, points) = compute_vstol_approach_grade_points(&grading, &gates);
 
         assert_eq!(grade, PassGrade::OkParentheses);
-        assert!((points - (10.0 / 3.0)).abs() < 1e-9);
+        assert!((points.unwrap() - (10.0 / 3.0)).abs() < 1e-9);
     }
 
     #[test]
@@ -686,7 +685,7 @@ mod tests {
         let (grade, points) = compute_vstol_approach_grade_points(&grading, &gates);
 
         assert_eq!(grade, PassGrade::Ok);
-        assert!((points - (11.0 / 3.0)).abs() < 1e-9);
+        assert!((points.unwrap() - (11.0 / 3.0)).abs() < 1e-9);
     }
 
     #[test]
@@ -714,18 +713,18 @@ mod tests {
     }
 
     #[test]
-    fn test_vstol_non_recovery_outcomes_keep_their_grade_and_points() {
+    fn test_vstol_non_recovery_outcomes_never_gain_points_from_incomplete_gates() {
         let gates = GateDeviations::default();
         let cases = [
-            (Grading::Unknown, PassGrade::NoGrade),
-            (Grading::WaveoffPilot, PassGrade::WaveoffPilot),
-            (Grading::Bolter, PassGrade::Bolter),
+            (Grading::Unknown, PassGrade::Incomplete, None),
+            (Grading::WaveoffUnknown, PassGrade::WaveoffUnknown, None),
+            (Grading::Bolter, PassGrade::Incomplete, None),
         ];
 
-        for (grading, expected_grade) in cases {
+        for (grading, expected_grade, expected_points) in cases {
             assert_eq!(
                 compute_vstol_approach_grade_points(&grading, &gates),
-                (expected_grade, expected_grade.points())
+                (expected_grade, expected_points)
             );
         }
     }

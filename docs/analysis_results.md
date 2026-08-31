@@ -1,5 +1,10 @@
 # Documentation Audit Results
 
+> Historical audit snapshot from before the reliability implementation. It is retained for
+> traceability and must not be used as the current runtime specification. See
+> [RELIABILITY_ARCHITECTURE.md](RELIABILITY_ARCHITECTURE.md),
+> [DATA_CONTRACTS.md](DATA_CONTRACTS.md), and [GRADING_REFERENCE.md](GRADING_REFERENCE.md).
+
 **Audit date:** 2026-08-25
 
 **Dependency baseline refreshed:** 2026-08-28

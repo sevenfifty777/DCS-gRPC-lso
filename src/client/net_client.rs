@@ -1,6 +1,8 @@
 use stubs::net::v0::get_players_response::GetPlayerInfo;
 use stubs::net::v0::net_service_client::NetServiceClient;
-use tonic::{transport::Channel, Status};
+use tonic::transport::Channel;
+
+use super::{request_with_deadline, GrpcResult};
 
 pub struct NetClient {
     svc: NetServiceClient<Channel>,
@@ -13,11 +15,12 @@ impl NetClient {
         }
     }
 
-    pub async fn get_players(&mut self) -> Result<Vec<GetPlayerInfo>, Status> {
+    pub async fn get_players(&mut self) -> GrpcResult<Vec<GetPlayerInfo>> {
         let res = self
             .svc
-            .get_players(stubs::net::v0::GetPlayersRequest {})
-            .await?
+            .get_players(request_with_deadline(stubs::net::v0::GetPlayersRequest {}))
+            .await
+            .map_err(Box::new)?
             .into_inner();
         Ok(res.players)
     }

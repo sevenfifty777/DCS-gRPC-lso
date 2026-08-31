@@ -6,7 +6,9 @@ mod draw;
 mod error;
 mod grading;
 mod lso_notation;
+mod metrics;
 mod tasks;
+mod telemetry;
 #[cfg(test)]
 mod tests;
 mod track;
@@ -62,13 +64,18 @@ async fn main() {
     let shutdown = Shutdown::new();
     let shutdown_handle = shutdown.handle();
     tokio::task::spawn(async {
-        tokio::signal::ctrl_c().await.unwrap();
-        shutdown.shutdown().await;
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => shutdown.shutdown().await,
+            Err(err) => tracing::error!(?err, "failed to install Ctrl-C handler"),
+        }
     });
 
-    match opts.command {
-        Command::Run(opts) => commands::run::execute(opts, shutdown_handle).await.unwrap(),
-        // TODO: better error report than unwrap?
-        Command::File(opts) => commands::file::execute(opts).unwrap(),
+    let result = match opts.command {
+        Command::Run(opts) => commands::run::execute(opts, shutdown_handle).await,
+        Command::File(opts) => commands::file::execute(opts),
+    };
+    if let Err(err) = result {
+        tracing::error!(%err, "LSO terminated with an error");
+        std::process::exit(1);
     }
 }

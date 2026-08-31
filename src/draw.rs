@@ -14,7 +14,7 @@ use plotters_bitmap::bitmap_pixel::RGBPixel;
 use plotters_bitmap::BitMapBackend;
 
 use crate::data::{AirplaneInfo, Aoa, CarrierRecovery};
-use crate::track::{Datum, GateDatum, Grading, PatternDatum, TrackResult};
+use crate::track::{Datum, GateDatum, GateQuality, GateStatus, Grading, PatternDatum, TrackResult};
 use crate::utils::{ft_to_nm, m_to_ft, m_to_nm, nm_to_ft, nm_to_m};
 
 const THEME_BG: RGBColor = RGBColor(31, 41, 55); // 1F2937
@@ -125,13 +125,7 @@ fn themed_png_from_bytes(bytes: &[u8]) -> Result<image::DynamicImage, DrawError>
 
 /// Small owned copy helper for rendering-only approach selections.
 fn copy_datum(d: &Datum) -> Datum {
-    Datum {
-        time: d.time,
-        x: d.x,
-        y: d.y,
-        aoa: d.aoa,
-        alt: d.alt,
-    }
+    d.clone()
 }
 
 /// Select the single continuous final-approach branch used by both plots.
@@ -267,6 +261,7 @@ fn continuous_final_runs(datums: &[Datum]) -> Vec<Vec<Datum>> {
                 y: prev_y + (d.y - prev_y) * t,
                 aoa: prev_aoa + (d.aoa - prev_aoa) * t,
                 alt: prev_alt + (d.alt - prev_alt) * t,
+                ..copy_datum(prev)
             });
             finish_run(&mut current, &mut runs);
             continue;
@@ -420,10 +415,10 @@ pub fn draw_chart(
         (16, 16),
     )?;
 
-    let grade_points_text = if track.carrier_info.is_vstol() {
-        format!("{:.2}", track.grade_points)
-    } else {
-        format!("{:.1}", track.grade_points)
+    let grade_points_text = match track.grade_points {
+        Some(points) if track.carrier_info.is_vstol() => format!("{points:.2}"),
+        Some(points) => format!("{points:.1}"),
+        None => "no".to_string(),
     };
     root_drawing_area.draw_text(
         &format!(
@@ -445,14 +440,16 @@ pub fn draw_chart(
         &match track.grading {
             Grading::Unknown => Cow::Borrowed(""),
             Grading::Bolter => Cow::Borrowed("Bolter"),
-            Grading::WaveoffPilot => Cow::Borrowed("Waveoff"),
-            Grading::IntentionalBolter { .. } => Cow::Borrowed("Qualif Bolter"),
-            Grading::Recovered { cable, .. } => {
+            Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
+            Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
+            Grading::Recovered {
+                cable_estimated, ..
+            } => {
                 if track.carrier_info.is_vstol() {
                     Cow::Borrowed("V/STOL recovery")
                 } else {
-                    cable
-                        .map(|c| Cow::Owned(format!("Cable {}", c)))
+                    cable_estimated
+                        .map(|wire| Cow::Owned(format!("Wire {} (estimated)", wire)))
                         .unwrap_or(Cow::Borrowed("(failed to detect cable)"))
                 }
             }
@@ -462,25 +459,56 @@ pub fn draw_chart(
     )?;
 
     let text_style_small = TextStyle::from(("sans-serif", 18).into_font()).color(&THEME_FG);
-    for (index, (label, gate)) in [
-        ("3/4nm", track.gate_deviations.at_three_quarter_nm.as_ref()),
-        ("1/2nm", track.gate_deviations.at_half_nm.as_ref()),
-        ("1/4nm", track.gate_deviations.at_quarter_nm.as_ref()),
+    for (index, (label, gate, quality)) in [
+        (
+            "3/4nm",
+            track.gate_deviations.at_three_quarter_nm.as_ref(),
+            &track.gate_deviations.three_quarter_quality,
+        ),
+        (
+            "1/2nm",
+            track.gate_deviations.at_half_nm.as_ref(),
+            &track.gate_deviations.half_quality,
+        ),
+        (
+            "1/4nm",
+            track.gate_deviations.at_quarter_nm.as_ref(),
+            &track.gate_deviations.quarter_quality,
+        ),
     ]
     .iter()
     .enumerate()
     {
-        let (label, gate) = (*label, *gate);
+        let (label, gate, quality) = (*label, *gate, *quality);
         let y_pos = 144 + (index as i32) * 28;
         root_drawing_area.draw_text(
             &format!(
                 "{}: {}",
                 label,
-                fmt_gate(gate, track.carrier_info.is_vstol())
+                fmt_gate(
+                    gate,
+                    quality,
+                    track.telemetry_quality.max_sample_gap_ms,
+                    track.carrier_info.is_vstol(),
+                )
             ),
             &text_style_small,
             (16, y_pos),
         )?;
+    }
+
+    if !track.carrier_info.is_vstol() {
+        let fragment_count = select_catobar_display_runs(&track.datums).len();
+        if fragment_count > 1 {
+            root_drawing_area.draw_text(
+                &format!(
+                    "TRACE PARTIAL — {} fragments, gaps non raccordés",
+                    fragment_count
+                ),
+                &text_style_small,
+                (16, 232),
+            )?;
+        }
     }
 
     if track.carrier_info.is_vstol() {
@@ -659,15 +687,13 @@ pub fn draw_top_view(
 
     let vstol = track.carrier_info.is_vstol();
     let final_run = select_final_approach_datums(track);
-    let track_in_nm: Vec<Datum> = if vstol {
+    let track_runs_in_nm: Vec<Vec<Datum>> = if vstol {
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
-                time: d.time,
                 x: m_to_nm(d.x),
                 y: m_to_nm(d.y),
-                aoa: d.aoa,
-                alt: d.alt,
+                ..copy_datum(d)
             })
             .collect::<Vec<_>>();
 
@@ -733,66 +759,67 @@ pub fn draw_top_view(
                 combined.extend(translation.into_iter().skip(1).map(|d| {
                     let real_y_nm = m_to_nm(d.y);
                     Datum {
-                        time: d.time,
                         x: m_to_nm(d.x),
                         y: real_y_nm * scale,
-                        aoa: d.aoa,
-                        alt: d.alt,
+                        ..copy_datum(&d)
                     }
                 }));
             }
         }
-        combined
+        vec![combined]
     } else {
-        final_run
-            .iter()
-            .map(|d| Datum {
-                time: d.time,
-                x: m_to_nm(d.x),
-                y: m_to_nm(d.y),
-                aoa: d.aoa,
-                alt: d.alt,
+        select_catobar_display_runs(&track.datums)
+            .into_iter()
+            .map(|run| {
+                run.iter()
+                    .map(|d| Datum {
+                        x: m_to_nm(d.x),
+                        y: m_to_nm(d.y),
+                        ..copy_datum(d)
+                    })
+                    .collect()
             })
             .collect()
     };
 
     // draw approach shadow
-    chart.draw_series(LineSeries::new(
-        track_in_nm.iter().map(|d| (d.x, d.y)),
-        THEME_BG.stroke_width(4),
-    ))?;
+    for track_in_nm in &track_runs_in_nm {
+        chart.draw_series(LineSeries::new(
+            track_in_nm.iter().map(|d| (d.x, d.y)),
+            THEME_BG.stroke_width(4),
+        ))?;
+    }
 
     // draw approach
-    let mut points = Vec::new();
-    let mut color = THEME_AOA_ON_SPEED;
-    for datum in &track_in_nm {
-        let next_color = aoa_color(datum.aoa, track.plane_info);
-        let point = (datum.x, datum.y);
+    for track_in_nm in &track_runs_in_nm {
+        let mut points = Vec::new();
+        let mut color = THEME_AOA_ON_SPEED;
+        for datum in track_in_nm {
+            let next_color = aoa_color(datum.aoa, track.plane_info);
+            let point = (datum.x, datum.y);
 
-        if points.is_empty() {
-            color = next_color;
+            if points.is_empty() {
+                color = next_color;
+            }
+
+            if next_color != color {
+                points.push(point);
+                chart.draw_series(LineSeries::new(
+                    points.iter().cloned(),
+                    color.stroke_width(2),
+                ))?;
+                points.clear();
+                color = next_color;
+            }
+            points.push(point);
         }
 
-        if next_color != color {
-            points.push(point);
-
+        if !points.is_empty() {
             chart.draw_series(LineSeries::new(
                 points.iter().cloned(),
                 color.stroke_width(2),
             ))?;
-
-            points.clear();
-            color = next_color;
         }
-
-        points.push(point);
-    }
-
-    if !points.is_empty() {
-        chart.draw_series(LineSeries::new(
-            points.iter().cloned(),
-            color.stroke_width(2),
-        ))?;
     }
 
     // Draw the calibrated V/STOL 7.5 marker last so the terminal trace or
@@ -944,15 +971,13 @@ pub fn draw_side_view(
 
     let vstol = track.carrier_info.is_vstol();
     let final_run = select_final_approach_datums(track);
-    let track_descent: Vec<Datum> = if vstol {
+    let track_descent_runs: Vec<Vec<Datum>> = if vstol {
         let mut combined = final_run
             .iter()
             .map(|d| Datum {
-                time: d.time,
                 x: m_to_nm(d.x),
-                y: d.y,
-                aoa: d.aoa,
                 alt: m_to_ft(d.alt),
+                ..copy_datum(d)
             })
             .collect::<Vec<_>>();
 
@@ -994,67 +1019,67 @@ pub fn draw_side_view(
                 combined.extend(translation.into_iter().skip(1).map(|d| {
                     let real_alt_ft = m_to_ft(d.alt);
                     Datum {
-                        time: d.time,
                         x: m_to_nm(d.x),
-                        y: d.y,
-                        aoa: d.aoa,
                         alt: start_alt_ft + (real_alt_ft - start_alt_ft) * scale,
+                        ..copy_datum(&d)
                     }
                 }));
             }
         }
-        combined
+        vec![combined]
     } else {
-        final_run
-            .iter()
-            .map(|d| Datum {
-                time: d.time,
-                x: m_to_nm(d.x),
-                y: d.y,
-                aoa: d.aoa,
-                alt: m_to_ft(d.alt),
+        select_catobar_display_runs(&track.datums)
+            .into_iter()
+            .map(|run| {
+                run.iter()
+                    .map(|d| Datum {
+                        x: m_to_nm(d.x),
+                        alt: m_to_ft(d.alt),
+                        ..copy_datum(d)
+                    })
+                    .collect()
             })
             .collect()
     };
 
     // draw approach shadow
-    chart.draw_series(LineSeries::new(
-        track_descent.iter().map(|d| (d.x, d.alt)),
-        THEME_BG.stroke_width(4),
-    ))?;
+    for track_descent in &track_descent_runs {
+        chart.draw_series(LineSeries::new(
+            track_descent.iter().map(|d| (d.x, d.alt)),
+            THEME_BG.stroke_width(4),
+        ))?;
+    }
 
     // draw approach
-    let mut points = Vec::new();
-    let mut color = THEME_AOA_ON_SPEED;
-    for datum in &track_descent {
-        let next_color = aoa_color(datum.aoa, track.plane_info);
+    for track_descent in &track_descent_runs {
+        let mut points = Vec::new();
+        let mut color = THEME_AOA_ON_SPEED;
+        for datum in track_descent {
+            let next_color = aoa_color(datum.aoa, track.plane_info);
+            let point = (datum.x, datum.alt);
 
-        let point = (datum.x, datum.alt);
+            if points.is_empty() {
+                color = next_color;
+            }
 
-        if points.is_empty() {
-            color = next_color;
+            if next_color != color {
+                points.push(point);
+                chart.draw_series(LineSeries::new(
+                    points.iter().cloned(),
+                    color.stroke_width(2),
+                ))?;
+                points.clear();
+                color = next_color;
+            }
+            points.push(point);
         }
 
-        if next_color != color {
-            points.push(point);
-
+        if !points.is_empty() {
             chart.draw_series(LineSeries::new(
                 points.iter().cloned(),
                 color.stroke_width(2),
             ))?;
-
-            points.clear();
-            color = next_color;
         }
-
-        points.push(point);
-    }
-
-    if !points.is_empty() {
-        chart.draw_series(LineSeries::new(
-            points.iter().cloned(),
-            color.stroke_width(2),
-        ))?;
     }
 
     // Draw the deck-level 7.5 marker last so it remains visible even when the
@@ -1078,15 +1103,72 @@ fn text_style() -> TextStyle<'static> {
     TextStyle::from(("sans-serif", 20).into_font()).color(&THEME_FG)
 }
 
-fn fmt_gate(gate: Option<&GateDatum>, vstol: bool) -> String {
+fn fmt_gate(
+    gate: Option<&GateDatum>,
+    quality: &GateQuality,
+    max_sample_gap_ms: f64,
+    vstol: bool,
+) -> String {
     match gate {
         Some(g) if vstol => format!("ALT {:+.0}ft  LAT {:+.0}ft", g.gs_deviation_ft, g.lineup_ft),
         Some(g) => format!(
             "GS {:+.1}\u{00B0}  LU {:+.1}\u{00B0}",
             g.gs_deviation_deg, g.lineup_deg
         ),
-        None => "-".to_string(),
+        None if quality.status == GateStatus::Late => "LATE".to_string(),
+        None if quality.status == GateStatus::Invalid => {
+            if quality.reason.as_deref() == Some("stale_gate_bracket") {
+                format!("INVALID — gap up to {:.0} ms", max_sample_gap_ms)
+            } else {
+                format!(
+                    "INVALID — {}",
+                    quality.reason.as_deref().unwrap_or("telemetry unavailable")
+                )
+            }
+        }
+        None => "TELEMETRY UNAVAILABLE".to_string(),
     }
+}
+
+/// Preserve every continuous fragment belonging to the latest CATOBAR final.
+/// Fragments are deliberately returned separately so the renderer never draws
+/// a line through a telemetry outage.
+fn select_catobar_display_runs(datums: &[Datum]) -> Vec<Vec<Datum>> {
+    const MAX_FRAGMENT_GAP_S: f64 = 2.0;
+    const MAX_FINAL_DURATION_S: f64 = 45.0;
+
+    let runs = continuous_final_runs(datums);
+    let Some(selected_index) = runs
+        .iter()
+        .rposition(|run| inbound_span_nm(run) >= MIN_FINAL_SPAN_NM)
+        .or_else(|| runs.iter().rposition(|run| inbound_span_nm(run) > 0.0))
+    else {
+        return Vec::new();
+    };
+
+    let final_time = runs[selected_index]
+        .last()
+        .map(|datum| datum.time)
+        .unwrap_or_default();
+    let mut first_index = selected_index;
+    while first_index > 0 {
+        let previous = &runs[first_index - 1];
+        let current = &runs[first_index];
+        let Some((previous_end, current_start)) = previous.last().zip(current.first()) else {
+            break;
+        };
+        let gap = current_start.time - previous_end.time;
+        let still_inbound = previous_end.x + 20.0 >= current_start.x;
+        let recent = final_time - previous_end.time <= MAX_FINAL_DURATION_S;
+        if gap <= 0.0 || gap > MAX_FRAGMENT_GAP_S || !still_inbound || !recent {
+            break;
+        }
+        first_index -= 1;
+    }
+    runs.into_iter()
+        .skip(first_index)
+        .take(selected_index - first_index + 1)
+        .collect()
 }
 
 fn aoa_color(aoa: f64, plane_info: &'static AirplaneInfo) -> RGBColor {
@@ -1139,7 +1221,8 @@ impl ValueFormatter<f64> for CustomRange {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        chart_layout, select_catobar_final_datums, select_vstol_final_datums, Datum, PANEL_GAP,
+        chart_layout, select_catobar_display_runs, select_catobar_final_datums,
+        select_vstol_final_datums, Datum, PANEL_GAP,
     };
 
     fn two_complete_final_approach_runs() -> Vec<Datum> {
@@ -1153,6 +1236,7 @@ mod layout_tests {
                 y: 180.0,
                 aoa: 2.0,
                 alt: 100.0,
+                ..Datum::default()
             });
         }
 
@@ -1163,6 +1247,7 @@ mod layout_tests {
             y: 400.0,
             aoa: 2.0,
             alt: 100.0,
+            ..Datum::default()
         });
 
         for (index, x_m) in (0..=22).map(|index| (index, 1_100.0 - index as f64 * 50.0)) {
@@ -1172,6 +1257,7 @@ mod layout_tests {
                 y: 4.0,
                 aoa: 7.0,
                 alt: 100.0,
+                ..Datum::default()
             });
         }
 
@@ -1200,6 +1286,29 @@ mod layout_tests {
         assert!(selected.iter().all(|datum| datum.time >= 100.0));
         assert!(selected.iter().all(|datum| datum.y == 4.0));
         assert_eq!(selected.last().map(|datum| datum.x), Some(0.0));
+    }
+
+    #[test]
+    fn catobar_display_preserves_fragments_without_connecting_them() {
+        let mut datums = Vec::new();
+        for (time, x) in [
+            (1.0, 1_300.0),
+            (1.1, 1_240.0),
+            (2.0, 1_100.0),
+            (2.1, 1_040.0),
+        ] {
+            datums.push(Datum {
+                time,
+                x,
+                y: 0.0,
+                alt: 80.0,
+                ..Datum::default()
+            });
+        }
+        let runs = select_catobar_display_runs(&datums);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].last().unwrap().x, 1_240.0);
+        assert_eq!(runs[1].first().unwrap().x, 1_100.0);
     }
 
     #[test]
@@ -1254,10 +1363,10 @@ pub fn draw_pattern_chart(
         &format!(
             "Pattern — {}  {} pts",
             track.pass_grade.label(),
-            if track.carrier_info.is_vstol() {
-                format!("{:.2}", track.grade_points)
-            } else {
-                format!("{:.1}", track.grade_points)
+            match track.grade_points {
+                Some(points) if track.carrier_info.is_vstol() => format!("{points:.2}"),
+                Some(points) => format!("{points:.1}"),
+                None => "no".to_string(),
             }
         ),
         &title_style,

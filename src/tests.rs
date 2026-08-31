@@ -14,7 +14,7 @@ macro_rules! test_recording {
             assert_eq!(
                 recovery.grading,
                 Grading::Recovered {
-                    cable: Some($cable),
+                    cable: $cable,
                     cable_estimated: Some($cable_estimated)
                 }
             );
@@ -25,34 +25,34 @@ macro_rules! test_recording {
 test_recording!(
     wire_1_01,
     "../tests/recordings/wire_1_01_FA18C.zip.acmi",
-    1,
+    Some(1),
     1
 );
 
 test_recording!(
     wire_2_01,
     "../tests/recordings/wire_2_01_FA18C.zip.acmi",
-    2,
+    None,
     2
 );
 
 test_recording!(
     wire_3_01,
     "../tests/recordings/wire_3_01_T45.zip.acmi",
-    3,
+    Some(3),
     3
 );
 
 test_recording!(
     wire_4_01,
     "../tests/recordings/wire_4_01_FA18C.zip.acmi",
-    4,
+    None,
     4
 );
 test_recording!(
     wire_4_02,
     "../tests/recordings/wire_4_02_F14A.zip.acmi",
-    4,
+    None,
     4
 );
 
