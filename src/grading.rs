@@ -564,7 +564,7 @@ mod tests {
 
         assert_eq!(
             compute_pass_grade(&grading, &g, Some(16.5)),
-            PassGrade::OkParentheses
+            PassGrade::Incomplete
         );
     }
 

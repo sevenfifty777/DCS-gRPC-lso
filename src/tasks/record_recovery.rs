@@ -1151,6 +1151,31 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     ),
                     false,
                 );
+
+            if track.carrier_info.is_vstol() {
+                if let (Some(spot_grade), Some(distance_m)) =
+                    (track.spot_grade, track.spot_distance_m)
+                {
+                    embed = embed.field(
+                        "Spot 7.5",
+                        format!(
+                            "{} — {:.2} m — +{:.2} pt",
+                            spot_grade.label(),
+                            distance_m,
+                            spot_grade.bonus_points()
+                        ),
+                        false,
+                    );
+                }
+            }
+
+            // LSO notation and plain-English notes from DCS grading string.
+            if let Some(ref notation) = track.dcs_grading {
+                embed = embed.field("LSO Notation", notation.as_str(), false);
+                let notes = crate::lso_notation::to_english(notation);
+                if !notes.is_empty() {
+                    embed = embed.field("LSO Notes", notes, false);
+                }
             }
 
             if track.carrier_info.is_vstol() {

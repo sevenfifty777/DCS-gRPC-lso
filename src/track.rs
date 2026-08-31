@@ -895,6 +895,7 @@ impl Track {
             {
                 self.gate_samples.pop_front();
             }
+            self.previous_gate_sample = Some(current);
 
             // Mark groove entry: inside 3/4 nm, below 300 ft AGL, and lined up (±10°).
             // The lateral constraint prevents the timer from starting prematurely while the
@@ -1201,7 +1202,7 @@ impl Track {
             -self.carrier_info.deck_angle.to_radians(),
         ));
 
-        let cables = [
+        [
             (1, &self.carrier_info.cable1),
             (2, &self.carrier_info.cable2),
             (3, &self.carrier_info.cable3),
