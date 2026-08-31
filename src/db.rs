@@ -52,13 +52,17 @@ pub struct DbPass {
     pub generation: u64,
     pub completeness: String,
     pub max_sample_gap_ms: f64,
+    pub max_scoring_sample_gap_ms: f64,
     pub max_skew_ms: f64,
+    pub telemetry_health: String,
     pub wire_estimated: Option<u8>,
     pub wire_dcs: Option<u8>,
     pub wire_divergent: bool,
     pub confidence: String,
     pub cause: String,
     pub grading_version: String,
+    pub wire_estimation_confidence: String,
+    pub grading_availability: String,
 }
 
 /// Pass record as returned from a database query (JSON-serialisable for the web API).
@@ -99,13 +103,17 @@ pub struct StoredPass {
     pub generation: Option<i64>,
     pub completeness: Option<String>,
     pub max_sample_gap_ms: Option<f64>,
+    pub max_scoring_sample_gap_ms: Option<f64>,
     pub max_skew_ms: Option<f64>,
+    pub telemetry_health: Option<String>,
     pub wire_estimated: Option<i64>,
     pub wire_dcs: Option<i64>,
     pub wire_divergent: Option<bool>,
     pub confidence: Option<String>,
     pub cause: Option<String>,
     pub grading_version: Option<String>,
+    pub wire_estimation_confidence: Option<String>,
+    pub grading_availability: Option<String>,
 }
 
 impl RecoveryDb {
@@ -161,13 +169,17 @@ impl RecoveryDb {
             ("generation", "INTEGER"),
             ("completeness", "TEXT"),
             ("max_sample_gap_ms", "REAL"),
+            ("max_scoring_sample_gap_ms", "REAL"),
             ("max_skew_ms", "REAL"),
+            ("telemetry_health", "TEXT"),
             ("wire_estimated", "INTEGER"),
             ("wire_dcs", "INTEGER"),
             ("wire_divergent", "INTEGER NOT NULL DEFAULT 0"),
             ("confidence", "TEXT"),
             ("cause", "TEXT"),
             ("grading_version", "TEXT"),
+            ("wire_estimation_confidence", "TEXT"),
+            ("grading_availability", "TEXT"),
             // Existing rows predate optional points and historically always
             // represented an awarded numeric value.
             ("points_awarded", "INTEGER NOT NULL DEFAULT 1"),
@@ -182,7 +194,8 @@ impl RecoveryDb {
              ON passes(recovery_id) WHERE recovery_id IS NOT NULL;
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -197,9 +210,10 @@ impl RecoveryDb {
                 (timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
                  map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                  recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
-                 confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m) \
+                 confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
+                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)",
+                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -238,6 +252,10 @@ impl RecoveryDb {
                 &pass.intended_spot,
                 &pass.actual_nearest_spot,
                 pass.distance_to_intended_spot_m,
+                pass.max_scoring_sample_gap_ms,
+                &pass.telemetry_health,
+                &pass.wire_estimation_confidence,
+                &pass.grading_availability,
             ],
         )?;
         Ok(inserted == 1)
@@ -250,7 +268,8 @@ impl RecoveryDb {
             "SELECT id, timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
                     map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                     recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
-                    confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m \
+                    confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
+                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -299,6 +318,10 @@ impl RecoveryDb {
                 intended_spot: row.get(35)?,
                 actual_nearest_spot: row.get(36)?,
                 distance_to_intended_spot_m: row.get(37)?,
+                max_scoring_sample_gap_ms: row.get(38)?,
+                telemetry_health: row.get(39)?,
+                wire_estimation_confidence: row.get(40)?,
+                grading_availability: row.get(41)?,
             })
         })?;
         rows.collect()
@@ -370,13 +393,17 @@ mod tests {
             generation: 1,
             completeness: "complete".to_string(),
             max_sample_gap_ms: 100.0,
+            max_scoring_sample_gap_ms: 100.0,
             max_skew_ms: 0.0,
+            telemetry_health: "green".to_string(),
             wire_estimated: Some(3),
             wire_dcs: Some(3),
             wire_divergent: false,
             confidence: "high".to_string(),
             cause: "correlated_touchdown".to_string(),
             grading_version: "project-derived-v1".to_string(),
+            wire_estimation_confidence: "high".to_string(),
+            grading_availability: "available".to_string(),
         };
         assert!(db.insert(&entry).expect("insert pass"));
         assert!(!db.insert(&entry).expect("duplicate is idempotent"));

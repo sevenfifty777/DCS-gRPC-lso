@@ -179,8 +179,9 @@ pub fn compute_pass_grade(
         Grading::WaveoffUnknown => PassGrade::WaveoffUnknown,
         Grading::Bolter if gates.all_valid() => PassGrade::Bolter,
         Grading::Recovered { .. } if gates.all_valid() => grade_from_gates(gates),
-        // A qualification touch-and-go is an outcome, not a confirmed trap. It
-        // must never inherit a favourable approach grade.
+        // A qualification touch-and-go keeps the independently measured
+        // approach grade, but can never receive a trap/wire-specific upgrade.
+        Grading::TouchAndGo { .. } if gates.all_valid() => grade_from_gates(gates),
         Grading::TouchAndGo { .. } | Grading::Bolter | Grading::Recovered { .. } => {
             PassGrade::Incomplete
         }
@@ -555,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn test_touch_and_go_never_receives_a_favourable_grade() {
+    fn test_touch_and_go_keeps_the_measured_approach_grade() {
         let g = gates_deg(0.6, 0.0, 0.0, 0.0, 0.0, 0.0);
         let grading = Grading::TouchAndGo {
             cable_estimated: Some(3),
@@ -568,16 +569,13 @@ mod tests {
     }
 
     #[test]
-    fn test_touch_and_go_without_estimated_wire_is_incomplete() {
+    fn test_touch_and_go_does_not_require_an_estimated_wire() {
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let grading = Grading::TouchAndGo {
             cable_estimated: None,
         };
 
-        assert_eq!(
-            compute_pass_grade(&grading, &g, Some(16.5)),
-            PassGrade::Incomplete
-        );
+        assert_eq!(compute_pass_grade(&grading, &g, Some(16.5)), PassGrade::Ok);
     }
 
     #[test]

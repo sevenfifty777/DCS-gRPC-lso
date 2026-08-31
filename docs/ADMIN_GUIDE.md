@@ -50,7 +50,7 @@ Never publish UCIDs from the private database/API.
 The base filename includes wall time, sanitized display name, session, generation, aircraft/carrier
 IDs and DCS time. This prevents simultaneous-pass collisions. Outputs are:
 
-- atomic schema-v2 JSON report;
+- atomic schema-v3 JSON report;
 - optional atomic compressed ACMI;
 - approach and pattern PNG rendered outside sampling tasks;
 - additive/idempotent `lso.db` row;

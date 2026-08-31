@@ -16,6 +16,8 @@ or through Discord.
 - Carrier-relative final-approach and overhead-pattern PNG charts with AoA-coloured tracks.
 - Bracketed/interpolated gates at 3/4, 1/2, and 1/4 nm with freshness/skew evidence. Incomplete
   observations receive `NC` and no points.
+- Aircraft/carrier transforms stay on the priority loop; CATOBAR hook state is sampled independently
+  at 4 Hz by default with a 300 ms timeout. Stale or unknown hook data is never reused as certainty.
 - Separate outcome, grade, points, cause, confidence, completeness, rule version and wire provenance.
 - JSON reports, optional compressed Tacview ACMI recordings, and persistent SQLite history.
 - Optional Discord reports, terminal session summary, and HTTP greenie board.
@@ -59,6 +61,10 @@ Common examples:
 # Save charts and JSON, but not ACMI
 .\lso.exe run -o C:\LSO\recordings --no-acmi
 
+# A/B diagnostic: compare the independent hook sampler with the former blocking path
+.\lso.exe run -o C:\LSO\recordings --hook-sampling-hz 4 --hook-timeout-ms 300
+.\lso.exe run -o C:\LSO\recordings --legacy-inline-hook-sampling
+
 # Enable debug or trace logging; global flags go before the subcommand
 .\lso.exe -v run -o C:\LSO\recordings
 .\lso.exe -vv run -o C:\LSO\recordings
@@ -68,6 +74,8 @@ Common examples:
 ```
 
 Use `lso.exe --help` and `lso.exe run --help` for the complete generated CLI reference.
+With `--no-acmi`, the TacView writer and ACMI-only metadata/unit RPCs are not started; live grading,
+JSON, PNG, SQLite and health diagnostics use the same telemetry path as normal.
 
 ## Output
 
@@ -77,7 +85,7 @@ A completed live pass writes or updates the following items in `--out-dir`:
 |---|---|
 | `LSO-<date>-<pilot>-<recovery-id>.png` | Final-approach trap sheet |
 | `LSO-<date>-<pilot>-<recovery-id>-pattern.png` | Overhead pattern chart |
-| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v2 result, gates, event/time/wire evidence and telemetry quality |
+| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v3 result, gates, event/time/hook/wire evidence and telemetry quality |
 | `LSO-<date>-<pilot>-<recovery-id>.zip.acmi` | Compressed Tacview recording; omitted with `--no-acmi` |
 | `lso.db` | Shared SQLite history; one row is inserted per saved pass |
 

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::Cursor;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::Either;
 use futures_util::stream::select;
@@ -19,11 +19,13 @@ use stubs::mission::v0::stream_events_response::{
 use tacview::record::{self, Color, Coords, GlobalProperty, Property, Record, Tag, Update};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use tokio::sync::mpsc;
 
 use crate::client::{HookClient, MissionClient, UnitClient};
 use crate::grading::{PassGrade, SpotGrade};
+use crate::metrics::RpcKind;
 use crate::telemetry::{TelemetryAligner, TelemetryInvalidReason, ACTIVE_WATCHDOG_MS};
-use crate::track::{Datum, GateDeviations, Grading, Track};
+use crate::track::{Datum, GateDeviations, Grading, HookSampleStatus, Track};
 use crate::transform::Transform;
 
 use super::{CompletedPass, TaskParams};
@@ -69,6 +71,12 @@ struct RecoveryReport<'a> {
     /// In-mission date/time from the DCS scenario clock (ISO-8601).
     #[serde(skip_serializing_if = "str::is_empty")]
     mission_datetime: &'a str,
+    recording_started_at: &'a str,
+    completed_at: &'a str,
+    touchdown_time_dcs: Option<f64>,
+    lso_version: &'static str,
+    lso_commit: &'static str,
+    dcs_grpc_version: &'a str,
     outcome: &'a str,
     cause: &'a str,
     confidence: &'a str,
@@ -78,6 +86,8 @@ struct RecoveryReport<'a> {
     wire_dcs: Option<u8>,
     wire_divergent: bool,
     wire_primary: &'static str,
+    wire_estimation: &'a crate::track::WireEstimateEvidence,
+    grading_availability: &'static str,
     telemetry_quality: &'a crate::track::TelemetryQuality,
     events: &'a [crate::track::EventEvidence],
     spot_zone: &'a crate::track::SpotZoneObservation,
@@ -88,6 +98,89 @@ struct RecoveryReport<'a> {
 const GRADING_VERSION: &str = "project-derived-v1";
 const GRADING_SOURCE: &str = "PROJECT-DERIVED";
 static OUTPUT_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Debug)]
+struct HookPoll {
+    received_at: Instant,
+    received_unix_ms: u64,
+    raw: Option<f64>,
+    status: HookSampleStatus,
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn sample_hook(
+    channel: tonic::transport::Channel,
+    plane_name: String,
+    config: super::HookSamplingConfig,
+    tx: mpsc::Sender<HookPoll>,
+) {
+    let period = Duration::from_secs_f64(1.0 / config.frequency_hz as f64);
+    let mut interval = tokio::time::interval(period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut client = UnitClient::new(channel);
+    loop {
+        interval.tick().await;
+        let (raw, status) = match client
+            .get_draw_argument_value_with_timeout(&plane_name, 25, config.timeout)
+            .await
+        {
+            Ok(raw) if raw.is_finite() => (Some(raw), HookSampleStatus::Success),
+            Ok(_) => (None, HookSampleStatus::Error),
+            Err(status) if status.code() == tonic::Code::DeadlineExceeded => {
+                (None, HookSampleStatus::Timeout)
+            }
+            Err(_) => (None, HookSampleStatus::Error),
+        };
+        let poll = HookPoll {
+            received_at: Instant::now(),
+            received_unix_ms: unix_time_ms(),
+            raw,
+            status,
+        };
+        if tx.try_send(poll).is_err() {
+            crate::metrics::RUNTIME_METRICS.hook_sample_dropped();
+        }
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn drain_hook_samples(
+    rx: &mut mpsc::Receiver<HookPoll>,
+    track: &mut Track,
+    associated_time_dcs: f64,
+    frequency_hz: u64,
+) {
+    let max_age_ms = (2_000.0 / frequency_hz.max(1) as f64).max(750.0);
+    while let Ok(poll) = rx.try_recv() {
+        let age_ms = poll.received_at.elapsed().as_secs_f64() * 1_000.0;
+        let status = if poll.status == HookSampleStatus::Success && age_ms > max_age_ms {
+            HookSampleStatus::Stale
+        } else {
+            poll.status
+        };
+        track.observe_hook_sample(
+            associated_time_dcs,
+            poll.received_unix_ms,
+            age_ms,
+            poll.raw,
+            status,
+        );
+    }
+}
 
 /// Builds an event transform only when DCS supplied the position and orientation
 /// required to correlate the evidence geometrically. A zero/default transform is
@@ -164,26 +257,39 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let interval = crate::utils::interval::interval(Duration::from_millis(100), params.shutdown);
 
     let mut acmi = Cursor::new(Vec::new());
-    let mut recording = tacview::Writer::new_compressed(&mut acmi)?;
+    let mut recording = if params.record_acmi {
+        Some(tacview::Writer::new_compressed(&mut acmi)?)
+    } else {
+        None
+    };
+    macro_rules! write_acmi {
+        ($record:expr) => {
+            if let Some(writer) = recording.as_mut() {
+                writer.write($record)?;
+            }
+        };
+    }
     let mut datums = Track::new(pilot_name.clone(), params.carrier_info, params.plane_info);
     let mut telemetry_aligner = TelemetryAligner::new();
     let mut last_telemetry_success = Instant::now();
 
-    let reference_time = mission.get_scenario_start_time().await?;
-    recording.write(GlobalProperty::ReferenceTime(reference_time))?;
-    recording.write(GlobalProperty::RecordingTime(
-        OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
-    ))?;
+    if params.record_acmi {
+        let reference_time = mission.get_scenario_start_time().await?;
+        write_acmi!(GlobalProperty::ReferenceTime(reference_time));
+        write_acmi!(GlobalProperty::RecordingTime(
+            OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
+        ));
 
-    let mission_name = hook.get_mission_name().await?;
-    recording.write(GlobalProperty::Title(format!(
-        "Carrier Recovery during {}",
-        mission_name
-    )))?;
-    recording.write(GlobalProperty::Author(format!(
-        "dcs-grpc-lso v{}",
-        env!("CARGO_PKG_VERSION")
-    )))?;
+        let mission_name = hook.get_mission_name().await?;
+        write_acmi!(GlobalProperty::Title(format!(
+            "Carrier Recovery during {}",
+            mission_name
+        )));
+        write_acmi!(GlobalProperty::Author(format!(
+            "dcs-grpc-lso v{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
 
     // Query the theatre (map) name once at the start of the recording.
     let map_name: String = match world.get_theatre().await {
@@ -198,11 +304,24 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut lat_ref = 0.0;
     let mut lon_ref = 0.0;
 
-    recording.write(create_initial_update(&mut client1, 1, params.carrier_name).await?)?;
-    recording.write(create_initial_update(&mut client1, 2, params.plane_name).await?)?;
+    if params.record_acmi {
+        write_acmi!(create_initial_update(&mut client1, 1, params.carrier_name).await?);
+        write_acmi!(create_initial_update(&mut client1, 2, params.plane_name).await?);
+    }
 
     let events = mission.stream_events().await?;
     let _event_stream_guard = crate::metrics::RUNTIME_METRICS.stream();
+    let (hook_tx, mut hook_rx) = mpsc::channel(64);
+    let _hook_sampler = (!params.carrier_info.is_vstol()
+        && params.hook_sampling.mode == super::HookSamplingMode::Independent)
+        .then(|| {
+            AbortOnDrop(tokio::spawn(sample_hook(
+                params.ch.clone(),
+                params.plane_name.to_string(),
+                params.hook_sampling,
+                hook_tx,
+            )))
+        });
 
     let mut known_carrier_coords = None;
     let mut known_plane_coords = None;
@@ -212,16 +331,27 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut last_carrier_lat: f64 = 0.0;
     let mut last_carrier_lon: f64 = 0.0;
     let mut last_carrier_alt: f64 = 0.0;
+    let mut warning_window_started = Instant::now();
+    let mut warning_count = 0_u32;
+    let mut warning_max_gap_ms = 0.0_f64;
 
     let mut stream = select(interval.map(Either::Left), events.map(Either::Right));
 
     while let Some(next) = stream.next().await {
         match next {
             // next interval
-            Either::Left(_) => {
+            Either::Left(scheduled_tick) => {
+                let _loop_timer = crate::metrics::RUNTIME_METRICS.recovery_loop();
+                crate::metrics::RUNTIME_METRICS.observe_tick_lag(
+                    Instant::now()
+                        .saturating_duration_since(scheduled_tick.into())
+                        .as_micros()
+                        .min(u64::MAX as u128) as u64,
+                );
                 let (carrier_observed, plane_observed) = match futures_util::future::try_join(
-                    client1.get_observed_transform(params.carrier_name),
-                    client2.get_observed_transform(params.plane_name),
+                    client1
+                        .get_observed_transform_for(params.carrier_name, RpcKind::TransformCarrier),
+                    client2.get_observed_transform_for(params.plane_name, RpcKind::TransformPlane),
                 )
                 .await
                 {
@@ -242,19 +372,38 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     }
                 };
                 let sample = telemetry_aligner.align(carrier_observed, plane_observed);
-                last_telemetry_success = Instant::now();
-                if sample.has_warning() {
+                if sample.is_valid() && sample.source_age_ms <= f64::EPSILON {
+                    last_telemetry_success = Instant::now();
+                }
+                if last_telemetry_success.elapsed() >= Duration::from_millis(ACTIVE_WATCHDOG_MS) {
                     tracing::warn!(
-                        gap_ms = sample.sample_gap_ms,
-                        age_ms = sample.source_age_ms,
-                        skew_ms = sample.skew_ms,
-                        ?sample.method,
-                        "telemetry quality warning"
+                        silent_for = ?last_telemetry_success.elapsed(),
+                        source_age_ms = sample.source_age_ms,
+                        "active telemetry watchdog expired without source advancement"
                     );
+                    datums.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
+                    break;
+                }
+                if sample.has_warning() {
+                    warning_count += 1;
+                    warning_max_gap_ms =
+                        warning_max_gap_ms.max(sample.sample_gap_ms.max(sample.source_age_ms));
+                    if warning_window_started.elapsed() >= Duration::from_secs(10) {
+                        tracing::warn!(
+                            warning_count,
+                            warning_max_gap_ms,
+                            "telemetry quality degraded during reporting window"
+                        );
+                        warning_count = 0;
+                        warning_max_gap_ms = 0.0;
+                        warning_window_started = Instant::now();
+                    }
                 }
                 let carrier = &sample.carrier;
                 let plane = &sample.plane;
-                let hook_state = if params.carrier_info.is_vstol() {
+                let hook_state = if params.carrier_info.is_vstol()
+                    || params.hook_sampling.mode == super::HookSamplingMode::Independent
+                {
                     None
                 } else {
                     client2
@@ -266,8 +415,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 if !ref_written {
                     lat_ref = carrier.lat;
                     lon_ref = carrier.lon;
-                    recording.write(GlobalProperty::ReferenceLatitude(lat_ref))?;
-                    recording.write(GlobalProperty::ReferenceLongitude(lon_ref))?;
+                    write_acmi!(GlobalProperty::ReferenceLatitude(lat_ref));
+                    write_acmi!(GlobalProperty::ReferenceLongitude(lon_ref));
                     ref_written = true;
                 }
 
@@ -298,19 +447,19 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 };
 
                 if (carrier.time - plane.time).abs() < 0.01 {
-                    recording.write(Record::Frame(carrier.time))?;
-                    recording.write(carrier_update)?;
-                    recording.write(plane_update)?;
+                    write_acmi!(Record::Frame(carrier.time));
+                    write_acmi!(carrier_update);
+                    write_acmi!(plane_update);
                 } else if carrier.time < plane.time {
-                    recording.write(Record::Frame(carrier.time))?;
-                    recording.write(carrier_update)?;
-                    recording.write(Record::Frame(plane.time))?;
-                    recording.write(plane_update)?;
+                    write_acmi!(Record::Frame(carrier.time));
+                    write_acmi!(carrier_update);
+                    write_acmi!(Record::Frame(plane.time));
+                    write_acmi!(plane_update);
                 } else {
-                    recording.write(Record::Frame(plane.time))?;
-                    recording.write(plane_update)?;
-                    recording.write(Record::Frame(carrier.time))?;
-                    recording.write(carrier_update)?;
+                    write_acmi!(Record::Frame(plane.time));
+                    write_acmi!(plane_update);
+                    write_acmi!(Record::Frame(carrier.time));
+                    write_acmi!(carrier_update);
                 }
 
                 last_carrier_lat = carrier.lat;
@@ -319,7 +468,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
-                if !datums.next_sample(&sample, hook_state) {
+                let keep_tracking = datums.next_sample(&sample, hook_state);
+                if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                    drain_hook_samples(
+                        &mut hook_rx,
+                        &mut datums,
+                        plane.time,
+                        params.hook_sampling.frequency_hz,
+                    );
+                }
+                if !keep_tracking {
                     break;
                 }
 
@@ -365,7 +523,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                             "duplicate_ignored"
                         },
                     );
-                    recording.write(Record::Frame(time))?;
+                    write_acmi!(Record::Frame(time));
 
                     let carrier = Transform::from((
                         time,
@@ -373,7 +531,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         carrier.orientation.unwrap_or_default(),
                         carrier.velocity.unwrap_or_default(),
                     ));
-                    recording.write(Update {
+                    write_acmi!(Update {
                         id: 1,
                         props: vec![Property::T(remove_unchanged(
                             Coords::default()
@@ -383,7 +541,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                                 .heading(carrier.heading),
                             &mut known_carrier_coords,
                         ))],
-                    })?;
+                    });
 
                     let plane = Transform::from((
                         time,
@@ -391,7 +549,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         plane.orientation.unwrap_or_default(),
                         plane.velocity.unwrap_or_default(),
                     ));
-                    recording.write(Update {
+                    write_acmi!(Update {
                         id: 2,
                         props: vec![
                             Property::T(remove_unchanged(
@@ -404,13 +562,13 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                             )),
                             Property::AOA(plane.aoa),
                         ],
-                    })?;
+                    });
 
-                    recording.write(record::Event {
+                    write_acmi!(record::Event {
                         kind: record::EventKind::Message,
                         params: vec!["2".to_string(), "1".to_string()],
                         text: Some(comment),
-                    })?;
+                    });
                 }
 
                 // Generic DCS land event. It is correlated with exact unit IDs
@@ -435,6 +593,14 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         datums.record_event("land", time, false, "missing_transform_evidence");
                         continue;
                     };
+                    if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                        drain_hook_samples(
+                            &mut hook_rx,
+                            &mut datums,
+                            plane.time,
+                            params.hook_sampling.frequency_hz,
+                        );
+                    }
                     let accepted = datums.landed(&carrier, &plane);
                     datums.record_event(
                         "land",
@@ -480,8 +646,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         continue;
                     };
 
-                    recording.write(Record::Frame(time))?;
-                    recording.write(Update {
+                    write_acmi!(Record::Frame(time));
+                    write_acmi!(Update {
                         id: 1,
                         props: vec![Property::T(remove_unchanged(
                             Coords::default()
@@ -491,9 +657,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                                 .heading(carrier.heading),
                             &mut known_carrier_coords,
                         ))],
-                    })?;
+                    });
 
-                    recording.write(Update {
+                    write_acmi!(Update {
                         id: 2,
                         props: vec![
                             Property::T(remove_unchanged(
@@ -506,23 +672,26 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                             )),
                             Property::AOA(plane.aoa),
                         ],
-                    })?;
+                    });
 
-                    recording.write(record::Event {
+                    write_acmi!(record::Event {
                         kind: record::EventKind::Landed,
                         params: vec!["2".to_string(), "1".to_string()],
                         text: None,
-                    })?;
+                    });
 
-                    let hook_state = if params.carrier_info.is_vstol() {
-                        None
-                    } else {
-                        client2
-                            .get_draw_argument_value(params.plane_name, 25)
-                            .await
-                            .ok()
-                    };
-                    datums.next(&carrier, &plane, hook_state);
+                    // Do not feed the possibly late event transform back into
+                    // the continuous trajectory. It used to manufacture a
+                    // near-event wire-4 crossing and could also make the last
+                    // post-touch hook value look like pre-touch evidence.
+                    if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                        drain_hook_samples(
+                            &mut hook_rx,
+                            &mut datums,
+                            plane.time,
+                            params.hook_sampling.frequency_hz,
+                        );
+                    }
                     let accepted = datums.landed(&carrier, &plane);
                     datums.record_event(
                         "runway_touch",
@@ -585,8 +754,23 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         return Ok(());
     }
 
-    recording.into_inner();
-    let data = acmi.into_inner();
+    if warning_count > 0 {
+        tracing::warn!(
+            warning_count,
+            warning_max_gap_ms,
+            "telemetry quality degraded during final reporting window"
+        );
+    }
+
+    if let Some(writer) = recording.take() {
+        let _ = writer.into_inner();
+    }
+    drop(recording);
+    let data = if params.record_acmi {
+        acmi.into_inner()
+    } else {
+        Vec::new()
+    };
     let track = std::sync::Arc::new(datums.finish());
 
     // Discard if no recognisable outcome was established (e.g. plane flew through the zone
@@ -659,14 +843,28 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         crate::track::Completeness::Complete => "medium",
         _ => "insufficient",
     };
-    let cause = match track.grading {
-        Grading::WaveoffUnknown => "go_around_initiator_unknown",
-        Grading::Bolter => "deck_crossing_without_arrest",
-        Grading::TouchAndGo { .. } => "hook_up_near_deck",
-        Grading::Recovered { .. } => "correlated_touchdown",
-        Grading::Unknown => "unknown",
+    let cause = match track.telemetry_quality.completeness {
+        crate::track::Completeness::UnconfirmedArrest => "unconfirmed_arrest",
+        _ => match track.grading {
+            Grading::WaveoffUnknown => "go_around_initiator_unknown",
+            Grading::Bolter => "deck_crossing_without_arrest",
+            Grading::TouchAndGo { .. } => "hook_up_near_deck",
+            Grading::Recovered { .. } => "correlated_touchdown",
+            Grading::Unknown => "unknown",
+        },
     };
+    // Availability describes whether Rust had enough evidence to apply the
+    // rules, independently from whether the resulting performance earns points.
+    let grading_availability =
+        if track.telemetry_quality.completeness == crate::track::Completeness::Complete {
+            "available"
+        } else {
+            "unavailable_technical"
+        };
     let aircraft_id = crate::data::get_aircraft_id(params.plane_type);
+    let completed_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default();
 
     // Write JSON report.
     let json_path = params.out_dir.join(&filename).with_extension("json");
@@ -674,7 +872,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     // independent intended/nearest fields below.
     let spot_label = track.intended_spot;
     let report = RecoveryReport {
-        schema_version: 2,
+        schema_version: 3,
         recovery_id: &recovery_id,
         pilot_name: &track.pilot_name,
         pilot_kind: params.pilot_kind,
@@ -704,6 +902,12 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         gate_deviations: &track.gate_deviations,
         datums: &track.datums,
         mission_datetime: &mission_datetime,
+        recording_started_at: &recovery_timestamp,
+        completed_at: &completed_at,
+        touchdown_time_dcs: track.touchdown_time_dcs,
+        lso_version: env!("CARGO_PKG_VERSION"),
+        lso_commit: option_env!("GIT_COMMIT_HASH").unwrap_or("unknown"),
+        dcs_grpc_version: params.dcs_grpc_version,
         outcome: &outcome,
         cause,
         confidence,
@@ -713,6 +917,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         wire_dcs,
         wire_divergent,
         wire_primary: "estimated",
+        wire_estimation: &track.wire_estimation,
+        grading_availability,
         telemetry_quality: &track.telemetry_quality,
         events: &track.events,
         spot_zone: &track.spot_zone,
@@ -806,13 +1012,17 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             generation: completed.generation,
             completeness: format!("{:?}", track.telemetry_quality.completeness).to_lowercase(),
             max_sample_gap_ms: track.telemetry_quality.max_sample_gap_ms,
+            max_scoring_sample_gap_ms: track.telemetry_quality.max_scoring_sample_gap_ms,
             max_skew_ms: track.telemetry_quality.max_skew_ms,
+            telemetry_health: format!("{:?}", track.telemetry_quality.health).to_lowercase(),
             wire_estimated,
             wire_dcs,
             wire_divergent,
             confidence: confidence.to_string(),
             cause: cause.to_string(),
             grading_version: GRADING_VERSION.to_string(),
+            wire_estimation_confidence: track.wire_estimation.confidence.to_string(),
+            grading_availability: grading_availability.to_string(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(inserted)) => Some(inserted),
@@ -931,6 +1141,42 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     },
                     false,
                 );
+
+            if track.telemetry_quality.completeness != crate::track::Completeness::Complete {
+                embed = embed.field(
+                    "Technical status",
+                    format!(
+                        "Grading unavailable: {:?}. This is a measurement limitation, not a pilot failure.",
+                        track.telemetry_quality.completeness
+                    ),
+                    false,
+                );
+
+            if track.carrier_info.is_vstol() {
+                if let (Some(spot_grade), Some(distance_m)) =
+                    (track.spot_grade, track.spot_distance_m)
+                {
+                    embed = embed.field(
+                        "Spot 7.5",
+                        format!(
+                            "{} — {:.2} m — +{:.2} pt",
+                            spot_grade.label(),
+                            distance_m,
+                            spot_grade.bonus_points()
+                        ),
+                        false,
+                    );
+                }
+            }
+
+            // LSO notation and plain-English notes from DCS grading string.
+            if let Some(ref notation) = track.dcs_grading {
+                embed = embed.field("LSO Notation", notation.as_str(), false);
+                let notes = crate::lso_notation::to_english(notation);
+                if !notes.is_empty() {
+                    embed = embed.field("LSO Notes", notes, false);
+                }
+            }
 
             if track.carrier_info.is_vstol() {
                 if let (Some(spot_grade), Some(distance_m)) =
@@ -1148,9 +1394,57 @@ fn changed_precision(a: Option<f64>, b: Option<f64>, theta: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{recovery_id, recovery_outcome, transform_from_event_unit, write_atomic_if_absent};
-    use crate::track::Grading;
+    use super::{
+        drain_hook_samples, recovery_id, recovery_outcome, transform_from_event_unit,
+        write_atomic_if_absent, HookPoll,
+    };
+    use crate::data::{AirplaneInfo, CarrierInfo};
+    use crate::track::{Grading, HookSampleStatus, Track};
     use stubs::common::v0::{Orientation, Position, Unit};
+
+    #[tokio::test]
+    async fn independent_hook_work_does_not_delay_position_ticks() {
+        let slow_hook = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        });
+        let started = std::time::Instant::now();
+        let mut ticks = tokio::time::interval(std::time::Duration::from_millis(10));
+        for _ in 0..5 {
+            ticks.tick().await;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_millis(150));
+        slow_hook.abort();
+    }
+
+    #[test]
+    fn stale_and_timed_out_hook_polls_never_become_certain_state() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(HookPoll {
+            received_at: std::time::Instant::now() - std::time::Duration::from_secs(2),
+            received_unix_ms: 1,
+            raw: Some(1.0),
+            status: HookSampleStatus::Success,
+        })
+        .unwrap();
+        tx.try_send(HookPoll {
+            received_at: std::time::Instant::now(),
+            received_unix_ms: 2,
+            raw: None,
+            status: HookSampleStatus::Timeout,
+        })
+        .unwrap();
+
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        drain_hook_samples(&mut rx, &mut track, 42.0, 4);
+        let result = track.finish();
+
+        assert_eq!(result.hook_observation.stale_samples, 1);
+        assert_eq!(result.hook_observation.timeout_samples, 1);
+        assert_eq!(result.hook_observation.successful_samples, 0);
+        assert_eq!(result.hook_observation.interpreted_state, "unknown");
+    }
 
     #[test]
     fn arrested_recovery_without_detected_wire_uses_dash_outcome() {

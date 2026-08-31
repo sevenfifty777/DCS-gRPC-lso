@@ -9,7 +9,9 @@ FPS/tick require the live server corpus.
 Live mode logs a cumulative snapshot every ten seconds:
 
 - unary RPC calls and RPC/s;
-- `GetTransform` calls, errors and mean latency;
+- separate aircraft-transform, carrier-transform, other-transform and hook RPC calls, successes,
+  errors, timeouts and mean/p50/p95/p99/max latency;
+- complete recovery-loop duration and Tokio tick delay (mean/p50/p95/p99/max);
 - active event streams and active recoveries;
 - supervisor queue high-water mark (capacity 16);
 - bytes written by atomic ACMI/JSON output;
@@ -65,6 +67,21 @@ Capture at one-second resolution where possible:
 
 Each run needs at least ten minutes steady state plus all recoveries. Preserve anonymized raw logs and
 mission hashes.
+
+For the hook A/B, fly the same mission twice with the same server and mission hashes:
+
+```powershell
+# Candidate: hook cannot delay transforms
+.\lso.exe -v run -o C:\LSO\ab-independent --no-acmi --hook-sampling-hz 4 --hook-timeout-ms 300
+
+# Rollback/control: former blocking behavior
+.\lso.exe -v run -o C:\LSO\ab-inline --no-acmi --legacy-inline-hook-sampling
+```
+
+Compare transform RPC percentiles, loop/tick-lag percentiles, actual sample frequency, source age,
+gaps and valid gates. `--no-acmi` is deliberate: ACMI availability is not part of nominal grading.
+The independent mode is accepted only if it preserves or improves position cadence without turning
+stale/unknown hook observations into certainty.
 
 ## Acceptance gates
 

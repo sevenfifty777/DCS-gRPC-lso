@@ -2,7 +2,7 @@
 
 ## JSON recovery report
 
-New live reports use `schema_version: 2`. The legacy top-level fields (`pilot_name`, `grading`,
+New live reports use `schema_version: 3`. The legacy top-level fields (`pilot_name`, `grading`,
 `pass_grade`, `dcs_grading`, `gate_deviations`, `datums`, `mission_datetime`) remain present with
 compatible meanings. Additive fields include:
 
@@ -13,6 +13,10 @@ compatible meanings. Additive fields include:
 - estimated/DCS wire, divergence and primary display provenance;
 - gate quality plus raw/corrected telemetry diagnostics;
 - ordered event evidence, raw hook observation and first-contact horizontal speed.
+- recording/completion times and LSO/DCS-gRPC version evidence;
+- explicit grading availability and live telemetry health;
+- timestamped hook samples with success/timeout/error/stale state and pre-touch provenance;
+- continuous hook-plane wire crossings, estimate confidence and reason.
 
 Individual JSON, PNG, ACMI, Discord payloads and public logs must never contain an UCID. The
 deterministic recovery ID contains only session/generation/unit IDs and DCS time.
@@ -30,6 +34,7 @@ Migrations are additive and recorded in `schema_migrations`:
 | 2 | recovery/session/carrier/completeness/wire provenance fields and unique recovery index |
 | 3 | `points_awarded`, separating a real zero from no points |
 | 4 | separate intended spot, actual nearest active spot and distance to intended spot |
+| 5 | scored-segment gap, telemetry health, wire-estimate confidence and grading availability |
 
 Startup inspects `PRAGMA table_info(passes)` before each `ALTER TABLE`. Unexpected migration errors
 are returned; they are never swallowed as duplicate-column errors. Existing rows are preserved.

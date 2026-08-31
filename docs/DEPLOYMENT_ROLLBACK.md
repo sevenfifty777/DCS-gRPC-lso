@@ -34,6 +34,11 @@ to the pre-change database backup during rollback.
    error, expected strict pair count, dashboard on `127.0.0.1`, and ten-second metrics log.
 4. Run one non-production smoke recovery when authorized.
 
+For an immediate behavioral rollback without changing binaries, restart the candidate with
+`--legacy-inline-hook-sampling`. This restores the former blocking hook path only; it does not undo
+schema additions or other reliability fixes. Preserve the independent-mode log before switching so
+the A/B percentiles remain comparable.
+
 Do not restart or reconfigure DCS/DCS-gRPC for this module-only release.
 
 ## Roll back in under five minutes

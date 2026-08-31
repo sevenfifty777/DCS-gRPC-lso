@@ -14,7 +14,7 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 - Bracketed gate interpolation with `Valid`, `Late`, `Missing` and `Invalid` evidence, plus ordered
   raw `Land`/`RunwayTouch`/LQM evidence and raw hook observations.
 - Separate estimated/DCS wire provenance, divergence, confidence, completeness, cause and grading
-  version in schema-v2 reports and additive SQLite migrations.
+  version in structured reports and additive SQLite migrations.
 - Bounded telemetry/event buffers and runtime RPC, stream, queue, IO and render metrics.
 - Simplified NAVAIR-style grading from 3/4, 1/2, and 1/4 nm glideslope and lineup samples, with
   `_OK_`, `OK`, `(OK)`, `--`, `C`, `B`, and `WO` labels and numeric points.
@@ -30,8 +30,14 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   notation translated to plain English, wind, and groove time. Both approach and pattern PNGs are
   attached; ACMI is attached unless disabled.
 - `--no-acmi` to keep charts and JSON without saving Tacview recordings.
+- `--no-acmi` now also skips TacView serialization and ACMI-only metadata/unit RPCs instead of only
+  suppressing the final file.
 - Additional F-14 type aliases and distinct F-14A, F-14B, and F-14B(U) display names.
 - Carrier-position EMA smoothing for final-approach geometry.
+- Independent, timestamped hook sampling with configurable 2-4 Hz cadence, 250-300 ms timeout and
+  a legacy-inline A/B switch; per-RPC and loop/tick latency percentiles; live telemetry health.
+- Schema-v3 report evidence for hook freshness, component versions, grading availability and
+  continuous wire-plane crossings; additive SQLite migration version 5.
 
 ### Changed
 
@@ -50,6 +56,8 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 - Unit discovery safely ignores DCS units whose optional type field is absent.
 - T-45 AoA brackets now use values derived from the VNAO T-45 display-electronics data instead of
   the former F/A-18C copy.
+- F/A-18C CQ touch-and-go recognition now requires stable, timestamped pre-touch hook evidence;
+  uncalibrated modules remain unknown. Technical unavailability is separate from pilot performance.
 
 ### Fixed
 
@@ -62,6 +70,12 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 - CATOBAR charts select the latest continuous inbound branch, preventing earlier overhead-pattern
   points from joining the real final as a false vertical drop.
 - F-14B(U) identification and trap-sheet naming.
+- Gate brackets use only their actual endpoint interval and can recover from an isolated degraded
+  sample without crossing a real cut; frozen DCS timestamps now age and trip the watchdog.
+- Pattern-only gaps no longer invalidate the scored groove, while gate/groove gaps remain blocking.
+- Fragmented CATOBAR grooves render as separate labelled fragments instead of disappearing or being
+  connected artificially. A late RunwayTouch transform can no longer manufacture a wire-4 crossing;
+  an estimate now requires a continuous crossing correlated within 300 ms of the event.
 
 ### Security and dependencies
 

@@ -96,7 +96,8 @@ pub struct TelemetryAligner {
     previous_carrier: Option<ObservedTransform>,
     previous_plane: Option<ObservedTransform>,
     previous_sample_at: Option<Instant>,
-    previous_dcs_time: Option<f64>,
+    carrier_last_advanced_at: Option<Instant>,
+    plane_last_advanced_at: Option<Instant>,
     previous_sample_valid: bool,
 }
 
@@ -117,11 +118,19 @@ impl TelemetryAligner {
             .previous_sample_at
             .map(|previous| latest_received.duration_since(previous).as_secs_f64() * 1_000.0)
             .unwrap_or_default();
-        let source_time = carrier_raw.time.max(plane_raw.time);
-        let source_age_ms = match self.previous_dcs_time {
-            Some(previous) if source_time <= previous => sample_gap_ms,
-            _ => 0.0,
-        };
+        let carrier_source_age_ms = source_age_ms(
+            carrier_raw.time,
+            self.previous_carrier.as_ref(),
+            self.carrier_last_advanced_at,
+            latest_received,
+        );
+        let plane_source_age_ms = source_age_ms(
+            plane_raw.time,
+            self.previous_plane.as_ref(),
+            self.plane_last_advanced_at,
+            latest_received,
+        );
+        let source_age_ms = carrier_source_age_ms.max(plane_source_age_ms);
         let skew_secs = (carrier_raw.time - plane_raw.time).abs();
         let skew_ms = skew_secs * 1_000.0;
         let history_valid = self.previous_sample_valid
@@ -188,6 +197,15 @@ impl TelemetryAligner {
             invalid_reason = Some(TelemetryInvalidReason::TelemetryGap);
         }
 
+        let carrier_advanced = self
+            .previous_carrier
+            .as_ref()
+            .is_none_or(|previous| carrier_raw.time > previous.value.time);
+        let plane_advanced = self
+            .previous_plane
+            .as_ref()
+            .is_none_or(|previous| plane_raw.time > previous.value.time);
+
         let sample = TelemetrySample {
             carrier_raw,
             plane_raw,
@@ -206,16 +224,35 @@ impl TelemetryAligner {
             invalid_reason,
         };
 
+        if carrier_advanced {
+            self.carrier_last_advanced_at = Some(latest_received);
+        }
+        if plane_advanced {
+            self.plane_last_advanced_at = Some(latest_received);
+        }
         self.previous_carrier = Some(carrier_observed);
         self.previous_plane = Some(plane_observed);
         self.previous_sample_at = Some(latest_received);
-        self.previous_dcs_time = Some(source_time);
         self.previous_sample_valid = sample.is_valid() && !sample.has_warning();
         sample
     }
 
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+}
+
+fn source_age_ms(
+    current_time: f64,
+    previous: Option<&ObservedTransform>,
+    last_advanced_at: Option<Instant>,
+    received_at: Instant,
+) -> f64 {
+    match previous {
+        Some(previous) if current_time <= previous.value.time => last_advanced_at
+            .map(|advanced| received_at.duration_since(advanced).as_secs_f64() * 1_000.0)
+            .unwrap_or_default(),
+        _ => 0.0,
     }
 }
 
@@ -236,6 +273,17 @@ mod tests {
             ..Transform::default()
         };
         ObservedTransform::now(value)
+    }
+
+    fn observed_at(time: f64, received_at: Instant) -> ObservedTransform {
+        ObservedTransform {
+            value: Transform {
+                time,
+                ..Transform::default()
+            },
+            received_at,
+            received_unix_ms: 0,
+        }
     }
 
     #[test]
@@ -323,6 +371,31 @@ mod tests {
         assert_eq!(
             sample.invalid_reason,
             Some(TelemetryInvalidReason::ExcessiveSkew)
+        );
+    }
+
+    #[test]
+    fn frozen_source_age_accumulates_across_successful_rpc_responses() {
+        let mut aligner = TelemetryAligner::new();
+        let start = Instant::now();
+        assert!(aligner
+            .align(observed_at(10.0, start), observed_at(10.0, start))
+            .is_valid());
+        let after_400_ms = aligner.align(
+            observed_at(10.0, start + std::time::Duration::from_millis(400)),
+            observed_at(10.0, start + std::time::Duration::from_millis(400)),
+        );
+        assert_eq!(after_400_ms.source_age_ms, 400.0);
+        assert!(after_400_ms.has_warning());
+
+        let after_1100_ms = aligner.align(
+            observed_at(10.0, start + std::time::Duration::from_millis(1_100)),
+            observed_at(10.0, start + std::time::Duration::from_millis(1_100)),
+        );
+        assert_eq!(after_1100_ms.source_age_ms, 1_100.0);
+        assert_eq!(
+            after_1100_ms.invalid_reason,
+            Some(TelemetryInvalidReason::TelemetryGap)
         );
     }
 }

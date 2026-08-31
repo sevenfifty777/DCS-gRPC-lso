@@ -84,9 +84,9 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
   <h1>&#x2708;&#xFE0F; LSO Greenie Board</h1>
   <table>
     <thead>
-      <tr><th>#</th><th>Timestamp</th><th>Grade Date</th><th>Mission Time</th><th>Pilot</th><th>Aircraft</th><th>Map</th><th>Grade</th><th>Pts</th><th>Wire/Spot</th><th>Outcome</th><th>DCS Grade</th><th>LSO Notes</th></tr>
+      <tr><th>#</th><th>Timestamp</th><th>Grade Date</th><th>Mission Time</th><th>Pilot</th><th>Aircraft</th><th>Map</th><th>Grade</th><th>Pts</th><th>Wire/Spot</th><th>Outcome</th><th>Technical status</th><th>DCS Grade</th><th>LSO Notes</th></tr>
     </thead>
-    <tbody id="rows"><tr><td class="empty" colspan="13">Loading&#x2026;</td></tr></tbody>
+    <tbody id="rows"><tr><td class="empty" colspan="14">Loading&#x2026;</td></tr></tbody>
   </table>
   <div id="status"></div>
   <script>
@@ -113,7 +113,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         const passes = await resp.json();
         const tbody = document.getElementById('rows');
         if (passes.length === 0) {
-          tbody.innerHTML = '<tr><td class="empty" colspan="13">No passes recorded yet.</td></tr>';
+          tbody.innerHTML = '<tr><td class="empty" colspan="14">No passes recorded yet.</td></tr>';
         } else {
           tbody.innerHTML = passes.map((p, i) => {
             const n = passes.length - i;
@@ -138,6 +138,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
               + '<td class="pts">' + ptsStr + '</td>'
               + '<td>' + esc(p.spot != null ? p.spot : p.wire) + '</td>'
               + '<td>' + esc(p.outcome) + '</td>'
+              + '<td>' + esc(p.completeness === 'complete' ? 'Available' : 'Unavailable — ' + p.completeness) + '</td>'
               + '<td>' + esc(p.dcs_grading) + '</td>'
               + '<td class="lso-notes">' + esc(p.lso_notes) + '</td>'
               + '</tr>';

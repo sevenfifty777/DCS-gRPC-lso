@@ -5,7 +5,8 @@ use tonic::transport::Channel;
 
 use crate::transform::{ObservedTransform, Transform};
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, request_with_timeout, GrpcResult};
+use crate::metrics::RpcKind;
 
 pub struct UnitClient {
     svc: UnitServiceClient<Channel>,
@@ -19,7 +20,16 @@ impl UnitClient {
     }
 
     pub async fn get_transform(&mut self, unit_name: impl Into<String>) -> GrpcResult<Transform> {
-        let timer = crate::metrics::RUNTIME_METRICS.transform_rpc();
+        self.get_transform_for(unit_name, RpcKind::TransformOther)
+            .await
+    }
+
+    async fn get_transform_for(
+        &mut self,
+        unit_name: impl Into<String>,
+        kind: RpcKind,
+    ) -> GrpcResult<Transform> {
+        let timer = crate::metrics::RUNTIME_METRICS.rpc(kind);
         let res = self
             .svc
             .get_transform(request_with_deadline(unit::v0::GetTransformRequest {
@@ -39,11 +49,12 @@ impl UnitClient {
             .into())
     }
 
-    pub async fn get_observed_transform(
+    pub async fn get_observed_transform_for(
         &mut self,
         unit_name: impl Into<String>,
+        kind: RpcKind,
     ) -> GrpcResult<ObservedTransform> {
-        self.get_transform(unit_name)
+        self.get_transform_for(unit_name, kind)
             .await
             .map(ObservedTransform::now)
     }
@@ -85,18 +96,37 @@ impl UnitClient {
         unit_name: &str,
         argument: u32,
     ) -> GrpcResult<f64> {
-        let value = self
+        self.get_draw_argument_value_with_timeout(unit_name, argument, super::RPC_DEADLINE)
+            .await
+    }
+
+    pub async fn get_draw_argument_value_with_timeout(
+        &mut self,
+        unit_name: &str,
+        argument: u32,
+        timeout: std::time::Duration,
+    ) -> GrpcResult<f64> {
+        let timer = crate::metrics::RUNTIME_METRICS.rpc(RpcKind::Hook);
+        let response = self
             .svc
-            .get_draw_argument_value(request_with_deadline(
+            .get_draw_argument_value(request_with_timeout(
                 unit::v0::GetDrawArgumentValueRequest {
                     name: unit_name.to_string(),
                     argument,
                 },
+                timeout,
             ))
-            .await
-            .map_err(Box::new)?
-            .into_inner()
-            .value;
-        Ok(value)
+            .await;
+        match response {
+            Ok(response) => {
+                timer.success();
+                Ok(response.into_inner().value)
+            }
+            Err(status) if status.code() == tonic::Code::DeadlineExceeded => {
+                timer.timeout();
+                Err(Box::new(status))
+            }
+            Err(status) => Err(Box::new(status)),
+        }
     }
 }

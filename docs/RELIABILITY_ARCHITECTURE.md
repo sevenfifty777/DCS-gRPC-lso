@@ -42,7 +42,8 @@ Three clocks are retained:
 - monotonic `Instant` values for local gaps, watchdogs, deadlines and durations.
 
 Unary RPC and stream-opening requests have a two-second deadline. Connection establishment also has
-a two-second timeout. Active tracking stays at 10 Hz.
+a two-second timeout. Active tracking targets 10 Hz. Hook argument 25 is outside that critical path:
+an independent 4 Hz sampler uses a 300 ms deadline (both configurable within 2-4 Hz and 250-300 ms).
 
 Telemetry alignment is `PROJECT-DERIVED`, version `telemetry-contract-v1`:
 
@@ -51,9 +52,10 @@ Telemetry alignment is `PROJECT-DERIVED`, version `telemetry-contract-v1`:
 | skew <= 100 ms | use both transforms directly |
 | 100 ms < skew <= 300 ms | extrapolate the older position only when the preceding sample was valid and fresh |
 | skew > 300 ms | invalidate the observation |
-| sample/source gap > 300 ms | warn; a gate bracket using it is invalid |
-| gap > 1,000 ms | mark telemetry gap/incomplete; award no points |
-| no successful active telemetry for 2 s | watchdog ends the pass as incomplete |
+| sample/source gap > 300 ms | warn; a gate bracket whose actual endpoints exceed it is invalid |
+| gap > 1,000 ms in a gate/groove | mark scoring telemetry incomplete; award no points |
+| gap > 1,000 ms outside the scored segment | retain a pattern diagnostic without invalidating the grade by itself |
+| no real DCS timestamp advancement for 2 s | watchdog ends the pass as incomplete |
 | supervisor channel silent for 2 s | rotate the supervisor generation |
 
 Extrapolation is position-only (`position += velocity * dt`). It is reset after an RPC failure,
@@ -69,9 +71,11 @@ Each of the 3/4, 1/2 and 1/4 NM gates starts as `Missing` and can become:
 - `Invalid` when the bracket is stale, skewed, reordered, outside the approach phase or invalid;
 - `Valid` only after two valid inbound samples bracket the threshold.
 
-A valid gate is measured when the second sample is within 0.5 m of the threshold, otherwise it is
-linearly interpolated. Its DCS time, effective distance, maximum bracket gap/skew, method, state and
-reason are persisted. The three valid times must be strictly ordered. Zero, one or two valid gates
+A small rolling window selects a valid inbound pair that truly brackets the threshold. Its gap is
+computed exclusively between those two endpoints; an old gap carried by the first endpoint is not
+reused. No pair over 300 ms and no pair spanning a cut is joined. The gate is linearly interpolated,
+and its DCS time, effective distance, bracket gap/skew, method, state and reason are persisted. The
+three valid times must be strictly ordered. Zero, one or two valid gates
 always produce `NC`, no points and no favourable grade.
 
 ## Event and outcome evidence
@@ -87,9 +91,12 @@ A CATOBAR contact without confirmed wire is incomplete and receives no favourabl
 crossing followed by departure without arrest is a bolter. A departure before deck crossing is a
 waveoff with unknown initiator (`WO?`) and no points.
 
-Hook draw argument 25 is sampled through the groove and an explicit final quarter-NM window. Raw
-minimum, maximum and final values are stored. Its polarity is deliberately `unknown` until validated
-per deployed module; it cannot automatically create a touch-and-go or favourable result.
+Hook draw argument 25 is sampled independently through the groove and an explicit final quarter-NM
+window. Raw values, local age, DCS association and success/timeout/error/stale status are stored.
+Only the F/A-18C corpus currently has a calibrated polarity: a stable pre-touch run at 0 means hook
+up and a stable run at 1 means hook down. The classifier uses a three-second window, minimum sample
+count and stability duration. Other modules, including F-14, remain `unknown` pending live proof.
+Unknown or stale data cannot create a certain outcome or favourable result.
 
 For V/STOL, first-contact horizontal speed is retained so future evidence can distinguish VL and
 RVL without inventing a threshold. A contact followed by departure is normalized to a neutral

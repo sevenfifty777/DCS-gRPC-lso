@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::ops::Neg;
 
 use ultraviolet::{DRotor3, DVec3};
@@ -73,6 +74,8 @@ const CARRIER_POS_SMOOTH_ALPHA: f64 = 0.15;
 
 const MAX_TRACK_SAMPLES: usize = 72_000;
 const MAX_EVENT_EVIDENCE: usize = 256;
+const MAX_HOOK_EVIDENCE: usize = 512;
+const GATE_BUFFER_WINDOW_S: f64 = 2.0;
 /// PROJECT-DERIVED provisional observation radius. It is informational only
 /// until the Tarawa spot geometry is validated against the future live corpus.
 const VSTOL_SPOT_OBSERVATION_RADIUS_M: f64 = 15.0;
@@ -148,6 +151,50 @@ impl Default for SpotZoneObservation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookSampleStatus {
+    Success,
+    Timeout,
+    Error,
+    Stale,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct HookSampleEvidence {
+    pub associated_time_dcs: f64,
+    pub observed_unix_ms: u64,
+    pub age_ms: f64,
+    pub raw: Option<f64>,
+    pub status: HookSampleStatus,
+    pub in_groove: bool,
+    pub in_final_window: bool,
+    pub before_touchdown: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct WireCrossingEvidence {
+    pub wire: u8,
+    pub timestamp_dcs: f64,
+    pub bracket_gap_ms: f64,
+    pub method: &'static str,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct WireEstimateEvidence {
+    pub wire: Option<u8>,
+    pub confidence: &'static str,
+    pub reason: &'static str,
+    pub crossings: Vec<WireCrossingEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalibratedHookState {
+    Up,
+    Down,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct HookObservation {
     pub samples_in_groove: u32,
@@ -155,7 +202,13 @@ pub struct HookObservation {
     pub min_raw: Option<f64>,
     pub max_raw: Option<f64>,
     pub final_raw: Option<f64>,
-    /// Polarity is intentionally not interpreted before module/live validation.
+    pub successful_samples: u32,
+    pub timeout_samples: u32,
+    pub error_samples: u32,
+    pub stale_samples: u32,
+    pub interpreted_state: &'static str,
+    pub timeline: Vec<HookSampleEvidence>,
+    /// Calibration is module-specific; unknown modules are never inferred.
     pub polarity: &'static str,
 }
 
@@ -164,7 +217,7 @@ pub struct Track {
     previous_distance: f64,
     previous_x: f64,
     previous_sample_time: Option<f64>,
-    previous_gate_sample: Option<ApproachSample>,
+    gate_samples: VecDeque<ApproachSample>,
     datums: Vec<Datum>,
     pattern_datums: Vec<PatternDatum>,
     gate_deviations: GateDeviations,
@@ -196,6 +249,9 @@ pub struct Track {
     events: Vec<EventEvidence>,
     spot_zone: SpotZoneObservation,
     touchdown_horizontal_speed_mps: Option<f64>,
+    health_red_announced: bool,
+    previous_wire_plane: [Option<(f64, f64)>; 4],
+    wire_crossings: Vec<WireCrossingEvidence>,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -286,16 +342,31 @@ pub enum Completeness {
     InsufficientGates,
     TelemetryGap,
     InvalidTelemetry,
+    UnconfirmedArrest,
     BufferLimit,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelemetryHealth {
+    #[default]
+    Green,
+    Orange,
+    Red,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct TelemetryQuality {
     pub completeness: Completeness,
+    pub health: TelemetryHealth,
+    pub health_reason: &'static str,
     pub max_sample_gap_ms: f64,
     pub max_skew_ms: f64,
     pub warning_samples: u32,
     pub invalid_samples: u32,
+    pub pattern_invalid_samples: u32,
+    pub scoring_invalid_samples: u32,
+    pub max_scoring_sample_gap_ms: f64,
     pub dropped_samples: u32,
     pub reasons: Vec<TelemetryInvalidReason>,
 }
@@ -304,10 +375,15 @@ impl Default for TelemetryQuality {
     fn default() -> Self {
         Self {
             completeness: Completeness::Complete,
+            health: TelemetryHealth::Green,
+            health_reason: "nominal",
             max_sample_gap_ms: 0.0,
             max_skew_ms: 0.0,
             warning_samples: 0,
             invalid_samples: 0,
+            pattern_invalid_samples: 0,
+            scoring_invalid_samples: 0,
+            max_scoring_sample_gap_ms: 0.0,
             dropped_samples: 0,
             reasons: Vec::new(),
         }
@@ -323,7 +399,6 @@ struct ApproachSample {
     valid: bool,
     in_approach: bool,
     lined_up: bool,
-    sample_gap_ms: f64,
     skew_ms: f64,
 }
 
@@ -375,6 +450,7 @@ pub struct TrackResult {
     /// VL/RVL threshold is applied before the live corpus is validated.
     pub touchdown_horizontal_speed_mps: Option<f64>,
     pub hook_observation: HookObservation,
+    pub wire_estimation: WireEstimateEvidence,
 }
 
 impl Track {
@@ -388,7 +464,7 @@ impl Track {
             previous_distance: f64::MAX,
             previous_x: f64::MAX,
             previous_sample_time: None,
-            previous_gate_sample: None,
+            gate_samples: VecDeque::new(),
             datums: Default::default(),
             pattern_datums: Default::default(),
             gate_deviations: GateDeviations::default(),
@@ -404,7 +480,12 @@ impl Track {
             min_distance_state: None,
             smoothed_carrier_pos: None,
             hook_observation: HookObservation {
-                polarity: "unknown_pending_live_validation",
+                polarity: if plane_info.name == "F/A-18C Hornet" {
+                    "fa18c_zero_up_one_down_test_corpus"
+                } else {
+                    "unknown_pending_live_validation"
+                },
+                interpreted_state: "unknown",
                 ..HookObservation::default()
             },
             crossed_deck_threshold: false,
@@ -412,6 +493,9 @@ impl Track {
             events: Vec::new(),
             spot_zone: SpotZoneObservation::default(),
             touchdown_horizontal_speed_mps: None,
+            health_red_announced: false,
+            previous_wire_plane: [None; 4],
+            wire_crossings: Vec::new(),
         }
     }
 
@@ -438,18 +522,31 @@ impl Track {
         if sample.has_warning() {
             self.telemetry_quality.warning_samples += 1;
         }
+        let (health, health_reason) = if sample.invalid_reason.is_some()
+            || sample.sample_gap_ms > crate::telemetry::SAMPLE_GAP_INCOMPLETE_MS
+            || sample.source_age_ms > crate::telemetry::SAMPLE_GAP_INCOMPLETE_MS
+        {
+            (TelemetryHealth::Red, "invalid_or_incomplete_sample")
+        } else if sample.has_warning() {
+            (TelemetryHealth::Orange, "degraded_cadence_or_freshness")
+        } else {
+            (TelemetryHealth::Green, "nominal")
+        };
+        self.telemetry_quality.health = health;
+        self.telemetry_quality.health_reason = health_reason;
+        if health == TelemetryHealth::Red && !self.health_red_announced {
+            tracing::warn!(
+                before_groove = !self.entered_groove,
+                health_reason,
+                "live grading health is red"
+            );
+            self.health_red_announced = true;
+        }
         if let Some(reason) = sample.invalid_reason {
             self.telemetry_quality.invalid_samples += 1;
             if !self.telemetry_quality.reasons.contains(&reason) {
                 self.telemetry_quality.reasons.push(reason);
             }
-            self.telemetry_quality.completeness = match reason {
-                TelemetryInvalidReason::TelemetryGap => Completeness::TelemetryGap,
-                _ if self.telemetry_quality.completeness != Completeness::TelemetryGap => {
-                    Completeness::InvalidTelemetry
-                }
-                _ => self.telemetry_quality.completeness,
-            };
         }
 
         // ---------------------------------------------------------------
@@ -535,23 +632,16 @@ impl Track {
         let is_arrested_recovery = matches!(&self.carrier_info.recovery, CarrierRecovery::Arrested);
         if is_arrested_recovery {
             if let Some(raw) = hook_state.filter(|raw| raw.is_finite()) {
-                self.hook_observation.min_raw = Some(
-                    self.hook_observation
-                        .min_raw
-                        .map_or(raw, |value| value.min(raw)),
+                self.observe_hook_sample(
+                    plane.time,
+                    sample.plane_received_unix_ms,
+                    0.0,
+                    Some(raw),
+                    HookSampleStatus::Success,
                 );
-                self.hook_observation.max_raw = Some(
-                    self.hook_observation
-                        .max_raw
-                        .map_or(raw, |value| value.max(raw)),
-                );
-                if self.entered_groove {
-                    self.hook_observation.samples_in_groove += 1;
-                }
-                if self.entered_groove && distance <= GATE_QUARTER_NM {
-                    self.hook_observation.samples_in_final_window += 1;
-                    self.hook_observation.final_raw = Some(raw);
-                }
+            }
+            if sample.is_valid() {
+                self.observe_wire_crossings(carrier, plane, sample.sample_gap_ms);
             }
         }
 
@@ -574,6 +664,17 @@ impl Track {
                         });
                         return false;
                     }
+                    if self.calibrated_hook_state() == CalibratedHookState::Up {
+                        let cable_estimated = match self.grading.as_ref() {
+                            Some(Grading::Recovered {
+                                cable_estimated, ..
+                            }) => *cable_estimated,
+                            _ => None,
+                        };
+                        tracing::debug!("qualification touch-and-go detected");
+                        self.grading = Some(Grading::TouchAndGo { cable_estimated });
+                        return false;
+                    }
                     // Landed and now moving away → normal bolter.
                     tracing::debug!(distance_in_m = distance, "bolter detected");
                     self.grading = Some(Grading::Bolter);
@@ -592,6 +693,12 @@ impl Track {
                     // arguments are retained as raw evidence but not interpreted
                     // until polarity is validated for the deployed modules.
                     if self.crossed_deck_threshold && self.min_distance_state.is_some() {
+                        if self.calibrated_hook_state() == CalibratedHookState::Up {
+                            let cable_estimated = self.wire_estimate_at(plane.time).wire;
+                            tracing::debug!("qualification touch-and-go detected");
+                            self.grading = Some(Grading::TouchAndGo { cable_estimated });
+                            return false;
+                        }
                         tracing::debug!(
                             distance_in_m = distance,
                             "bolter detected (deck crossing, no arrest)"
@@ -657,6 +764,29 @@ impl Track {
             }
         };
 
+        let scoring_relevant =
+            self.entered_groove || (x > 0.0 && x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 500.0);
+        if scoring_relevant {
+            self.telemetry_quality.max_scoring_sample_gap_ms = self
+                .telemetry_quality
+                .max_scoring_sample_gap_ms
+                .max(sample.sample_gap_ms.max(sample.source_age_ms));
+        }
+        if let Some(reason) = sample.invalid_reason {
+            if scoring_relevant {
+                self.telemetry_quality.scoring_invalid_samples += 1;
+                self.telemetry_quality.completeness = match reason {
+                    TelemetryInvalidReason::TelemetryGap => Completeness::TelemetryGap,
+                    _ if self.telemetry_quality.completeness != Completeness::TelemetryGap => {
+                        Completeness::InvalidTelemetry
+                    }
+                    _ => self.telemetry_quality.completeness,
+                };
+            } else {
+                self.telemetry_quality.pattern_invalid_samples += 1;
+            }
+        }
+
         // Gate sampling and groove entry only apply when the aircraft is on the approach side of
         // the threshold (x > 0).  When x ≤ 0 the aircraft is ahead of the touchdown point
         // (e.g., still in the break or flying the overhead pattern), and atan2 with a negative x
@@ -713,39 +843,10 @@ impl Track {
                 valid: sample.is_valid() && is_inbound,
                 in_approach,
                 lined_up: gate_lined_up,
-                sample_gap_ms: sample.sample_gap_ms.max(sample.source_age_ms),
                 skew_ms: sample.skew_ms,
             };
 
-            if let Some(previous) = self.previous_gate_sample.as_ref() {
-                capture_gate(
-                    previous,
-                    &current,
-                    GATE_THREE_QUARTER_NM,
-                    ideal_base_alt,
-                    self.plane_info.glide_slope,
-                    &mut self.gate_deviations.at_three_quarter_nm,
-                    &mut self.gate_deviations.three_quarter_quality,
-                );
-                capture_gate(
-                    previous,
-                    &current,
-                    GATE_HALF_NM,
-                    ideal_base_alt,
-                    self.plane_info.glide_slope,
-                    &mut self.gate_deviations.at_half_nm,
-                    &mut self.gate_deviations.half_quality,
-                );
-                capture_gate(
-                    previous,
-                    &current,
-                    GATE_QUARTER_NM,
-                    ideal_base_alt,
-                    self.plane_info.glide_slope,
-                    &mut self.gate_deviations.at_quarter_nm,
-                    &mut self.gate_deviations.quarter_quality,
-                );
-            } else {
+            if self.gate_samples.is_empty() {
                 mark_started_inside(
                     x,
                     GATE_THREE_QUARTER_NM,
@@ -757,6 +858,42 @@ impl Track {
                     GATE_QUARTER_NM,
                     &mut self.gate_deviations.quarter_quality,
                 );
+            } else {
+                capture_gate_from_window(
+                    &self.gate_samples,
+                    &current,
+                    GATE_THREE_QUARTER_NM,
+                    ideal_base_alt,
+                    self.plane_info.glide_slope,
+                    &mut self.gate_deviations.at_three_quarter_nm,
+                    &mut self.gate_deviations.three_quarter_quality,
+                );
+                capture_gate_from_window(
+                    &self.gate_samples,
+                    &current,
+                    GATE_HALF_NM,
+                    ideal_base_alt,
+                    self.plane_info.glide_slope,
+                    &mut self.gate_deviations.at_half_nm,
+                    &mut self.gate_deviations.half_quality,
+                );
+                capture_gate_from_window(
+                    &self.gate_samples,
+                    &current,
+                    GATE_QUARTER_NM,
+                    ideal_base_alt,
+                    self.plane_info.glide_slope,
+                    &mut self.gate_deviations.at_quarter_nm,
+                    &mut self.gate_deviations.quarter_quality,
+                );
+            }
+            self.gate_samples.push_back(current);
+            while self
+                .gate_samples
+                .front()
+                .is_some_and(|sample| plane.time - sample.time > GATE_BUFFER_WINDOW_S)
+            {
+                self.gate_samples.pop_front();
             }
             self.previous_gate_sample = Some(current);
 
@@ -909,7 +1046,7 @@ impl Track {
         }
 
         let cable = match &self.carrier_info.recovery {
-            CarrierRecovery::Arrested => self.estimate_cable(carrier, plane),
+            CarrierRecovery::Arrested => self.wire_estimate_at(plane.time).wire,
             CarrierRecovery::Vstol { .. } => None,
         };
         if !matches!(self.grading, Some(Grading::Recovered { .. })) {
@@ -935,6 +1072,12 @@ impl Track {
         if self.grading.is_none() && self.entered_groove {
             self.grading = Some(Grading::WaveoffUnknown);
         }
+
+        let wire_estimation = self.wire_estimate_at(
+            self.landing_time
+                .or_else(|| self.datums.last().map(|datum| datum.time))
+                .unwrap_or_default(),
+        );
 
         // If DCS grading is set, use its reported wire for arrested recoveries only.
         let grading = if matches!(&self.carrier_info.recovery, CarrierRecovery::Arrested) {
@@ -1003,7 +1146,7 @@ impl Track {
             // RunwayTouch/Land prove contact, not an arrest. Until sustained
             // kinematics or a DCS wire/LQM confirms the trap, the pass cannot
             // receive a favourable grade.
-            self.telemetry_quality.completeness = Completeness::InvalidTelemetry;
+            self.telemetry_quality.completeness = Completeness::UnconfirmedArrest;
         }
         if self.telemetry_quality.completeness != Completeness::Complete {
             pass_grade = PassGrade::Incomplete;
@@ -1033,6 +1176,7 @@ impl Track {
             spot_zone: self.spot_zone,
             touchdown_horizontal_speed_mps: self.touchdown_horizontal_speed_mps,
             hook_observation: self.hook_observation,
+            wire_estimation,
         }
     }
 
@@ -1046,52 +1190,218 @@ impl Track {
         }
     }
 
-    fn estimate_cable(&self, carrier: &Transform, plane: &Transform) -> Option<u8> {
+    fn observe_wire_crossings(
+        &mut self,
+        carrier: &Transform,
+        plane: &Transform,
+        bracket_gap_ms: f64,
+    ) {
         let hook_offset = self.plane_info.hook.rotated_by(plane.rotation);
-        let touchdown = plane.position + hook_offset;
+        let hook = plane.position + hook_offset;
         let forward = carrier.forward.rotated_by(DRotor3::from_rotation_xz(
             -self.carrier_info.deck_angle.to_radians(),
         ));
-
-        // The land event fires slightly after the wire is caught, so the hook has already
-        // passed the wire. Move the touchdown 3.0 m forward to compensate.
-        let touchdown = touchdown + (forward * 3.0);
 
         [
             (1, &self.carrier_info.cable1),
             (2, &self.carrier_info.cable2),
             (3, &self.carrier_info.cable3),
             (4, &self.carrier_info.cable4),
-        ]
-        .into_iter()
-        .map(|(nr, pendants)| {
-            // Calculate the mid position between both cable pendants:
-            // o-----------o
-            //       ^
-            //       |
-            let mid_cable = (pendants.0 - pendants.1) / 2.0;
-            let mid_cable = pendants.0 - mid_cable;
-            let mid_cable = carrier.position + mid_cable.rotated_by(carrier.rotation);
+        ];
+        for (index, (wire, pendants)) in cables.into_iter().enumerate() {
+            let left = carrier.position + pendants.0.rotated_by(carrier.rotation);
+            let right = carrier.position + pendants.1.rotated_by(carrier.rotation);
+            let midpoint = (left + right) / 2.0;
+            let signed_distance = (hook - midpoint).dot(forward);
+            if let Some((previous_distance, previous_time)) = self.previous_wire_plane[index] {
+                if previous_distance < 0.0
+                    && signed_distance >= 0.0
+                    && plane.time > previous_time
+                    && !self
+                        .wire_crossings
+                        .iter()
+                        .any(|crossing| crossing.wire == wire)
+                {
+                    let ratio = (-previous_distance / (signed_distance - previous_distance))
+                        .clamp(0.0, 1.0);
+                    self.wire_crossings.push(WireCrossingEvidence {
+                        wire,
+                        timestamp_dcs: previous_time + (plane.time - previous_time) * ratio,
+                        bracket_gap_ms,
+                        method: "hook_plane_crossing",
+                    });
+                }
+            }
+            self.previous_wire_plane[index] = Some((signed_distance, plane.time));
+        }
+    }
 
-            (nr, mid_cable)
-        })
-        .map(|(nr, mid_cable)| {
-            let ray_to_cable = touchdown - mid_cable;
-            tracing::trace!(
-                cable = nr,
-                distance = ray_to_cable.mag(),
-                dot = ray_to_cable.dot(forward),
-                "cable candidate"
-            );
-            (nr, ray_to_cable.mag_sq())
-        })
-        .min_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(nr, _)| nr)
+    fn wire_estimate_at(&self, event_time: f64) -> WireEstimateEvidence {
+        let mut eligible = self
+            .wire_crossings
+            .iter()
+            .filter(|crossing| {
+                crossing.timestamp_dcs <= event_time
+                    && crossing.bracket_gap_ms <= SAMPLE_GAP_WARNING_MS
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        eligible.sort_by(|left, right| left.timestamp_dcs.total_cmp(&right.timestamp_dcs));
+        tracing::debug!(event_time, crossings = ?eligible, "wire crossing evidence at event");
+        let Some(last) = eligible.last() else {
+            return WireEstimateEvidence {
+                wire: None,
+                confidence: "insufficient",
+                reason: "no_fresh_hook_plane_crossing",
+                crossings: self.wire_crossings.clone(),
+            };
+        };
+        let event_lag_ms = (event_time - last.timestamp_dcs) * 1_000.0;
+        // A late RunwayTouch position is not moved backwards by a magic offset.
+        // If the event does not closely correlate with a continuously observed
+        // crossing, keep every crossing as evidence but decline to name a wire.
+        if !(0.0..=SAMPLE_GAP_WARNING_MS).contains(&event_lag_ms) {
+            return WireEstimateEvidence {
+                wire: None,
+                confidence: "insufficient",
+                reason: "wire_crossing_not_time_correlated_with_event",
+                crossings: self.wire_crossings.clone(),
+            };
+        }
+        WireEstimateEvidence {
+            wire: Some(last.wire),
+            confidence: if last.bracket_gap_ms <= 150.0 && event_lag_ms <= 150.0 {
+                "high"
+            } else {
+                "medium"
+            },
+            reason: "continuous_hook_plane_crossing",
+            crossings: self.wire_crossings.clone(),
+        }
+    }
+
+    pub fn observe_hook_sample(
+        &mut self,
+        associated_time_dcs: f64,
+        observed_unix_ms: u64,
+        age_ms: f64,
+        raw: Option<f64>,
+        status: HookSampleStatus,
+    ) {
+        if !matches!(self.carrier_info.recovery, CarrierRecovery::Arrested) {
+            return;
+        }
+        let in_groove = self.entered_groove;
+        let in_final_window = in_groove && self.previous_x <= GATE_QUARTER_NM;
+        let before_touchdown = self.landing_time.is_none();
+        match status {
+            HookSampleStatus::Success => self.hook_observation.successful_samples += 1,
+            HookSampleStatus::Timeout => self.hook_observation.timeout_samples += 1,
+            HookSampleStatus::Error => self.hook_observation.error_samples += 1,
+            HookSampleStatus::Stale => self.hook_observation.stale_samples += 1,
+        }
+
+        if status == HookSampleStatus::Success {
+            if let Some(raw) = raw.filter(|value| value.is_finite()) {
+                self.hook_observation.min_raw = Some(
+                    self.hook_observation
+                        .min_raw
+                        .map_or(raw, |value| value.min(raw)),
+                );
+                self.hook_observation.max_raw = Some(
+                    self.hook_observation
+                        .max_raw
+                        .map_or(raw, |value| value.max(raw)),
+                );
+                if in_groove {
+                    self.hook_observation.samples_in_groove += 1;
+                }
+                if in_final_window {
+                    self.hook_observation.samples_in_final_window += 1;
+                    self.hook_observation.final_raw = Some(raw);
+                }
+            }
+        }
+
+        if self.hook_observation.timeline.len() < MAX_HOOK_EVIDENCE {
+            self.hook_observation.timeline.push(HookSampleEvidence {
+                associated_time_dcs,
+                observed_unix_ms,
+                age_ms,
+                raw,
+                status,
+                in_groove,
+                in_final_window,
+                before_touchdown,
+            });
+        } else {
+            self.telemetry_quality.dropped_samples += 1;
+            self.telemetry_quality.completeness = Completeness::BufferLimit;
+        }
+        self.hook_observation.interpreted_state = match self.calibrated_hook_state() {
+            CalibratedHookState::Up => "up",
+            CalibratedHookState::Down => "down",
+            CalibratedHookState::Unknown => "unknown",
+        };
+    }
+
+    fn calibrated_hook_state(&self) -> CalibratedHookState {
+        if self.plane_info.name != "F/A-18C Hornet" {
+            return CalibratedHookState::Unknown;
+        }
+        let valid = self
+            .hook_observation
+            .timeline
+            .iter()
+            .filter(|sample| {
+                sample.status == HookSampleStatus::Success
+                    && sample.in_final_window
+                    && sample.before_touchdown
+            })
+            .collect::<Vec<_>>();
+        let Some(latest) = valid.last() else {
+            return CalibratedHookState::Unknown;
+        };
+        let latest_state = match latest.raw {
+            Some(raw) if raw <= 0.2 => CalibratedHookState::Up,
+            Some(raw) if raw >= 0.8 => CalibratedHookState::Down,
+            _ => return CalibratedHookState::Unknown,
+        };
+        let recent_start = latest.associated_time_dcs - 3.0;
+        let stable = valid
+            .iter()
+            .rev()
+            .take_while(|sample| sample.associated_time_dcs >= recent_start)
+            .take_while(|sample| match (latest_state, sample.raw) {
+                (CalibratedHookState::Up, Some(raw)) => raw <= 0.2,
+                (CalibratedHookState::Down, Some(raw)) => raw >= 0.8,
+                _ => false,
+            })
+            .collect::<Vec<_>>();
+        let duration = stable.last().map_or(0.0, |first| {
+            latest.associated_time_dcs - first.associated_time_dcs
+        });
+        match latest_state {
+            CalibratedHookState::Down if stable.len() >= 2 && duration >= 0.2 => {
+                CalibratedHookState::Down
+            }
+            CalibratedHookState::Up if stable.len() >= 3 && duration >= 0.4 => {
+                CalibratedHookState::Up
+            }
+            _ => CalibratedHookState::Unknown,
+        }
     }
 
     pub fn mark_telemetry_gap(&mut self, reason: TelemetryInvalidReason) {
         self.telemetry_quality.invalid_samples += 1;
-        self.telemetry_quality.completeness = Completeness::TelemetryGap;
+        if self.entered_groove
+            || (self.previous_x > 0.0 && self.previous_x <= GATE_THREE_QUARTER_NM)
+        {
+            self.telemetry_quality.scoring_invalid_samples += 1;
+            self.telemetry_quality.completeness = Completeness::TelemetryGap;
+        } else {
+            self.telemetry_quality.pattern_invalid_samples += 1;
+        }
         if !self.telemetry_quality.reasons.contains(&reason) {
             self.telemetry_quality.reasons.push(reason);
         }
@@ -1154,6 +1464,44 @@ fn mark_started_inside(x: f64, gate: f64, quality: &mut GateQuality) {
     }
 }
 
+fn capture_gate_from_window(
+    samples: &VecDeque<ApproachSample>,
+    current: &ApproachSample,
+    gate: f64,
+    ideal_base_alt: f64,
+    glide_slope_deg: f64,
+    datum: &mut Option<GateDatum>,
+    quality: &mut GateQuality,
+) {
+    if datum.is_some() || quality.status == GateStatus::Valid || current.x > gate {
+        return;
+    }
+
+    let mut best_failure = None;
+    for previous in samples.iter().rev().filter(|sample| sample.x > gate) {
+        let mut candidate = None;
+        let mut candidate_quality = GateQuality::default();
+        capture_gate(
+            previous,
+            current,
+            gate,
+            ideal_base_alt,
+            glide_slope_deg,
+            &mut candidate,
+            &mut candidate_quality,
+        );
+        if candidate_quality.status == GateStatus::Valid {
+            *datum = candidate;
+            *quality = candidate_quality;
+            return;
+        }
+        best_failure.get_or_insert(candidate_quality);
+    }
+    if let Some(failure) = best_failure {
+        *quality = failure;
+    }
+}
+
 fn capture_gate(
     previous: &ApproachSample,
     current: &ApproachSample,
@@ -1179,7 +1527,8 @@ fn capture_gate(
         quality.reason = Some("non_monotonic_gate_bracket".to_string());
         return;
     }
-    if previous.sample_gap_ms.max(current.sample_gap_ms) > SAMPLE_GAP_WARNING_MS {
+    let bracket_gap_ms = (current.time - previous.time) * 1_000.0;
+    if bracket_gap_ms > SAMPLE_GAP_WARNING_MS {
         quality.status = GateStatus::Invalid;
         quality.reason = Some("stale_gate_bracket".to_string());
         return;
@@ -1213,7 +1562,7 @@ fn capture_gate(
     let timestamp_dcs = interpolate(previous.time, current.time);
     let ideal_alt = ideal_base_alt + gate * glide_slope_deg.to_radians().tan();
     let gs_deviation_m = alt - ideal_alt;
-    let sample_gap_ms = previous.sample_gap_ms.max(current.sample_gap_ms);
+    let sample_gap_ms = bracket_gap_ms;
     let skew_ms = previous.skew_ms.max(current.skew_ms);
 
     *datum = Some(GateDatum {
@@ -1268,7 +1617,6 @@ mod tests {
             valid: true,
             in_approach: true,
             lined_up: true,
-            sample_gap_ms: 100.0,
             skew_ms: 0.0,
         }
     }
@@ -1297,7 +1645,7 @@ mod tests {
     #[test]
     fn gate_requires_two_valid_bracketing_samples_and_interpolates() {
         let previous = approach_sample(10.0, 1_000.0);
-        let current = approach_sample(11.0, 900.0);
+        let current = approach_sample(10.1, 900.0);
         let mut datum = None;
         let mut quality = GateQuality::default();
 
@@ -1315,7 +1663,7 @@ mod tests {
         assert_eq!(quality.status, GateStatus::Valid);
         assert_eq!(datum.method, GateCaptureMethod::Interpolated);
         assert_eq!(datum.distance_m, GATE_HALF_NM);
-        assert!((datum.timestamp_dcs - 10.74).abs() < 1.0e-9);
+        assert!((datum.timestamp_dcs - 10.074).abs() < 1.0e-9);
     }
 
     #[test]
@@ -1327,7 +1675,7 @@ mod tests {
         let mut datum = None;
         capture_gate(
             &approach_sample(1.0, 1_000.0),
-            &approach_sample(2.0, 900.0),
+            &approach_sample(1.1, 900.0),
             GATE_HALF_NM,
             0.0,
             3.5,
@@ -1343,14 +1691,13 @@ mod tests {
     #[test]
     fn stale_skewed_or_reordered_gate_brackets_are_invalid() {
         let cases = [
-            (400.0, 0.0, 2.0, "stale_gate_bracket"),
-            (100.0, 301.0, 2.0, "excessive_skew_at_gate"),
-            (100.0, 0.0, 0.5, "non_monotonic_gate_bracket"),
+            (0.0, 1.4, "stale_gate_bracket"),
+            (301.0, 1.1, "excessive_skew_at_gate"),
+            (0.0, 0.5, "non_monotonic_gate_bracket"),
         ];
-        for (gap, skew, current_time, reason) in cases {
+        for (skew, current_time, reason) in cases {
             let previous = approach_sample(1.0, 1_000.0);
             let mut current = approach_sample(current_time, 900.0);
-            current.sample_gap_ms = gap;
             current.skew_ms = skew;
             let mut datum = None;
             let mut quality = GateQuality::default();
@@ -1370,6 +1717,41 @@ mod tests {
     }
 
     #[test]
+    fn corpus_false_gate_rejections_use_only_the_real_endpoints() {
+        // Exact endpoint intervals observed at 14:19:14 (1/2), 14:22:09
+        // (1/2) and 16:31:37 (3/4), after older 591/689/421 ms gaps.
+        for (gate_distance, old_gap_ms, endpoint_gap_ms) in [
+            (GATE_HALF_NM, 591.0, 90.0),
+            (GATE_HALF_NM, 689.0, 60.0),
+            (GATE_THREE_QUARTER_NM, 421.0, 60.0),
+        ] {
+            let first_time = 1.0;
+            let outside_time = first_time + old_gap_ms / 1_000.0;
+            let samples = VecDeque::from([
+                approach_sample(first_time, gate_distance + 200.0),
+                approach_sample(outside_time, gate_distance + 50.0),
+            ]);
+            let current = approach_sample(
+                outside_time + endpoint_gap_ms / 1_000.0,
+                gate_distance - 50.0,
+            );
+            let mut datum = None;
+            let mut quality = GateQuality::default();
+            capture_gate_from_window(
+                &samples,
+                &current,
+                gate_distance,
+                0.0,
+                3.5,
+                &mut datum,
+                &mut quality,
+            );
+            assert_eq!(quality.status, GateStatus::Valid);
+            assert!((datum.expect("gate").sample_gap_ms - endpoint_gap_ms).abs() < 0.001);
+        }
+    }
+
+    #[test]
     fn zero_one_or_two_gates_are_incomplete_and_three_ordered_gates_are_valid() {
         let mut gates = GateDeviations::default();
         assert!(!gates.all_valid());
@@ -1384,6 +1766,58 @@ mod tests {
         assert!(gates.all_valid());
         gates.at_quarter_nm.as_mut().unwrap().timestamp_dcs = 1.5;
         assert!(!gates.all_valid());
+    }
+
+    #[test]
+    fn telemetry_gap_only_invalidates_the_scored_segment() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+
+        let mut pattern = Track::new("pilot", carrier, plane);
+        pattern.previous_x = GATE_THREE_QUARTER_NM + 500.0;
+        pattern.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
+        assert_eq!(
+            pattern.telemetry_quality.completeness,
+            Completeness::Complete
+        );
+        assert_eq!(pattern.telemetry_quality.pattern_invalid_samples, 1);
+        assert_eq!(pattern.telemetry_quality.scoring_invalid_samples, 0);
+
+        let mut groove = Track::new("pilot", carrier, plane);
+        groove.entered_groove = true;
+        groove.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
+        assert_eq!(
+            groove.telemetry_quality.completeness,
+            Completeness::TelemetryGap
+        );
+        assert_eq!(groove.telemetry_quality.scoring_invalid_samples, 1);
+    }
+
+    #[test]
+    fn touchdown_without_arrest_confirmation_is_explicitly_unavailable() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(1.0)),
+            at_half_nm: Some(gate(2.0)),
+            at_quarter_nm: Some(gate(3.0)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
+        track.grading = Some(Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        });
+
+        let result = track.finish();
+        assert_eq!(
+            result.telemetry_quality.completeness,
+            Completeness::UnconfirmedArrest
+        );
+        assert_eq!(result.pass_grade, PassGrade::Incomplete);
+        assert_eq!(result.grade_points, None);
     }
 
     #[test]
@@ -1507,16 +1941,62 @@ mod tests {
             let midpoint = (carrier_info.cable3.0 + carrier_info.cable3.1) / 2.0;
             let midpoint_world = midpoint.rotated_by(carrier.rotation);
             let plane_rotation = carrier.rotation;
-            let plane = Transform {
-                position: midpoint_world
-                    - plane_info.hook.rotated_by(plane_rotation)
-                    - forward * 3.0,
+            let hook_offset = plane_info.hook.rotated_by(plane_rotation);
+            let mut track = Track::new("pilot", carrier_info, plane_info);
+            let before = Transform {
+                position: midpoint_world - hook_offset - forward,
                 rotation: plane_rotation,
+                time: 1.0,
                 ..Transform::default()
             };
-            let track = Track::new("pilot", carrier_info, plane_info);
-            assert_eq!(track.estimate_cable(&carrier, &plane), Some(3));
+            let after = Transform {
+                position: midpoint_world - hook_offset + forward,
+                rotation: plane_rotation,
+                time: 1.1,
+                ..Transform::default()
+            };
+            track.observe_wire_crossings(&carrier, &before, 100.0);
+            track.observe_wire_crossings(&carrier, &after, 100.0);
+            assert_eq!(track.wire_estimate_at(1.1).wire, Some(3));
         }
+    }
+
+    #[test]
+    fn late_touch_event_does_not_turn_an_old_crossing_into_a_wire() {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let carrier = Transform {
+            forward: DVec3::unit_z(),
+            ..Transform::default()
+        };
+        let midpoint = (carrier_info.cable3.0 + carrier_info.cable3.1) / 2.0;
+        let hook_offset = plane_info.hook;
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        track.observe_wire_crossings(
+            &carrier,
+            &Transform {
+                position: midpoint - hook_offset - DVec3::unit_z(),
+                time: 1.0,
+                ..Transform::default()
+            },
+            100.0,
+        );
+        track.observe_wire_crossings(
+            &carrier,
+            &Transform {
+                position: midpoint - hook_offset + DVec3::unit_z(),
+                time: 1.1,
+                ..Transform::default()
+            },
+            100.0,
+        );
+
+        let estimate = track.wire_estimate_at(2.0);
+        assert_eq!(estimate.wire, None);
+        assert_eq!(
+            estimate.reason,
+            "wire_crossing_not_time_correlated_with_event"
+        );
     }
 
     #[test]
@@ -1595,5 +2075,75 @@ mod tests {
             normalize_grading_for_recovery(grading, &recovery),
             Grading::WaveoffUnknown
         );
+    }
+
+    #[test]
+    fn fa18_hook_calibration_uses_stable_final_window_evidence() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let hornet = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut touch_and_go = Track::new("pilot", carrier, hornet);
+        touch_and_go.entered_groove = true;
+        touch_and_go.previous_x = 400.0;
+        for index in 0..4 {
+            touch_and_go.observe_hook_sample(
+                10.0 + index as f64 * 0.25,
+                index,
+                0.0,
+                Some(0.0),
+                HookSampleStatus::Success,
+            );
+        }
+        assert_eq!(
+            touch_and_go.calibrated_hook_state(),
+            CalibratedHookState::Up
+        );
+        touch_and_go.landing_time = Some(11.0);
+        for index in 0..3 {
+            touch_and_go.observe_hook_sample(
+                11.0 + index as f64 * 0.25,
+                10 + index,
+                0.0,
+                Some(1.0),
+                HookSampleStatus::Success,
+            );
+        }
+        assert_eq!(
+            touch_and_go.calibrated_hook_state(),
+            CalibratedHookState::Up,
+            "post-touch samples must not rewrite the pre-touch CQ evidence"
+        );
+
+        let mut arrested = Track::new("pilot", carrier, hornet);
+        arrested.entered_groove = true;
+        arrested.previous_x = 400.0;
+        for (index, raw) in [0.0, 1.0, 1.0].into_iter().enumerate() {
+            arrested.observe_hook_sample(
+                20.0 + index as f64 * 0.25,
+                index as u64,
+                0.0,
+                Some(raw),
+                HookSampleStatus::Success,
+            );
+        }
+        assert_eq!(arrested.calibrated_hook_state(), CalibratedHookState::Down);
+    }
+
+    #[test]
+    fn uncalibrated_f14_hook_values_remain_unknown() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let tomcat = AirplaneInfo::by_type("F-14B").unwrap();
+        let mut track = Track::new("pilot", carrier, tomcat);
+        track.entered_groove = true;
+        track.previous_x = 400.0;
+        for index in 0..4 {
+            track.observe_hook_sample(
+                10.0 + index as f64 * 0.25,
+                index,
+                0.0,
+                Some(0.0),
+                HookSampleStatus::Success,
+            );
+        }
+        assert_eq!(track.calibrated_hook_state(), CalibratedHookState::Unknown);
     }
 }

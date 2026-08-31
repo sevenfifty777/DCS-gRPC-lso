@@ -17,9 +17,13 @@ pub const RPC_DEADLINE: Duration = Duration::from_secs(2);
 pub type GrpcResult<T> = Result<T, Box<Status>>;
 
 pub(crate) fn request_with_deadline<T>(message: T) -> Request<T> {
+    request_with_timeout(message, RPC_DEADLINE)
+}
+
+pub(crate) fn request_with_timeout<T>(message: T, timeout: Duration) -> Request<T> {
     crate::metrics::RUNTIME_METRICS.count_rpc();
     let mut request = Request::new(message);
-    request.set_timeout(RPC_DEADLINE);
+    request.set_timeout(timeout);
     request
 }
 

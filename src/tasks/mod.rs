@@ -19,6 +19,19 @@ pub enum PilotKind {
     Ai,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookSamplingMode {
+    Independent,
+    LegacyInline,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct HookSamplingConfig {
+    pub mode: HookSamplingMode,
+    pub frequency_hz: u64,
+    pub timeout: std::time::Duration,
+}
+
 /// Record of a single completed recovery attempt, accumulated for the greenie board.
 #[derive(Debug, Clone)]
 pub struct CompletedPass {
@@ -52,6 +65,7 @@ pub struct TaskParams<'a> {
     pub out_dir: &'a Path,
     pub discord_webhook: Option<String>,
     pub record_acmi: bool,
+    pub hook_sampling: HookSamplingConfig,
     pub users: Arc<HashMap<String, u64>>,
     pub ch: Channel,
     pub carrier_id: u32,
@@ -75,4 +89,5 @@ pub struct TaskParams<'a> {
     pub db: SharedDb,
     pub session_id: i64,
     pub generation: u64,
+    pub dcs_grpc_version: &'a str,
 }

@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::db::{RecoveryDb, SharedDb};
-use crate::tasks::{PilotKind, SessionLog, TaskParams};
+use crate::tasks::{HookSamplingConfig, HookSamplingMode, PilotKind, SessionLog, TaskParams};
 use crate::utils::shutdown::ShutdownHandle;
 use backoff::ExponentialBackoff;
 use futures_util::future::select;
@@ -51,6 +51,18 @@ pub struct Opts {
     /// Disable saving of TacView ACMI files (PNG chart and JSON report are still saved).
     #[clap(long = "no-acmi")]
     no_acmi: bool,
+
+    /// Hook draw-argument polling rate used by the independent sampler.
+    #[clap(long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(2..=4))]
+    hook_sampling_hz: u64,
+
+    /// Timeout for one hook draw-argument RPC.
+    #[clap(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(250..=300))]
+    hook_timeout_ms: u64,
+
+    /// A/B diagnostic mode: restore the old blocking hook read on every position tick.
+    #[clap(long)]
+    legacy_inline_hook_sampling: bool,
 
     /// Port to serve the web greenie board on (e.g. 8080). Disabled if not specified.
     #[clap(long)]
@@ -162,10 +174,16 @@ async fn run(
     let mut mission_svc = MissionServiceClient::new(channel.clone());
     let mut mission_client = crate::client::MissionClient::new(channel.clone());
     let mut metadata_client = crate::client::MetadataClient::new(channel.clone());
-    match metadata_client.get_version().await {
-        Ok(version) => tracing::info!(%version, "DCS-gRPC server version reported"),
-        Err(err) => tracing::warn!(?err, "DCS-gRPC server version unavailable"),
-    }
+    let dcs_grpc_version = match metadata_client.get_version().await {
+        Ok(version) => {
+            tracing::info!(%version, "DCS-gRPC server version reported");
+            version
+        }
+        Err(err) => {
+            tracing::warn!(?err, "DCS-gRPC server version unavailable");
+            "unknown".to_string()
+        }
+    };
     let session_id = match mission_client.get_session_id().await {
         Ok(id) => id,
         Err(err) => {
@@ -266,9 +284,19 @@ async fn run(
 
     let discord_webhook = opts.discord_webhook.clone();
     let record_acmi = !opts.no_acmi;
+    let hook_sampling = HookSamplingConfig {
+        mode: if opts.legacy_inline_hook_sampling {
+            HookSamplingMode::LegacyInline
+        } else {
+            HookSamplingMode::Independent
+        },
+        frequency_hz: opts.hook_sampling_hz,
+        timeout: Duration::from_millis(opts.hook_timeout_ms),
+    };
     let active_tasks2 = active_tasks.clone();
     let session_channel = channel.clone();
     let session_shutdown = shutdown_handle.clone();
+    let dcs_grpc_version = dcs_grpc_version.clone();
     let spawn_detect_recovery_attempt =
         move |carrier_id: u32,
               carrier_name: String,
@@ -289,17 +317,20 @@ async fn run(
             let out_dir = out_dir.clone();
             let discord_webhook = discord_webhook.clone();
             let record_acmi = record_acmi;
+            let hook_sampling = hook_sampling;
             let users = users.clone();
             let channel = channel.clone();
             let shutdown_handle = shutdown_handle.clone();
             let session_log = session_log.clone();
             let db = db.clone();
+            let dcs_grpc_version = dcs_grpc_version.clone();
             let handle = tokio::spawn(async move {
                 if let Err(err) =
                     crate::tasks::detect_recovery_attempt::detect_recovery_attempt(TaskParams {
                         out_dir: &out_dir,
                         discord_webhook,
                         record_acmi,
+                        hook_sampling,
                         users,
                         ch: channel,
                         carrier_id,
@@ -319,6 +350,7 @@ async fn run(
                         db,
                         session_id,
                         generation,
+                        dcs_grpc_version: &dcs_grpc_version,
                     })
                     .await
                 {
@@ -721,6 +753,7 @@ fn print_greenie_board(session_log: &SessionLog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use stubs::net::v0::get_players_response::GetPlayerInfo;
 
     fn unit(id: u32, name: &str, player_name: Option<&str>) -> common::v0::Unit {
@@ -800,5 +833,23 @@ mod tests {
 
         assert_eq!(first.pilot_identity, second.pilot_identity);
         assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn no_acmi_and_hook_ab_configuration_are_accepted() {
+        let opts = Opts::try_parse_from([
+            "lso-run",
+            "--no-acmi",
+            "--hook-sampling-hz",
+            "2",
+            "--hook-timeout-ms",
+            "250",
+            "--legacy-inline-hook-sampling",
+        ])
+        .expect("valid run options");
+        assert!(opts.no_acmi);
+        assert_eq!(opts.hook_sampling_hz, 2);
+        assert_eq!(opts.hook_timeout_ms, 250);
+        assert!(opts.legacy_inline_hook_sampling);
     }
 }
