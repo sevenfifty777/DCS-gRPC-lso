@@ -36,11 +36,10 @@ zip = "2.2"
 
 [dependencies.stubs]
 package = "dcs-grpc-stubs"
-path = "../../../stubs"
+git = "https://github.com/sevenfifty777/rust-server.git"
+tag = "v0.9.1"
 features = ["client"]
 
 [dev-dependencies]
 tracing-test = "0.2"
 
-# Keep this copied analysis checkout independent from the enclosing rust-server workspace.
-[workspace]
