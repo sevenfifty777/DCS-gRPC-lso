@@ -83,6 +83,23 @@ gaps and valid gates. `--no-acmi` is deliberate: ACMI availability is not part o
 The independent mode is accepted only if it preserves or improves position cadence without turning
 stale/unknown hook observations into certainty.
 
+For the recovery snapshot A/B, alternate all four cells and complete at least ten recoveries per
+cell:
+
+```powershell
+# Isolated legacy and atomic
+.\lso.exe -v run -o C:\LSO\snapshot-legacy-isolated --no-acmi --recovery-telemetry-mode legacy
+.\lso.exe -v run -o C:\LSO\snapshot-atomic-isolated --no-acmi --recovery-telemetry-mode atomic --recovery-snapshot-timeout-ms 250
+
+# Repeat both commands with the normal dashboard/StreamUnits consumers enabled,
+# using distinct output directories ending in -loaded.
+```
+
+Persist the selected `acquisition_mode`, response sequences, snapshot p95/p99, gaps above 300 ms,
+mission request rate, queue wait/execution, cancellations, ordinary-client probe latency, server and
+LSO commits, DCS version, mission hash, and consumer configuration. Do not compare grades until the
+correctness and telemetry gates pass.
+
 ## Acceptance gates
 
 An optimization is rejected if any scenario increases:

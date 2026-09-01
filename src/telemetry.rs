@@ -35,6 +35,8 @@ pub enum TelemetryInvalidReason {
 
 #[derive(Debug, Clone)]
 pub struct TelemetrySample {
+    pub observation_sequence: Option<u64>,
+    pub request_round_trip_ms: Option<f64>,
     pub carrier_raw: Transform,
     pub plane_raw: Transform,
     pub carrier: Transform,
@@ -72,6 +74,8 @@ impl TelemetrySample {
             None
         };
         Self {
+            observation_sequence: None,
+            request_round_trip_ms: None,
             carrier_raw: carrier.clone(),
             plane_raw: plane.clone(),
             carrier,
@@ -207,6 +211,8 @@ impl TelemetryAligner {
             .is_none_or(|previous| plane_raw.time > previous.value.time);
 
         let sample = TelemetrySample {
+            observation_sequence: None,
+            request_round_trip_ms: None,
             carrier_raw,
             plane_raw,
             carrier,

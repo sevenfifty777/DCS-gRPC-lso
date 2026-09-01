@@ -2,9 +2,10 @@
 
 ## Compatibility
 
-The client is pinned to DCS-gRPC `v0.9.0`, Cargo revision
-`5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`. Do not change protobuf or this pin before authenticating
-the deployed DLL/Lua tree as described in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
+This implementation checkout consumes the adjacent rust-server `0.9.1` stubs containing
+`RecoveryService`. Before release, replace the development path dependency with an exact server
+commit or tag containing the same protobuf and authenticate the deployed DLL/Lua tree as described
+in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 
 ## Build and validate
 
@@ -30,6 +31,8 @@ Useful options:
 | `--uri` | DCS-gRPC URI; default `http://127.0.0.1:50051` |
 | `--ki` | include supported AI aircraft; AI remains explicitly labelled |
 | `--no-acmi` | omit ACMI while retaining JSON/PNG/SQLite |
+| `--recovery-telemetry-mode` | `auto` (default), `atomic`, or rollback-compatible `legacy` |
+| `--recovery-snapshot-timeout-ms` | atomic RPC timeout, default 250 ms; valid range 100-299 ms |
 | `--web-port` | private dashboard on `127.0.0.1:<port>` |
 | `--discord-webhook` | optional secondary publication |
 
@@ -50,7 +53,7 @@ Never publish UCIDs from the private database/API.
 The base filename includes wall time, sanitized display name, session, generation, aircraft/carrier
 IDs and DCS time. This prevents simultaneous-pass collisions. Outputs are:
 
-- atomic schema-v3 JSON report;
+- atomic schema-v4 JSON report with acquisition mode and snapshot sequence provenance;
 - optional atomic compressed ACMI;
 - approach and pattern PNG rendered outside sampling tasks;
 - additive/idempotent `lso.db` row;

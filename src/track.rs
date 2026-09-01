@@ -82,6 +82,10 @@ const VSTOL_SPOT_OBSERVATION_RADIUS_M: f64 = 15.0;
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Datum {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation_sequence: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_round_trip_ms: Option<f64>,
     /// Legacy display time; equal to corrected aircraft DCS time.
     pub time: f64,
     pub corrected_time_dcs: f64,
@@ -206,6 +210,9 @@ pub struct HookObservation {
     pub timeout_samples: u32,
     pub error_samples: u32,
     pub stale_samples: u32,
+    /// Number of oldest diagnostic samples compacted to keep the bounded
+    /// timeline focused on the most recent recovery evidence.
+    pub compacted_samples: u32,
     pub interpreted_state: &'static str,
     pub timeline: Vec<HookSampleEvidence>,
     /// Calibration is module-specific; unknown modules are never inferred.
@@ -895,7 +902,6 @@ impl Track {
             {
                 self.gate_samples.pop_front();
             }
-            self.previous_gate_sample = Some(current);
 
             // Mark groove entry: inside 3/4 nm, below 300 ft AGL, and lined up (±10°).
             // The lateral constraint prevents the timer from starting prematurely while the
@@ -910,6 +916,8 @@ impl Track {
 
         if self.datums.len() < MAX_TRACK_SAMPLES {
             self.datums.push(Datum {
+                observation_sequence: sample.observation_sequence,
+                request_round_trip_ms: sample.request_round_trip_ms,
                 time: plane.time,
                 corrected_time_dcs: plane.time.max(carrier.time),
                 x,
@@ -1024,6 +1032,8 @@ impl Track {
 
             if should_push {
                 self.datums.push(Datum {
+                    observation_sequence: None,
+                    request_round_trip_ms: None,
                     time: plane.time,
                     corrected_time_dcs: plane.time.max(carrier.time),
                     x,
@@ -1202,7 +1212,7 @@ impl Track {
             -self.carrier_info.deck_angle.to_radians(),
         ));
 
-        [
+        let cables = [
             (1, &self.carrier_info.cable1),
             (2, &self.carrier_info.cable2),
             (3, &self.carrier_info.cable3),
@@ -1323,21 +1333,20 @@ impl Track {
             }
         }
 
-        if self.hook_observation.timeline.len() < MAX_HOOK_EVIDENCE {
-            self.hook_observation.timeline.push(HookSampleEvidence {
-                associated_time_dcs,
-                observed_unix_ms,
-                age_ms,
-                raw,
-                status,
-                in_groove,
-                in_final_window,
-                before_touchdown,
-            });
-        } else {
-            self.telemetry_quality.dropped_samples += 1;
-            self.telemetry_quality.completeness = Completeness::BufferLimit;
+        if self.hook_observation.timeline.len() == MAX_HOOK_EVIDENCE {
+            self.hook_observation.timeline.remove(0);
+            self.hook_observation.compacted_samples += 1;
         }
+        self.hook_observation.timeline.push(HookSampleEvidence {
+            associated_time_dcs,
+            observed_unix_ms,
+            age_ms,
+            raw,
+            status,
+            in_groove,
+            in_final_window,
+            before_touchdown,
+        });
         self.hook_observation.interpreted_state = match self.calibrated_hook_state() {
             CalibratedHookState::Up => "up",
             CalibratedHookState::Down => "down",
@@ -2145,5 +2154,57 @@ mod tests {
             );
         }
         assert_eq!(track.calibrated_hook_state(), CalibratedHookState::Unknown);
+    }
+
+    #[test]
+    fn hook_timeline_compaction_preserves_recent_final_evidence_without_buffer_limit() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let hornet = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, hornet);
+
+        for index in 0..MAX_HOOK_EVIDENCE {
+            track.observe_hook_sample(
+                index as f64 * 0.25,
+                index as u64,
+                0.0,
+                Some(0.0),
+                HookSampleStatus::Success,
+            );
+        }
+
+        track.entered_groove = true;
+        track.previous_x = 400.0;
+        for index in 0..4 {
+            let sequence = MAX_HOOK_EVIDENCE + index;
+            track.observe_hook_sample(
+                sequence as f64 * 0.25,
+                sequence as u64,
+                0.0,
+                Some(1.0),
+                HookSampleStatus::Success,
+            );
+        }
+
+        assert_eq!(track.hook_observation.timeline.len(), MAX_HOOK_EVIDENCE);
+        assert_eq!(track.hook_observation.compacted_samples, 4);
+        assert_eq!(
+            track
+                .hook_observation
+                .timeline
+                .first()
+                .unwrap()
+                .observed_unix_ms,
+            4
+        );
+        assert_eq!(
+            track.hook_observation.timeline.last().unwrap().raw,
+            Some(1.0)
+        );
+        assert_eq!(track.calibrated_hook_state(), CalibratedHookState::Down);
+        assert_ne!(
+            track.telemetry_quality.completeness,
+            Completeness::BufferLimit
+        );
+        assert_eq!(track.telemetry_quality.dropped_samples, 0);
     }
 }

@@ -8,7 +8,9 @@ use tokio::task::JoinHandle;
 
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::db::{RecoveryDb, SharedDb};
-use crate::tasks::{HookSamplingConfig, HookSamplingMode, PilotKind, SessionLog, TaskParams};
+use crate::tasks::{
+    HookSamplingConfig, HookSamplingMode, PilotKind, RecoveryTelemetryMode, SessionLog, TaskParams,
+};
 use crate::utils::shutdown::ShutdownHandle;
 use backoff::ExponentialBackoff;
 use futures_util::future::select;
@@ -63,6 +65,16 @@ pub struct Opts {
     /// A/B diagnostic mode: restore the old blocking hook read on every position tick.
     #[clap(long)]
     legacy_inline_hook_sampling: bool,
+
+    /// Recovery telemetry source. Auto uses the atomic API when supported and
+    /// falls back to the legacy transform calls only on UNIMPLEMENTED.
+    #[clap(long, value_enum, default_value_t = RecoveryTelemetryMode::Auto)]
+    recovery_telemetry_mode: RecoveryTelemetryMode,
+
+    /// Timeout for one atomic recovery snapshot. Must remain below the 300 ms
+    /// stale-observation threshold.
+    #[clap(long, default_value_t = 250, value_parser = clap::value_parser!(u64).range(100..=299))]
+    recovery_snapshot_timeout_ms: u64,
 
     /// Port to serve the web greenie board on (e.g. 8080). Disabled if not specified.
     #[clap(long)]
@@ -293,6 +305,8 @@ async fn run(
         frequency_hz: opts.hook_sampling_hz,
         timeout: Duration::from_millis(opts.hook_timeout_ms),
     };
+    let recovery_telemetry_mode = opts.recovery_telemetry_mode;
+    let recovery_snapshot_timeout = Duration::from_millis(opts.recovery_snapshot_timeout_ms);
     let active_tasks2 = active_tasks.clone();
     let session_channel = channel.clone();
     let session_shutdown = shutdown_handle.clone();
@@ -318,6 +332,8 @@ async fn run(
             let discord_webhook = discord_webhook.clone();
             let record_acmi = record_acmi;
             let hook_sampling = hook_sampling;
+            let recovery_telemetry_mode = recovery_telemetry_mode;
+            let recovery_snapshot_timeout = recovery_snapshot_timeout;
             let users = users.clone();
             let channel = channel.clone();
             let shutdown_handle = shutdown_handle.clone();
@@ -331,6 +347,8 @@ async fn run(
                         discord_webhook,
                         record_acmi,
                         hook_sampling,
+                        recovery_telemetry_mode,
+                        recovery_snapshot_timeout,
                         users,
                         ch: channel,
                         carrier_id,
@@ -851,5 +869,7 @@ mod tests {
         assert_eq!(opts.hook_sampling_hz, 2);
         assert_eq!(opts.hook_timeout_ms, 250);
         assert!(opts.legacy_inline_hook_sampling);
+        assert_eq!(opts.recovery_telemetry_mode, RecoveryTelemetryMode::Auto);
+        assert_eq!(opts.recovery_snapshot_timeout_ms, 250);
     }
 }

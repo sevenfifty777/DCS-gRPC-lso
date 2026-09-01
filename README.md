@@ -65,6 +65,11 @@ Common examples:
 .\lso.exe run -o C:\LSO\recordings --hook-sampling-hz 4 --hook-timeout-ms 300
 .\lso.exe run -o C:\LSO\recordings --legacy-inline-hook-sampling
 
+# Recovery telemetry rollout: automatic capability probe, forced atomic, or rollback
+.\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode auto
+.\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode atomic --recovery-snapshot-timeout-ms 250
+.\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode legacy
+
 # Enable debug or trace logging; global flags go before the subcommand
 .\lso.exe -v run -o C:\LSO\recordings
 .\lso.exe -vv run -o C:\LSO\recordings
@@ -85,7 +90,7 @@ A completed live pass writes or updates the following items in `--out-dir`:
 |---|---|
 | `LSO-<date>-<pilot>-<recovery-id>.png` | Final-approach trap sheet |
 | `LSO-<date>-<pilot>-<recovery-id>-pattern.png` | Overhead pattern chart |
-| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v3 result, gates, event/time/hook/wire evidence and telemetry quality |
+| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v4 result, acquisition/sequence provenance, gates, event/time/hook/wire evidence and telemetry quality |
 | `LSO-<date>-<pilot>-<recovery-id>.zip.acmi` | Compressed Tacview recording; omitted with `--no-acmi` |
 | `lso.db` | Shared SQLite history; one row is inserted per saved pass |
 

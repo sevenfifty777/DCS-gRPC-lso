@@ -16,19 +16,20 @@ use stubs::mission::v0::stream_events_response::{
     CrashEvent, DeadEvent, Event, LandEvent, LandingQualityMarkEvent, PlayerLeaveUnitEvent,
     RunwayTouchEvent, UnitLostEvent,
 };
+use stubs::recovery::v0::DrawArgumentStatus;
 use tacview::record::{self, Color, Coords, GlobalProperty, Property, Record, Tag, Update};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
-use crate::client::{HookClient, MissionClient, UnitClient};
+use crate::client::{HookClient, MissionClient, RecoveryClient, UnitClient};
 use crate::grading::{PassGrade, SpotGrade};
 use crate::metrics::RpcKind;
 use crate::telemetry::{TelemetryAligner, TelemetryInvalidReason, ACTIVE_WATCHDOG_MS};
 use crate::track::{Datum, GateDeviations, Grading, HookSampleStatus, Track};
 use crate::transform::Transform;
 
-use super::{CompletedPass, TaskParams};
+use super::{AcquisitionMode, CompletedPass, RecoveryTelemetryMode, TaskParams};
 
 /// Serialisable snapshot of a single recovery attempt, written to a `.json` file alongside
 /// the ACMI and PNG chart.
@@ -44,6 +45,7 @@ struct RecoveryReport<'a> {
     carrier_name: &'a str,
     carrier_type: &'a str,
     recovery_mode: &'a str,
+    acquisition_mode: AcquisitionMode,
     session_id: i64,
     generation: u64,
     grading: &'a Grading,
@@ -158,6 +160,10 @@ fn unix_time_ms() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+fn may_fallback_to_legacy(requested: RecoveryTelemetryMode, code: tonic::Code) -> bool {
+    requested == RecoveryTelemetryMode::Auto && code == tonic::Code::Unimplemented
+}
+
 fn drain_hook_samples(
     rx: &mut mpsc::Receiver<HookPoll>,
     track: &mut Track,
@@ -251,10 +257,41 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
     let mut client1 = UnitClient::new(params.ch.clone());
     let mut client2 = UnitClient::new(params.ch.clone());
+    let mut recovery_client = RecoveryClient::new(params.ch.clone());
     let mut mission = MissionClient::new(params.ch.clone());
     let mut hook = HookClient::new(params.ch.clone());
     let mut world = crate::client::WorldClient::new(params.ch.clone());
-    let interval = crate::utils::interval::interval(Duration::from_millis(100), params.shutdown);
+    let draw_argument = (!params.carrier_info.is_vstol()).then_some(25);
+    let acquisition_mode = match params.recovery_telemetry_mode {
+        RecoveryTelemetryMode::Legacy => AcquisitionMode::Legacy,
+        RecoveryTelemetryMode::Auto | RecoveryTelemetryMode::Atomic => {
+            match recovery_client
+                .get_snapshot(
+                    params.carrier_name,
+                    params.plane_name,
+                    draw_argument,
+                    0,
+                    params.recovery_snapshot_timeout,
+                )
+                .await
+            {
+                Ok(_) => AcquisitionMode::Atomic,
+                Err(status)
+                    if may_fallback_to_legacy(params.recovery_telemetry_mode, status.code()) =>
+                {
+                    tracing::info!("atomic recovery API unavailable; using legacy telemetry");
+                    AcquisitionMode::Legacy
+                }
+                Err(status) => return Err(status.into()),
+            }
+        }
+    };
+    tracing::info!(
+        acquisition_mode = acquisition_mode.as_str(),
+        "selected recovery telemetry mode"
+    );
+    let interval =
+        crate::utils::interval::recovery_interval(Duration::from_millis(100), params.shutdown);
 
     let mut acmi = Cursor::new(Vec::new());
     let mut recording = if params.record_acmi {
@@ -313,6 +350,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let _event_stream_guard = crate::metrics::RUNTIME_METRICS.stream();
     let (hook_tx, mut hook_rx) = mpsc::channel(64);
     let _hook_sampler = (!params.carrier_info.is_vstol()
+        && acquisition_mode == AcquisitionMode::Legacy
         && params.hook_sampling.mode == super::HookSamplingMode::Independent)
         .then(|| {
             AbortOnDrop(tokio::spawn(sample_hook(
@@ -334,6 +372,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut warning_window_started = Instant::now();
     let mut warning_count = 0_u32;
     let mut warning_max_gap_ms = 0.0_f64;
+    let mut observation_sequence = 1_u64;
 
     let mut stream = select(interval.map(Either::Left), events.map(Either::Right));
 
@@ -348,14 +387,51 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         .as_micros()
                         .min(u64::MAX as u128) as u64,
                 );
-                let (carrier_observed, plane_observed) = match futures_util::future::try_join(
-                    client1
-                        .get_observed_transform_for(params.carrier_name, RpcKind::TransformCarrier),
-                    client2.get_observed_transform_for(params.plane_name, RpcKind::TransformPlane),
-                )
-                .await
-                {
-                    Ok(pair) => pair,
+                let acquired = match acquisition_mode {
+                    AcquisitionMode::Legacy => futures_util::future::try_join(
+                        client1.get_observed_transform_for(
+                            params.carrier_name,
+                            RpcKind::TransformCarrier,
+                        ),
+                        client2
+                            .get_observed_transform_for(params.plane_name, RpcKind::TransformPlane),
+                    )
+                    .await
+                    .map(|(carrier, plane)| (carrier, plane, None, None, None)),
+                    AcquisitionMode::Atomic => {
+                        let sequence = observation_sequence;
+                        observation_sequence = observation_sequence.saturating_add(1);
+                        recovery_client
+                            .get_snapshot(
+                                params.carrier_name,
+                                params.plane_name,
+                                draw_argument,
+                                sequence,
+                                params.recovery_snapshot_timeout,
+                            )
+                            .await
+                            .map(|snapshot| {
+                                (
+                                    snapshot.carrier,
+                                    snapshot.plane,
+                                    Some((
+                                        snapshot.draw_argument_status,
+                                        snapshot.draw_argument_value,
+                                    )),
+                                    Some(snapshot.sequence),
+                                    Some(snapshot.round_trip_ms),
+                                )
+                            })
+                    }
+                };
+                let (
+                    carrier_observed,
+                    plane_observed,
+                    atomic_hook,
+                    sequence,
+                    request_round_trip_ms,
+                ) = match acquired {
+                    Ok(observation) => observation,
                     Err(status) if status.code() == tonic::Code::NotFound => {
                         tracing::info!("stop tracking because a unit no longer exists");
                         return Ok(());
@@ -371,7 +447,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         continue;
                     }
                 };
-                let sample = telemetry_aligner.align(carrier_observed, plane_observed);
+                let mut sample = telemetry_aligner.align(carrier_observed, plane_observed);
+                sample.observation_sequence = sequence;
+                sample.request_round_trip_ms = request_round_trip_ms;
                 if sample.is_valid() && sample.source_age_ms <= f64::EPSILON {
                     last_telemetry_success = Instant::now();
                 }
@@ -401,15 +479,30 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 }
                 let carrier = &sample.carrier;
                 let plane = &sample.plane;
-                let hook_state = if params.carrier_info.is_vstol()
-                    || params.hook_sampling.mode == super::HookSamplingMode::Independent
-                {
-                    None
-                } else {
-                    client2
+                let hook_state = match atomic_hook {
+                    Some((DrawArgumentStatus::Observed, Some(raw))) if raw.is_finite() => Some(raw),
+                    Some((DrawArgumentStatus::Observed, _))
+                    | Some((DrawArgumentStatus::Unavailable, _))
+                    | Some((DrawArgumentStatus::Unspecified, _)) => {
+                        datums.observe_hook_sample(
+                            sample.plane.time,
+                            sample.plane_received_unix_ms,
+                            0.0,
+                            None,
+                            HookSampleStatus::Error,
+                        );
+                        None
+                    }
+                    Some((DrawArgumentStatus::NotRequested, _)) => None,
+                    None if params.carrier_info.is_vstol()
+                        || params.hook_sampling.mode == super::HookSamplingMode::Independent =>
+                    {
+                        None
+                    }
+                    None => client2
                         .get_draw_argument_value(params.plane_name, 25)
                         .await
-                        .ok()
+                        .ok(),
                 };
 
                 if !ref_written {
@@ -469,7 +562,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
                 let keep_tracking = datums.next_sample(&sample, hook_state);
-                if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                if acquisition_mode == AcquisitionMode::Legacy
+                    && params.hook_sampling.mode == super::HookSamplingMode::Independent
+                {
                     drain_hook_samples(
                         &mut hook_rx,
                         &mut datums,
@@ -593,7 +688,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         datums.record_event("land", time, false, "missing_transform_evidence");
                         continue;
                     };
-                    if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                    if acquisition_mode == AcquisitionMode::Legacy
+                        && params.hook_sampling.mode == super::HookSamplingMode::Independent
+                    {
                         drain_hook_samples(
                             &mut hook_rx,
                             &mut datums,
@@ -684,7 +781,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     // the continuous trajectory. It used to manufacture a
                     // near-event wire-4 crossing and could also make the last
                     // post-touch hook value look like pre-touch evidence.
-                    if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                    if acquisition_mode == AcquisitionMode::Legacy
+                        && params.hook_sampling.mode == super::HookSamplingMode::Independent
+                    {
                         drain_hook_samples(
                             &mut hook_rx,
                             &mut datums,
@@ -872,7 +971,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     // independent intended/nearest fields below.
     let spot_label = track.intended_spot;
     let report = RecoveryReport {
-        schema_version: 3,
+        schema_version: 4,
         recovery_id: &recovery_id,
         pilot_name: &track.pilot_name,
         pilot_kind: params.pilot_kind,
@@ -886,6 +985,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         } else {
             "arrested"
         },
+        acquisition_mode,
         session_id: params.session_id,
         generation: params.generation,
         grading: &track.grading,
@@ -1151,31 +1251,6 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     ),
                     false,
                 );
-
-            if track.carrier_info.is_vstol() {
-                if let (Some(spot_grade), Some(distance_m)) =
-                    (track.spot_grade, track.spot_distance_m)
-                {
-                    embed = embed.field(
-                        "Spot 7.5",
-                        format!(
-                            "{} — {:.2} m — +{:.2} pt",
-                            spot_grade.label(),
-                            distance_m,
-                            spot_grade.bonus_points()
-                        ),
-                        false,
-                    );
-                }
-            }
-
-            // LSO notation and plain-English notes from DCS grading string.
-            if let Some(ref notation) = track.dcs_grading {
-                embed = embed.field("LSO Notation", notation.as_str(), false);
-                let notes = crate::lso_notation::to_english(notation);
-                if !notes.is_empty() {
-                    embed = embed.field("LSO Notes", notes, false);
-                }
             }
 
             if track.carrier_info.is_vstol() {
@@ -1395,12 +1470,30 @@ fn changed_precision(a: Option<f64>, b: Option<f64>, theta: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_hook_samples, recovery_id, recovery_outcome, transform_from_event_unit,
-        write_atomic_if_absent, HookPoll,
+        drain_hook_samples, may_fallback_to_legacy, recovery_id, recovery_outcome,
+        transform_from_event_unit, write_atomic_if_absent, HookPoll,
     };
     use crate::data::{AirplaneInfo, CarrierInfo};
     use crate::track::{Grading, HookSampleStatus, Track};
     use stubs::common::v0::{Orientation, Position, Unit};
+
+    #[test]
+    fn auto_falls_back_only_when_snapshot_rpc_is_unimplemented() {
+        use crate::tasks::RecoveryTelemetryMode;
+
+        assert!(may_fallback_to_legacy(
+            RecoveryTelemetryMode::Auto,
+            tonic::Code::Unimplemented
+        ));
+        assert!(!may_fallback_to_legacy(
+            RecoveryTelemetryMode::Atomic,
+            tonic::Code::Unimplemented
+        ));
+        assert!(!may_fallback_to_legacy(
+            RecoveryTelemetryMode::Auto,
+            tonic::Code::Unavailable
+        ));
+    }
 
     #[tokio::test]
     async fn independent_hook_work_does_not_delay_position_ticks() {

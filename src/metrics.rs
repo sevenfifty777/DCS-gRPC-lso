@@ -29,14 +29,16 @@ pub enum RpcKind {
     TransformCarrier,
     TransformPlane,
     Hook,
+    RecoverySnapshot,
 }
 
 impl RpcKind {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::TransformOther,
         Self::TransformCarrier,
         Self::TransformPlane,
         Self::Hook,
+        Self::RecoverySnapshot,
     ];
 
     const fn index(self) -> usize {
@@ -45,6 +47,7 @@ impl RpcKind {
             Self::TransformCarrier => 1,
             Self::TransformPlane => 2,
             Self::Hook => 3,
+            Self::RecoverySnapshot => 4,
         }
     }
 
@@ -54,6 +57,7 @@ impl RpcKind {
             Self::TransformCarrier => "transform_carrier",
             Self::TransformPlane => "transform_plane",
             Self::Hook => "hook",
+            Self::RecoverySnapshot => "recovery_snapshot",
         }
     }
 }
@@ -155,7 +159,7 @@ fn percentile_ms(calls: u64, buckets: &[u64; LATENCY_BUCKETS_US.len()], percenti
 #[derive(Default)]
 pub struct RuntimeMetrics {
     rpc_calls: AtomicU64,
-    rpc: [LatencyStats; 4],
+    rpc: [LatencyStats; 5],
     recovery_loop: LatencyStats,
     tick_lag: LatencyStats,
     active_streams: AtomicU64,

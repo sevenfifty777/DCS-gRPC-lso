@@ -25,6 +25,29 @@ pub enum HookSamplingMode {
     LegacyInline,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum RecoveryTelemetryMode {
+    Auto,
+    Legacy,
+    Atomic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionMode {
+    Legacy,
+    Atomic,
+}
+
+impl AcquisitionMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Atomic => "atomic",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct HookSamplingConfig {
     pub mode: HookSamplingMode,
@@ -66,6 +89,8 @@ pub struct TaskParams<'a> {
     pub discord_webhook: Option<String>,
     pub record_acmi: bool,
     pub hook_sampling: HookSamplingConfig,
+    pub recovery_telemetry_mode: RecoveryTelemetryMode,
+    pub recovery_snapshot_timeout: std::time::Duration,
     pub users: Arc<HashMap<String, u64>>,
     pub ch: Channel,
     pub carrier_id: u32,
