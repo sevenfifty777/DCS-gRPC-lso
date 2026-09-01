@@ -1,0 +1,125 @@
+syntax = "proto3";
+package dcs.warehouse.v0;
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Warehouse";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/warehouse";
+
+service WarehouseService {
+  rpc GetInventory(GetInventoryRequest) returns (GetInventoryResponse) {}
+  rpc GetItemCount(GetItemCountRequest) returns (GetItemCountResponse) {}
+  rpc AddItem(AddItemRequest) returns (AddItemResponse) {}
+  rpc RemoveItem(RemoveItemRequest) returns (RemoveItemResponse) {}
+  rpc SetItem(SetItemRequest) returns (SetItemResponse) {}
+  rpc GetLiquidAmount(GetLiquidAmountRequest) returns (GetLiquidAmountResponse) {}
+  rpc AddLiquid(AddLiquidRequest) returns (AddLiquidResponse) {}
+  rpc SetLiquidAmount(SetLiquidAmountRequest) returns (SetLiquidAmountResponse) {}
+  rpc GetOwner(GetOwnerRequest) returns (GetOwnerResponse) {}
+}
+
+message GetInventoryRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+}
+
+message GetInventoryResponse {
+  string inventory_json = 1;
+}
+
+message GetItemCountRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+  string item_name = 3;
+}
+
+message GetItemCountResponse {
+  int32 count = 1;
+}
+
+message AddItemRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+  string item_name = 3;
+  int32 count = 4;
+}
+
+message AddItemResponse {
+}
+
+message RemoveItemRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+  string item_name = 3;
+  int32 count = 4;
+}
+
+message RemoveItemResponse {
+}
+
+message SetItemRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+  string item_name = 3;
+  int32 count = 4;
+}
+
+message SetItemResponse {
+}
+
+message GetLiquidAmountRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+  int32 liquid_type = 3;
+}
+
+message GetLiquidAmountResponse {
+  double amount = 1;
+}
+
+message AddLiquidRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+  int32 liquid_type = 3;
+  double amount = 4;
+}
+
+message AddLiquidResponse {
+}
+
+message SetLiquidAmountRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+  int32 liquid_type = 3;
+  double amount = 4;
+}
+
+message SetLiquidAmountResponse {
+}
+
+message GetOwnerRequest {
+  oneof name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+}
+
+message GetOwnerResponse {
+  oneof owner_name {
+    string airbase_name = 1;
+    string static_name = 2;
+  }
+}

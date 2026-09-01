@@ -1,0 +1,100 @@
+syntax = "proto3";
+package dcs.land.v0;
+import "dcs/common/v0/common.proto";
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Land";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/land";
+
+service LandService {
+  rpc GetTerrainHeight(GetTerrainHeightRequest) returns (GetTerrainHeightResponse) {}
+  rpc GetSurfaceType(GetSurfaceTypeRequest) returns (GetSurfaceTypeResponse) {}
+  rpc IsVisible(IsVisibleRequest) returns (IsVisibleResponse) {}
+  rpc GetClosestPointOnRoads(GetClosestPointOnRoadsRequest)
+      returns (GetClosestPointOnRoadsResponse) {}
+  rpc GetSurfaceHeightWithSeabed(GetSurfaceHeightWithSeabedRequest)
+      returns (GetSurfaceHeightWithSeabedResponse) {}
+  rpc FindPathOnRoads(FindPathOnRoadsRequest) returns (FindPathOnRoadsResponse) {}
+  rpc GetIP(GetIPRequest) returns (GetIPResponse) {}
+  rpc Profile(ProfileRequest) returns (ProfileResponse) {}
+}
+
+message GetTerrainHeightRequest {
+  dcs.common.v0.InputPosition position = 1;
+}
+
+message GetTerrainHeightResponse {
+  float height = 1;
+}
+
+message GetSurfaceTypeRequest {
+  dcs.common.v0.InputPosition position = 1;
+}
+
+message GetSurfaceTypeResponse {
+  SurfaceType surface_type = 1;
+}
+
+message IsVisibleRequest {
+  dcs.common.v0.InputPosition from = 1;
+  dcs.common.v0.InputPosition to = 2;
+}
+
+message IsVisibleResponse {
+  bool visible = 1;
+}
+
+message GetClosestPointOnRoadsRequest {
+  dcs.common.v0.InputPosition position = 1;
+  string road_type = 2;
+}
+
+message GetClosestPointOnRoadsResponse {
+  dcs.common.v0.Position position = 1;
+}
+
+message GetSurfaceHeightWithSeabedRequest {
+  dcs.common.v0.InputPosition position = 1;
+}
+
+message GetSurfaceHeightWithSeabedResponse {
+  float height = 1;
+}
+
+message FindPathOnRoadsRequest {
+  string road_type = 1;
+  dcs.common.v0.InputPosition start = 2;
+  dcs.common.v0.InputPosition end = 3;
+}
+
+message FindPathOnRoadsResponse {
+  string path_json = 1;
+}
+
+message GetIPRequest {
+  dcs.common.v0.InputPosition origin = 1;
+  dcs.common.v0.InputPosition direction = 2;
+  float max_dist = 3;
+}
+
+message GetIPResponse {
+  dcs.common.v0.Position intersection_point = 1;
+}
+
+message ProfileRequest {
+  dcs.common.v0.InputPosition from = 1;
+  dcs.common.v0.InputPosition to = 2;
+}
+
+message ProfileResponse {
+  string profile_json = 1;
+}
+
+// Existing values are part of the public API and cannot be renamed.
+// protolint:disable ENUM_FIELD_NAMES_PREFIX ENUM_FIELD_NAMES_ZERO_VALUE_END_WITH
+enum SurfaceType {
+  LAND = 0;
+  SHALLOW_WATER = 1;
+  WATER = 2;
+  ROAD = 3;
+  RUNWAY = 4;
+}
+// protolint:enable ENUM_FIELD_NAMES_PREFIX ENUM_FIELD_NAMES_ZERO_VALUE_END_WITH
