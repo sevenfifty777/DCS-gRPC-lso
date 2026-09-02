@@ -2,7 +2,7 @@
 
 ## JSON recovery report
 
-New live reports use `schema_version: 5`. The legacy top-level fields (`pilot_name`, `grading`,
+New live reports use `schema_version: 7`. The legacy top-level fields (`pilot_name`, `grading`,
 `pass_grade`, `dcs_grading`, `gate_deviations`, `datums`, `mission_datetime`) remain present with
 compatible meanings. Additive fields include:
 
@@ -10,18 +10,27 @@ compatible meanings. Additive fields include:
 - `pilot_kind` (`human` or `ai`), never the UCID;
 - approach/final grade, optional points, outcome, cause, confidence, completeness and grading source;
 - intended/nearest spot, spot score and informational spot-zone observation;
-- estimated/DCS wire, divergence and primary display provenance;
+- estimated/DCS wire, divergence and primary display provenance. A DCS-reported wire is
+  authoritative; the independent estimate is used only when DCS does not provide a wire;
 - gate quality plus raw/corrected telemetry diagnostics;
 - ordered event evidence, raw hook observation and first-contact horizontal speed.
 - recording/completion times and LSO/DCS-gRPC version evidence;
 - explicit grading availability and live telemetry health;
 - timestamped hook samples with success/timeout/error/stale state and pre-touch provenance;
-- physical external-model hook samples use draw argument `1305` for supported F-14 variants and
-  argument `25` for F/A-18C and T-45;
+- physical external-model hook samples record `hook_observation.evidence_source` as
+  `external_draw_argument` and persist the exact requested `hook_observation.draw_argument`:
+  `1305` for supported F-14 variants and `25` for F/A-18C and T-45. A null argument with
+  `evidence_source: not_requested` means no external draw argument was requested. Schema 5 and
+  older reports do not contain this provenance, so their argument number must not be claimed from
+  the saved artifact alone;
 - ownship-only `LoGetMechInfo().hook` diagnostics with raw `status_value` and `value`, DCS model
   time, aircraft identity checks and explicit unavailable/error states. These fields are evidence
   collection only until live F-14, F/A-18C and T-45 polarity is validated;
-- continuous hook-plane wire crossings, estimate confidence and reason.
+- finite hook-plane wire crossings plus the correlated hook-deflection/recovery timestamps,
+  correlation lag, estimate confidence and reason. An estimate requires a stable hook-down value,
+  a sharp transient near touchdown, recovery to the down value within eight seconds, and a valid
+  cable crossing no more than 200 ms before that transient. A stable hook-up value or an
+  incomplete transient produces no estimate.
 
 Individual JSON, PNG, ACMI, Discord payloads and public logs must never contain an UCID. The
 deterministic recovery ID contains only session/generation/unit IDs and DCS time.

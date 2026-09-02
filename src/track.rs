@@ -76,6 +76,19 @@ const MAX_TRACK_SAMPLES: usize = 72_000;
 const MAX_EVENT_EVIDENCE: usize = 256;
 const MAX_HOOK_EVIDENCE: usize = 512;
 const GATE_BUFFER_WINDOW_S: f64 = 2.0;
+/// PROJECT-DERIVED limits validated against the September 2026 T-45/F-14
+/// labelled recovery corpus. They deliberately require a complete cable-load
+/// transient rather than interpreting a steady external draw-argument value.
+const HOOK_DOWN_STABLE_MIN: f64 = 0.8;
+const HOOK_DEFLECTED_MAX: f64 = 0.7;
+const MIN_HOOK_DOWN_STABLE_S: f64 = 0.2;
+const MAX_HOOK_DEFLECTION_RECOVERY_S: f64 = 8.0;
+const MAX_HOOK_DEFLECTION_TOUCH_OFFSET_S: f64 = 2.0;
+const MAX_HOOK_DEFLECTION_WIRE_LAG_MS: f64 = 200.0;
+/// Reject an infinite-plane crossing when the hook is not physically near the
+/// finite pendant. This prevents an early overhead/pattern crossing from
+/// suppressing the real deck crossing later in the pass.
+const MAX_WIRE_VERTICAL_SEPARATION_M: f64 = 3.0;
 /// PROJECT-DERIVED provisional observation radius. It is informational only
 /// until the Tarawa spot geometry is validated against the future live corpus.
 const VSTOL_SPOT_OBSERVATION_RADIUS_M: f64 = 15.0;
@@ -189,7 +202,16 @@ pub struct WireEstimateEvidence {
     pub wire: Option<u8>,
     pub confidence: &'static str,
     pub reason: &'static str,
+    pub hook_deflection_time_dcs: Option<f64>,
+    pub hook_recovered_time_dcs: Option<f64>,
+    pub correlation_lag_ms: Option<f64>,
     pub crossings: Vec<WireCrossingEvidence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CompletedHookDeflection {
+    deflected_at_dcs: f64,
+    recovered_at_dcs: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,6 +445,23 @@ pub enum Grading {
         cable: Option<u8>,
         cable_estimated: Option<u8>,
     },
+}
+
+/// Select the wire shown by presentation and legacy summary consumers while
+/// keeping the independently persisted estimated and DCS values unchanged.
+/// DCS is authoritative when it reports a wire. The independent estimate is a
+/// fallback for recoveries flown without the DCS radio/AI LSO workflow.
+pub(crate) fn select_wire_for_display(
+    wire_estimated: Option<u8>,
+    wire_dcs: Option<u8>,
+) -> (Option<u8>, &'static str) {
+    if let Some(wire) = wire_dcs {
+        (Some(wire), "dcs")
+    } else if let Some(wire) = wire_estimated {
+        (Some(wire), "estimated")
+    } else {
+        (None, "unavailable")
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -1088,6 +1127,15 @@ impl Track {
                 .or_else(|| self.datums.last().map(|datum| datum.time))
                 .unwrap_or_default(),
         );
+        if let (
+            Some(wire),
+            Some(Grading::Recovered {
+                cable_estimated, ..
+            }),
+        ) = (wire_estimation.wire, self.grading.as_mut())
+        {
+            *cable_estimated = Some(wire);
+        }
 
         // If DCS grading is set, use its reported wire for arrested recoveries only.
         let grading = if matches!(&self.carrier_info.recovery, CarrierRecovery::Arrested) {
@@ -1206,6 +1254,11 @@ impl Track {
         plane: &Transform,
         bracket_gap_ms: f64,
     ) {
+        if !self.entered_groove {
+            self.previous_wire_plane = [None; 4];
+            return;
+        }
+
         let hook_offset = self.plane_info.hook.rotated_by(plane.rotation);
         let hook = plane.position + hook_offset;
         let forward = carrier.forward.rotated_by(DRotor3::from_rotation_xz(
@@ -1221,6 +1274,21 @@ impl Track {
         for (index, (wire, pendants)) in cables.into_iter().enumerate() {
             let left = carrier.position + pendants.0.rotated_by(carrier.rotation);
             let right = carrier.position + pendants.1.rotated_by(carrier.rotation);
+            let across_wire = right - left;
+            let across_wire_length_sq = across_wire.mag_sq();
+            if across_wire_length_sq <= f64::EPSILON {
+                self.previous_wire_plane[index] = None;
+                continue;
+            }
+            let across_fraction = (hook - left).dot(across_wire) / across_wire_length_sq;
+            let nearest_wire_point = left + across_wire * across_fraction.clamp(0.0, 1.0);
+            let vertical_separation = (hook.y - nearest_wire_point.y).abs();
+            if !(0.0..=1.0).contains(&across_fraction)
+                || vertical_separation > MAX_WIRE_VERTICAL_SEPARATION_M
+            {
+                self.previous_wire_plane[index] = None;
+                continue;
+            }
             let midpoint = (left + right) / 2.0;
             let signed_distance = (hook - midpoint).dot(forward);
             if let Some((previous_distance, previous_time)) = self.previous_wire_plane[index] {
@@ -1238,7 +1306,7 @@ impl Track {
                         wire,
                         timestamp_dcs: previous_time + (plane.time - previous_time) * ratio,
                         bracket_gap_ms,
-                        method: "hook_plane_crossing",
+                        method: "finite_hook_plane_crossing",
                     });
                 }
             }
@@ -1247,47 +1315,127 @@ impl Track {
     }
 
     fn wire_estimate_at(&self, event_time: f64) -> WireEstimateEvidence {
+        let Some(deflection) = self.completed_hook_deflection_near(event_time) else {
+            return WireEstimateEvidence {
+                wire: None,
+                confidence: "insufficient",
+                reason: "no_complete_hook_deflection_near_touchdown",
+                hook_deflection_time_dcs: None,
+                hook_recovered_time_dcs: None,
+                correlation_lag_ms: None,
+                crossings: self.wire_crossings.clone(),
+            };
+        };
         let mut eligible = self
             .wire_crossings
             .iter()
             .filter(|crossing| {
-                crossing.timestamp_dcs <= event_time
+                crossing.timestamp_dcs <= deflection.deflected_at_dcs
                     && crossing.bracket_gap_ms <= SAMPLE_GAP_WARNING_MS
             })
             .cloned()
             .collect::<Vec<_>>();
         eligible.sort_by(|left, right| left.timestamp_dcs.total_cmp(&right.timestamp_dcs));
-        tracing::debug!(event_time, crossings = ?eligible, "wire crossing evidence at event");
+        tracing::debug!(event_time, ?deflection, crossings = ?eligible, "wire crossing evidence at hook deflection");
         let Some(last) = eligible.last() else {
             return WireEstimateEvidence {
                 wire: None,
                 confidence: "insufficient",
-                reason: "no_fresh_hook_plane_crossing",
+                reason: "hook_deflection_not_correlated_with_wire_crossing",
+                hook_deflection_time_dcs: Some(deflection.deflected_at_dcs),
+                hook_recovered_time_dcs: Some(deflection.recovered_at_dcs),
+                correlation_lag_ms: None,
                 crossings: self.wire_crossings.clone(),
             };
         };
-        let event_lag_ms = (event_time - last.timestamp_dcs) * 1_000.0;
-        // A late RunwayTouch position is not moved backwards by a magic offset.
-        // If the event does not closely correlate with a continuously observed
-        // crossing, keep every crossing as evidence but decline to name a wire.
-        if !(0.0..=SAMPLE_GAP_WARNING_MS).contains(&event_lag_ms) {
+        let correlation_lag_ms = (deflection.deflected_at_dcs - last.timestamp_dcs) * 1_000.0;
+        if !(0.0..=MAX_HOOK_DEFLECTION_WIRE_LAG_MS).contains(&correlation_lag_ms) {
             return WireEstimateEvidence {
                 wire: None,
                 confidence: "insufficient",
-                reason: "wire_crossing_not_time_correlated_with_event",
+                reason: "hook_deflection_not_correlated_with_wire_crossing",
+                hook_deflection_time_dcs: Some(deflection.deflected_at_dcs),
+                hook_recovered_time_dcs: Some(deflection.recovered_at_dcs),
+                correlation_lag_ms: Some(correlation_lag_ms),
                 crossings: self.wire_crossings.clone(),
             };
         }
         WireEstimateEvidence {
             wire: Some(last.wire),
-            confidence: if last.bracket_gap_ms <= 150.0 && event_lag_ms <= 150.0 {
+            confidence: if last.bracket_gap_ms <= 150.0 && correlation_lag_ms <= 150.0 {
                 "high"
             } else {
                 "medium"
             },
-            reason: "continuous_hook_plane_crossing",
+            reason: "hook_deflection_correlated_with_wire_crossing",
+            hook_deflection_time_dcs: Some(deflection.deflected_at_dcs),
+            hook_recovered_time_dcs: Some(deflection.recovered_at_dcs),
+            correlation_lag_ms: Some(correlation_lag_ms),
             crossings: self.wire_crossings.clone(),
         }
+    }
+
+    fn completed_hook_deflection_near(&self, event_time: f64) -> Option<CompletedHookDeflection> {
+        let samples = self
+            .hook_observation
+            .timeline
+            .iter()
+            .filter(|sample| {
+                sample.status == HookSampleStatus::Success
+                    && sample.in_final_window
+                    && sample.raw.is_some_and(f64::is_finite)
+            })
+            .collect::<Vec<_>>();
+
+        for deflected_index in 1..samples.len() {
+            let before = samples[deflected_index - 1];
+            let deflected = samples[deflected_index];
+            let Some(before_raw) = before.raw else {
+                continue;
+            };
+            let Some(deflected_raw) = deflected.raw else {
+                continue;
+            };
+            let transition_gap_ms =
+                (deflected.associated_time_dcs - before.associated_time_dcs) * 1_000.0;
+            if before_raw < HOOK_DOWN_STABLE_MIN
+                || deflected_raw > HOOK_DEFLECTED_MAX
+                || !(0.0..=SAMPLE_GAP_WARNING_MS).contains(&transition_gap_ms)
+                || (deflected.associated_time_dcs - event_time).abs()
+                    > MAX_HOOK_DEFLECTION_TOUCH_OFFSET_S
+            {
+                continue;
+            }
+
+            let mut stable_start_dcs = before.associated_time_dcs;
+            let mut newer_time_dcs = before.associated_time_dcs;
+            for sample in samples[..deflected_index - 1].iter().rev() {
+                let gap_ms = (newer_time_dcs - sample.associated_time_dcs) * 1_000.0;
+                if sample.raw.is_none_or(|raw| raw < HOOK_DOWN_STABLE_MIN)
+                    || !(0.0..=SAMPLE_GAP_WARNING_MS).contains(&gap_ms)
+                {
+                    break;
+                }
+                stable_start_dcs = sample.associated_time_dcs;
+                newer_time_dcs = sample.associated_time_dcs;
+            }
+            if before.associated_time_dcs - stable_start_dcs < MIN_HOOK_DOWN_STABLE_S {
+                continue;
+            }
+
+            let recovered = samples[deflected_index + 1..].iter().find(|sample| {
+                let elapsed = sample.associated_time_dcs - deflected.associated_time_dcs;
+                (0.0..=MAX_HOOK_DEFLECTION_RECOVERY_S).contains(&elapsed)
+                    && sample.raw.is_some_and(|raw| raw >= HOOK_DOWN_STABLE_MIN)
+            });
+            if let Some(recovered) = recovered {
+                return Some(CompletedHookDeflection {
+                    deflected_at_dcs: deflected.associated_time_dcs,
+                    recovered_at_dcs: recovered.associated_time_dcs,
+                });
+            }
+        }
+        None
     }
 
     pub fn observe_hook_sample(
@@ -1616,6 +1764,21 @@ fn normalize_grading_for_recovery(grading: Grading, recovery: &CarrierRecovery) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_wire_falls_back_to_dcs_when_estimate_is_unavailable() {
+        assert_eq!(select_wire_for_display(None, Some(4)), (Some(4), "dcs"));
+    }
+
+    #[test]
+    fn display_wire_keeps_dcs_authoritative_when_both_sources_exist() {
+        assert_eq!(select_wire_for_display(Some(2), Some(3)), (Some(3), "dcs"));
+    }
+
+    #[test]
+    fn display_wire_is_unavailable_without_evidence() {
+        assert_eq!(select_wire_for_display(None, None), (None, "unavailable"));
+    }
 
     fn approach_sample(time: f64, x: f64) -> ApproachSample {
         ApproachSample {
@@ -1952,6 +2115,8 @@ mod tests {
             let plane_rotation = carrier.rotation;
             let hook_offset = plane_info.hook.rotated_by(plane_rotation);
             let mut track = Track::new("pilot", carrier_info, plane_info);
+            track.entered_groove = true;
+            track.previous_x = 100.0;
             let before = Transform {
                 position: midpoint_world - hook_offset - forward,
                 rotation: plane_rotation,
@@ -1966,12 +2131,16 @@ mod tests {
             };
             track.observe_wire_crossings(&carrier, &before, 100.0);
             track.observe_wire_crossings(&carrier, &after, 100.0);
-            assert_eq!(track.wire_estimate_at(1.1).wire, Some(3));
+            observe_test_hook_sample(&mut track, 0.65, 1.0);
+            observe_test_hook_sample(&mut track, 0.90, 1.0);
+            observe_test_hook_sample(&mut track, 1.15, 0.0);
+            observe_test_hook_sample(&mut track, 1.80, 1.0);
+            assert_eq!(track.wire_estimate_at(1.4).wire, Some(3));
         }
     }
 
     #[test]
-    fn late_touch_event_does_not_turn_an_old_crossing_into_a_wire() {
+    fn crossing_without_complete_hook_deflection_does_not_name_a_wire() {
         let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
         let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
         let carrier = Transform {
@@ -1981,6 +2150,8 @@ mod tests {
         let midpoint = (carrier_info.cable3.0 + carrier_info.cable3.1) / 2.0;
         let hook_offset = plane_info.hook;
         let mut track = Track::new("pilot", carrier_info, plane_info);
+        track.entered_groove = true;
+        track.previous_x = 100.0;
         track.observe_wire_crossings(
             &carrier,
             &Transform {
@@ -2000,12 +2171,221 @@ mod tests {
             100.0,
         );
 
-        let estimate = track.wire_estimate_at(2.0);
+        observe_test_hook_sample(&mut track, 0.65, 1.0);
+        observe_test_hook_sample(&mut track, 0.90, 1.0);
+        observe_test_hook_sample(&mut track, 1.15, 0.0);
+        let estimate = track.wire_estimate_at(1.4);
         assert_eq!(estimate.wire, None);
         assert_eq!(
             estimate.reason,
-            "wire_crossing_not_time_correlated_with_event"
+            "no_complete_hook_deflection_near_touchdown"
         );
+    }
+
+    #[test]
+    fn labelled_t45_and_f14_hook_transients_select_the_dcs_wire() {
+        struct LabelledTrap {
+            module: &'static str,
+            expected_wire: u8,
+            touchdown_time: f64,
+            deflection_time: f64,
+            recovery_time: f64,
+            crossings: &'static [(u8, f64)],
+        }
+
+        let cases = [
+            LabelledTrap {
+                module: "T-45",
+                expected_wire: 4,
+                touchdown_time: 1881.79,
+                deflection_time: 1881.27,
+                recovery_time: 1884.18,
+                crossings: &[
+                    (1, 1880.385_933),
+                    (2, 1880.629_196),
+                    (3, 1880.882_638),
+                    (4, 1881.139_835),
+                ],
+            },
+            LabelledTrap {
+                module: "T-45",
+                expected_wire: 1,
+                touchdown_time: 2941.25,
+                deflection_time: 2940.18,
+                recovery_time: 2942.97,
+                crossings: &[
+                    (1, 2940.104_828),
+                    (2, 2940.345_659),
+                    (3, 2940.591_212),
+                    (4, 2940.847_226),
+                ],
+            },
+            LabelledTrap {
+                module: "F-14BU",
+                expected_wire: 2,
+                touchdown_time: 5871.96,
+                deflection_time: 5870.70,
+                recovery_time: 5877.09,
+                crossings: &[
+                    (1, 5870.483_342),
+                    (2, 5870.690_110),
+                    (3, 5870.901_822),
+                    (4, 5871.117_252),
+                ],
+            },
+            LabelledTrap {
+                module: "F-14BU",
+                expected_wire: 4,
+                touchdown_time: 6599.68,
+                deflection_time: 6598.53,
+                recovery_time: 6605.01,
+                // The stored schema-6 crossing was an early infinite-plane
+                // false positive. This is the finite deck crossing recomputed
+                // from the recorded geometry.
+                crossings: &[(4, 6598.500)],
+            },
+        ];
+
+        for case in cases {
+            let mut track = Track::new(
+                "pilot",
+                CarrierInfo::by_type("CVN_71").unwrap(),
+                AirplaneInfo::by_type(case.module).unwrap(),
+            );
+            track.entered_groove = true;
+            track.previous_x = 100.0;
+            track.wire_crossings = case
+                .crossings
+                .iter()
+                .map(|(wire, timestamp_dcs)| WireCrossingEvidence {
+                    wire: *wire,
+                    timestamp_dcs: *timestamp_dcs,
+                    bracket_gap_ms: 100.0,
+                    method: "finite_hook_plane_crossing",
+                })
+                .collect();
+            observe_test_hook_sample(&mut track, case.deflection_time - 0.35, 1.0);
+            observe_test_hook_sample(&mut track, case.deflection_time - 0.10, 1.0);
+            observe_test_hook_sample(&mut track, case.deflection_time, 0.0);
+            observe_test_hook_sample(&mut track, case.recovery_time, 1.0);
+
+            let estimate = track.wire_estimate_at(case.touchdown_time);
+            assert_eq!(estimate.wire, Some(case.expected_wire), "{}", case.module);
+            assert_eq!(estimate.confidence, "high", "{}", case.module);
+            assert_eq!(
+                estimate.reason,
+                "hook_deflection_correlated_with_wire_crossing"
+            );
+        }
+    }
+
+    #[test]
+    fn stable_hook_up_and_unrecovered_transition_never_estimate_a_wire() {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("F-14BU").unwrap();
+
+        let mut stable_up = Track::new("pilot", carrier_info, plane_info);
+        stable_up.entered_groove = true;
+        stable_up.previous_x = 100.0;
+        stable_up.wire_crossings.push(WireCrossingEvidence {
+            wire: 3,
+            timestamp_dcs: 9.95,
+            bracket_gap_ms: 100.0,
+            method: "finite_hook_plane_crossing",
+        });
+        for time in [9.4, 9.7, 10.0, 10.3] {
+            observe_test_hook_sample(&mut stable_up, time, 0.0);
+        }
+        assert_eq!(stable_up.wire_estimate_at(10.2).wire, None);
+
+        let mut unrecovered = Track::new("pilot", carrier_info, plane_info);
+        unrecovered.entered_groove = true;
+        unrecovered.previous_x = 100.0;
+        unrecovered.wire_crossings = stable_up.wire_crossings.clone();
+        observe_test_hook_sample(&mut unrecovered, 9.4, 1.0);
+        observe_test_hook_sample(&mut unrecovered, 9.7, 1.0);
+        observe_test_hook_sample(&mut unrecovered, 10.0, 0.0);
+        observe_test_hook_sample(&mut unrecovered, 18.1, 1.0);
+        assert_eq!(unrecovered.wire_estimate_at(10.2).wire, None);
+    }
+
+    #[test]
+    fn wire_crossing_requires_groove_and_finite_pendant_proximity() {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let carrier = Transform {
+            forward: DVec3::unit_z(),
+            ..Transform::default()
+        };
+        let midpoint = (carrier_info.cable3.0 + carrier_info.cable3.1) / 2.0;
+        let hook_offset = plane_info.hook;
+        let before = |time, offset| Transform {
+            position: midpoint - hook_offset - DVec3::unit_z() + offset,
+            time,
+            ..Transform::default()
+        };
+        let after = |time, offset| Transform {
+            position: midpoint - hook_offset + DVec3::unit_z() + offset,
+            time,
+            ..Transform::default()
+        };
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+
+        track.observe_wire_crossings(&carrier, &before(1.0, DVec3::zero()), 100.0);
+        track.observe_wire_crossings(&carrier, &after(1.1, DVec3::zero()), 100.0);
+        assert!(track.wire_crossings.is_empty());
+
+        track.entered_groove = true;
+        let outside_pendant = DVec3::new(100.0, 0.0, 0.0);
+        track.observe_wire_crossings(&carrier, &before(2.0, outside_pendant), 100.0);
+        track.observe_wire_crossings(&carrier, &after(2.1, outside_pendant), 100.0);
+        let above_deck = DVec3::new(0.0, MAX_WIRE_VERTICAL_SEPARATION_M + 1.0, 0.0);
+        track.observe_wire_crossings(&carrier, &before(3.0, above_deck), 100.0);
+        track.observe_wire_crossings(&carrier, &after(3.1, above_deck), 100.0);
+        assert!(track.wire_crossings.is_empty());
+
+        track.observe_wire_crossings(&carrier, &before(4.0, DVec3::zero()), 100.0);
+        track.observe_wire_crossings(&carrier, &after(4.1, DVec3::zero()), 100.0);
+        assert_eq!(track.wire_crossings.len(), 1);
+        assert_eq!(track.wire_crossings[0].wire, 3);
+    }
+
+    #[test]
+    fn finish_applies_post_touchdown_hook_estimate_to_recovered_grading() {
+        let mut track = Track::new(
+            "pilot",
+            CarrierInfo::by_type("CVN_71").unwrap(),
+            AirplaneInfo::by_type("F-14BU").unwrap(),
+        );
+        track.entered_groove = true;
+        track.previous_x = 100.0;
+        track.landing_time = Some(10.2);
+        track.grading = Some(Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        });
+        track.wire_crossings.push(WireCrossingEvidence {
+            wire: 3,
+            timestamp_dcs: 9.95,
+            bracket_gap_ms: 100.0,
+            method: "finite_hook_plane_crossing",
+        });
+        observe_test_hook_sample(&mut track, 9.65, 1.0);
+        observe_test_hook_sample(&mut track, 9.90, 1.0);
+        observe_test_hook_sample(&mut track, 10.0, 0.0);
+        observe_test_hook_sample(&mut track, 11.0, 1.0);
+
+        assert_eq!(
+            track.finish().grading,
+            Grading::Recovered {
+                cable: None,
+                cable_estimated: Some(3),
+            }
+        );
+    }
+
+    fn observe_test_hook_sample(track: &mut Track, time: f64, raw: f64) {
+        track.observe_hook_sample(time, 0, 0.0, Some(raw), HookSampleStatus::Success);
     }
 
     #[test]

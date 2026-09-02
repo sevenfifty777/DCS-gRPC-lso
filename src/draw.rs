@@ -377,6 +377,29 @@ fn side_range_y(track: &TrackResult) -> Range<f64> {
     }
 }
 
+fn recovery_label(grading: &Grading, is_vstol: bool) -> Cow<'static, str> {
+    match grading {
+        Grading::Unknown => Cow::Borrowed(""),
+        Grading::Bolter => Cow::Borrowed("Bolter"),
+        Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
+        Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
+        Grading::Recovered {
+            cable,
+            cable_estimated,
+        } => {
+            if is_vstol {
+                Cow::Borrowed("V/STOL recovery")
+            } else {
+                match crate::track::select_wire_for_display(*cable_estimated, *cable) {
+                    (Some(wire), "estimated") => Cow::Owned(format!("Wire {} (estimated)", wire)),
+                    (Some(wire), "dcs") => Cow::Owned(format!("Wire {} (DCS)", wire)),
+                    _ => Cow::Borrowed("(failed to detect cable)"),
+                }
+            }
+        }
+    }
+}
+
 #[tracing::instrument(skip_all)]
 pub fn draw_chart(
     out_dir: &std::path::Path,
@@ -437,23 +460,7 @@ pub fn draw_chart(
     )?;
 
     root_drawing_area.draw_text(
-        &match track.grading {
-            Grading::Unknown => Cow::Borrowed(""),
-            Grading::Bolter => Cow::Borrowed("Bolter"),
-            Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
-            Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
-            Grading::Recovered {
-                cable_estimated, ..
-            } => {
-                if track.carrier_info.is_vstol() {
-                    Cow::Borrowed("V/STOL recovery")
-                } else {
-                    cable_estimated
-                        .map(|wire| Cow::Owned(format!("Wire {} (estimated)", wire)))
-                        .unwrap_or(Cow::Borrowed("(failed to detect cable)"))
-                }
-            }
-        },
+        &recovery_label(&track.grading, track.carrier_info.is_vstol()),
         &text_style,
         (16, 112),
     )?;
@@ -1221,9 +1228,29 @@ impl ValueFormatter<f64> for CustomRange {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        chart_layout, select_catobar_display_runs, select_catobar_final_datums,
-        select_vstol_final_datums, Datum, PANEL_GAP,
+        chart_layout, recovery_label, select_catobar_display_runs, select_catobar_final_datums,
+        select_vstol_final_datums, Datum, Grading, PANEL_GAP,
     };
+
+    #[test]
+    fn catobar_recovery_label_uses_dcs_wire_when_estimate_is_unavailable() {
+        let grading = Grading::Recovered {
+            cable: Some(4),
+            cable_estimated: None,
+        };
+
+        assert_eq!(recovery_label(&grading, false), "Wire 4 (DCS)");
+    }
+
+    #[test]
+    fn catobar_recovery_label_keeps_dcs_wire_authoritative() {
+        let grading = Grading::Recovered {
+            cable: Some(4),
+            cable_estimated: Some(3),
+        };
+
+        assert_eq!(recovery_label(&grading, false), "Wire 4 (DCS)");
+    }
 
     fn two_complete_final_approach_runs() -> Vec<Datum> {
         let mut datums = Vec::new();

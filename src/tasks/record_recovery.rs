@@ -95,8 +95,16 @@ struct RecoveryReport<'a> {
     events: &'a [crate::track::EventEvidence],
     spot_zone: &'a crate::track::SpotZoneObservation,
     touchdown_horizontal_speed_mps: Option<f64>,
-    hook_observation: &'a crate::track::HookObservation,
+    hook_observation: HookObservationReport<'a>,
     ownship_hook_observation: &'a OwnshipHookObservation,
+}
+
+#[derive(serde::Serialize)]
+struct HookObservationReport<'a> {
+    evidence_source: &'static str,
+    draw_argument: Option<u32>,
+    #[serde(flatten)]
+    observation: &'a crate::track::HookObservation,
 }
 
 const GRADING_VERSION: &str = "project-derived-v1";
@@ -176,6 +184,14 @@ fn external_hook_draw_argument(plane_type: &str) -> Option<u32> {
     }
 }
 
+fn hook_evidence_source(draw_argument: Option<u32>) -> &'static str {
+    if draw_argument.is_some() {
+        "external_draw_argument"
+    } else {
+        "not_requested"
+    }
+}
+
 fn drain_hook_samples(
     rx: &mut mpsc::Receiver<HookPoll>,
     track: &mut Track,
@@ -236,9 +252,11 @@ fn recovery_outcome(grading: &Grading, is_vstol: bool) -> String {
         (
             false,
             Grading::Recovered {
-                cable_estimated, ..
+                cable,
+                cable_estimated,
             },
-        ) => cable_estimated
+        ) => cable
+            .or(*cable_estimated)
             .map(|wire| format!("Wire #{}", wire))
             .unwrap_or_else(|| "-".to_string()),
     }
@@ -300,6 +318,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     };
     tracing::info!(
         acquisition_mode = acquisition_mode.as_str(),
+        aircraft_type = params.plane_type,
+        hook_evidence_source = hook_evidence_source(draw_argument),
+        hook_draw_argument = ?draw_argument,
         "selected recovery telemetry mode"
     );
     let interval =
@@ -960,6 +981,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         _ => (None, None),
     };
     let wire_divergent = matches!((wire_estimated, wire_dcs), (Some(a), Some(b)) if a != b);
+    let (wire, wire_primary) = crate::track::select_wire_for_display(wire_estimated, wire_dcs);
     let confidence = match track.telemetry_quality.completeness {
         crate::track::Completeness::Complete
             if wire_estimated == wire_dcs && wire_dcs.is_some() =>
@@ -998,7 +1020,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     // independent intended/nearest fields below.
     let spot_label = track.intended_spot;
     let report = RecoveryReport {
-        schema_version: 5,
+        schema_version: 7,
         recovery_id: &recovery_id,
         pilot_name: &track.pilot_name,
         pilot_kind: params.pilot_kind,
@@ -1043,14 +1065,18 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         wire_estimated,
         wire_dcs,
         wire_divergent,
-        wire_primary: "estimated",
+        wire_primary,
         wire_estimation: &track.wire_estimation,
         grading_availability,
         telemetry_quality: &track.telemetry_quality,
         events: &track.events,
         spot_zone: &track.spot_zone,
         touchdown_horizontal_speed_mps: track.touchdown_horizontal_speed_mps,
-        hook_observation: &track.hook_observation,
+        hook_observation: HookObservationReport {
+            evidence_source: hook_evidence_source(draw_argument),
+            draw_argument,
+            observation: &track.hook_observation,
+        },
         ownship_hook_observation: &ownship_hook_observation,
     };
     match serde_json::to_vec_pretty(&report) {
@@ -1062,7 +1088,6 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         Err(err) => tracing::error!(?err, "failed to serialise JSON report"),
     }
 
-    let wire = wire_estimated;
     let display_type = match aircraft_id {
         Some(2) => "F-14A/B",
         Some(3) => "F-14B(U)",
@@ -1498,8 +1523,9 @@ fn changed_precision(a: Option<f64>, b: Option<f64>, theta: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_hook_samples, external_hook_draw_argument, may_fallback_to_legacy, recovery_id,
-        recovery_outcome, transform_from_event_unit, write_atomic_if_absent, HookPoll,
+        drain_hook_samples, external_hook_draw_argument, hook_evidence_source,
+        may_fallback_to_legacy, recovery_id, recovery_outcome, transform_from_event_unit,
+        write_atomic_if_absent, HookObservationReport, HookPoll,
     };
     use crate::data::{AirplaneInfo, CarrierInfo};
     use crate::track::{Grading, HookSampleStatus, Track};
@@ -1539,6 +1565,37 @@ mod tests {
         assert_eq!(external_hook_draw_argument("FA-18C_hornet"), Some(25));
         assert_eq!(external_hook_draw_argument("T-45"), Some(25));
         assert_eq!(external_hook_draw_argument("AV8BNA"), None);
+    }
+
+    #[test]
+    fn hook_observation_report_persists_external_argument_provenance() {
+        let observation = crate::track::HookObservation::default();
+        for draw_argument in [25, 1305] {
+            let report = HookObservationReport {
+                evidence_source: hook_evidence_source(Some(draw_argument)),
+                draw_argument: Some(draw_argument),
+                observation: &observation,
+            };
+
+            let json = serde_json::to_value(report).unwrap();
+            assert_eq!(json["evidence_source"], "external_draw_argument");
+            assert_eq!(json["draw_argument"], draw_argument);
+            assert!(json.get("successful_samples").is_some());
+        }
+    }
+
+    #[test]
+    fn hook_observation_report_marks_unrequested_argument() {
+        let observation = crate::track::HookObservation::default();
+        let report = HookObservationReport {
+            evidence_source: hook_evidence_source(None),
+            draw_argument: None,
+            observation: &observation,
+        };
+
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(json["evidence_source"], "not_requested");
+        assert!(json["draw_argument"].is_null());
     }
 
     #[tokio::test]
@@ -1593,6 +1650,26 @@ mod tests {
         };
 
         assert_eq!(recovery_outcome(&grading, false), "-");
+    }
+
+    #[test]
+    fn arrested_recovery_outcome_prefers_dcs_wire() {
+        let grading = Grading::Recovered {
+            cable: Some(4),
+            cable_estimated: Some(2),
+        };
+
+        assert_eq!(recovery_outcome(&grading, false), "Wire #4");
+    }
+
+    #[test]
+    fn arrested_recovery_outcome_uses_estimate_without_dcs_wire() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: Some(2),
+        };
+
+        assert_eq!(recovery_outcome(&grading, false), "Wire #2");
     }
 
     #[test]
