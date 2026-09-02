@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use crate::client::{HookClient, MissionClient, RecoveryClient, UnitClient};
 use crate::grading::{PassGrade, SpotGrade};
 use crate::metrics::RpcKind;
+use crate::ownship_hook::{OwnshipHookObservation, OwnshipHookSampler};
 use crate::telemetry::{TelemetryAligner, TelemetryInvalidReason, ACTIVE_WATCHDOG_MS};
 use crate::track::{Datum, GateDeviations, Grading, HookSampleStatus, Track};
 use crate::transform::Transform;
@@ -95,6 +96,7 @@ struct RecoveryReport<'a> {
     spot_zone: &'a crate::track::SpotZoneObservation,
     touchdown_horizontal_speed_mps: Option<f64>,
     hook_observation: &'a crate::track::HookObservation,
+    ownship_hook_observation: &'a OwnshipHookObservation,
 }
 
 const GRADING_VERSION: &str = "project-derived-v1";
@@ -120,6 +122,7 @@ impl Drop for AbortOnDrop {
 async fn sample_hook(
     channel: tonic::transport::Channel,
     plane_name: String,
+    draw_argument: u32,
     config: super::HookSamplingConfig,
     tx: mpsc::Sender<HookPoll>,
 ) {
@@ -130,7 +133,7 @@ async fn sample_hook(
     loop {
         interval.tick().await;
         let (raw, status) = match client
-            .get_draw_argument_value_with_timeout(&plane_name, 25, config.timeout)
+            .get_draw_argument_value_with_timeout(&plane_name, draw_argument, config.timeout)
             .await
         {
             Ok(raw) if raw.is_finite() => (Some(raw), HookSampleStatus::Success),
@@ -162,6 +165,15 @@ fn unix_time_ms() -> u64 {
 
 fn may_fallback_to_legacy(requested: RecoveryTelemetryMode, code: tonic::Code) -> bool {
     requested == RecoveryTelemetryMode::Auto && code == tonic::Code::Unimplemented
+}
+
+fn external_hook_draw_argument(plane_type: &str) -> Option<u32> {
+    match plane_type {
+        "F-14A-135-GR" | "F-14A-135-GR-Early" | "F-14A-95-GR" | "F-14B" | "F-14A/B"
+        | "F-14B(U)" | "F-14BU" => Some(1305),
+        "FA-18C_hornet" | "T-45" => Some(25),
+        _ => None,
+    }
 }
 
 fn drain_hook_samples(
@@ -261,7 +273,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut mission = MissionClient::new(params.ch.clone());
     let mut hook = HookClient::new(params.ch.clone());
     let mut world = crate::client::WorldClient::new(params.ch.clone());
-    let draw_argument = (!params.carrier_info.is_vstol()).then_some(25);
+    let draw_argument = external_hook_draw_argument(params.plane_type);
     let acquisition_mode = match params.recovery_telemetry_mode {
         RecoveryTelemetryMode::Legacy => AcquisitionMode::Legacy,
         RecoveryTelemetryMode::Auto | RecoveryTelemetryMode::Atomic => {
@@ -349,17 +361,23 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let events = mission.stream_events().await?;
     let _event_stream_guard = crate::metrics::RUNTIME_METRICS.stream();
     let (hook_tx, mut hook_rx) = mpsc::channel(64);
-    let _hook_sampler = (!params.carrier_info.is_vstol()
-        && acquisition_mode == AcquisitionMode::Legacy
+    let _hook_sampler = (acquisition_mode == AcquisitionMode::Legacy
         && params.hook_sampling.mode == super::HookSamplingMode::Independent)
-        .then(|| {
+        .then_some(draw_argument)
+        .flatten()
+        .map(|draw_argument| {
             AbortOnDrop(tokio::spawn(sample_hook(
                 params.ch.clone(),
                 params.plane_name.to_string(),
+                draw_argument,
                 params.hook_sampling,
                 hook_tx,
             )))
         });
+    let mut ownship_hook_observation = OwnshipHookObservation::new(params.plane_id);
+    let mut ownship_hook_sampler = (!params.carrier_info.is_vstol()).then(|| {
+        OwnshipHookSampler::start(params.ch.clone(), params.plane_id, params.hook_sampling)
+    });
 
     let mut known_carrier_coords = None;
     let mut known_plane_coords = None;
@@ -494,13 +512,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         None
                     }
                     Some((DrawArgumentStatus::NotRequested, _)) => None,
-                    None if params.carrier_info.is_vstol()
+                    None if draw_argument.is_none()
                         || params.hook_sampling.mode == super::HookSamplingMode::Independent =>
                     {
                         None
                     }
                     None => client2
-                        .get_draw_argument_value(params.plane_name, 25)
+                        .get_draw_argument_value(
+                            params.plane_name,
+                            draw_argument.expect("guarded draw argument"),
+                        )
                         .await
                         .ok(),
                 };
@@ -571,6 +592,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         plane.time,
                         params.hook_sampling.frequency_hz,
                     );
+                }
+                if let Some(sampler) = ownship_hook_sampler.as_mut() {
+                    sampler.drain(&mut ownship_hook_observation);
                 }
                 if !keep_tracking {
                     break;
@@ -870,6 +894,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     } else {
         Vec::new()
     };
+    if let Some(sampler) = ownship_hook_sampler.as_mut() {
+        sampler.drain(&mut ownship_hook_observation);
+    }
     let track = std::sync::Arc::new(datums.finish());
 
     // Discard if no recognisable outcome was established (e.g. plane flew through the zone
@@ -971,7 +998,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     // independent intended/nearest fields below.
     let spot_label = track.intended_spot;
     let report = RecoveryReport {
-        schema_version: 4,
+        schema_version: 5,
         recovery_id: &recovery_id,
         pilot_name: &track.pilot_name,
         pilot_kind: params.pilot_kind,
@@ -1024,6 +1051,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         spot_zone: &track.spot_zone,
         touchdown_horizontal_speed_mps: track.touchdown_horizontal_speed_mps,
         hook_observation: &track.hook_observation,
+        ownship_hook_observation: &ownship_hook_observation,
     };
     match serde_json::to_vec_pretty(&report) {
         Ok(json) => {
@@ -1470,8 +1498,8 @@ fn changed_precision(a: Option<f64>, b: Option<f64>, theta: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_hook_samples, may_fallback_to_legacy, recovery_id, recovery_outcome,
-        transform_from_event_unit, write_atomic_if_absent, HookPoll,
+        drain_hook_samples, external_hook_draw_argument, may_fallback_to_legacy, recovery_id,
+        recovery_outcome, transform_from_event_unit, write_atomic_if_absent, HookPoll,
     };
     use crate::data::{AirplaneInfo, CarrierInfo};
     use crate::track::{Grading, HookSampleStatus, Track};
@@ -1493,6 +1521,24 @@ mod tests {
             RecoveryTelemetryMode::Auto,
             tonic::Code::Unavailable
         ));
+    }
+
+    #[test]
+    fn external_hook_arguments_follow_modelviewer_validation() {
+        for plane_type in [
+            "F-14A-135-GR",
+            "F-14A-135-GR-Early",
+            "F-14A-95-GR",
+            "F-14B",
+            "F-14A/B",
+            "F-14B(U)",
+            "F-14BU",
+        ] {
+            assert_eq!(external_hook_draw_argument(plane_type), Some(1305));
+        }
+        assert_eq!(external_hook_draw_argument("FA-18C_hornet"), Some(25));
+        assert_eq!(external_hook_draw_argument("T-45"), Some(25));
+        assert_eq!(external_hook_draw_argument("AV8BNA"), None);
     }
 
     #[tokio::test]

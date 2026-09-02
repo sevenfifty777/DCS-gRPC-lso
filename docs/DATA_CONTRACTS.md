@@ -2,7 +2,7 @@
 
 ## JSON recovery report
 
-New live reports use `schema_version: 3`. The legacy top-level fields (`pilot_name`, `grading`,
+New live reports use `schema_version: 5`. The legacy top-level fields (`pilot_name`, `grading`,
 `pass_grade`, `dcs_grading`, `gate_deviations`, `datums`, `mission_datetime`) remain present with
 compatible meanings. Additive fields include:
 
@@ -16,6 +16,11 @@ compatible meanings. Additive fields include:
 - recording/completion times and LSO/DCS-gRPC version evidence;
 - explicit grading availability and live telemetry health;
 - timestamped hook samples with success/timeout/error/stale state and pre-touch provenance;
+- physical external-model hook samples use draw argument `1305` for supported F-14 variants and
+  argument `25` for F/A-18C and T-45;
+- ownship-only `LoGetMechInfo().hook` diagnostics with raw `status_value` and `value`, DCS model
+  time, aircraft identity checks and explicit unavailable/error states. These fields are evidence
+  collection only until live F-14, F/A-18C and T-45 polarity is validated;
 - continuous hook-plane wire crossings, estimate confidence and reason.
 
 Individual JSON, PNG, ACMI, Discord payloads and public logs must never contain an UCID. The
@@ -53,8 +58,8 @@ was created. This controls session-log and Discord idempotence.
 - old databases are migrated in place and covered by a legacy-schema test;
 - dashboard consumers may ignore unknown fields;
 - absence of a new field means "legacy/unknown", not a favourable default;
-- protobuf and DCS-gRPC remain pinned to v0.9.0 / `5bd6d6e...` until the deployed server is
-  authenticated and a production pin is approved.
+- the local hook-mechanization integration uses the sibling `rust-server/stubs` checkout; replace
+  it with the exact DCS-gRPC release tag that publishes `GetOwnshipHookState` before packaging.
 
 Before any future schema or destructive cleanup, retain fixtures for the oldest database and JSON
 actually found in production and test both forward migration and dashboard display.

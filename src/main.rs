@@ -7,6 +7,7 @@ mod error;
 mod grading;
 mod lso_notation;
 mod metrics;
+mod ownship_hook;
 mod tasks;
 mod telemetry;
 #[cfg(test)]

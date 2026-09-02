@@ -36,10 +36,10 @@ zip = "2.2"
 
 [dependencies.stubs]
 package = "dcs-grpc-stubs"
-git = "https://github.com/sevenfifty777/rust-server.git"
-tag = "v0.9.1"
+# Local integration pin while GetOwnshipHookState is validated. Replace this
+# with the exact release tag that publishes the RPC before release packaging.
+path = "../rust-server/stubs"
 features = ["client"]
 
 [dev-dependencies]
 tracing-test = "0.2"
-
