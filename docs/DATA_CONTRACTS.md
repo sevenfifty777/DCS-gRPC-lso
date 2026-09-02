@@ -9,22 +9,40 @@ compatible meanings. Additive fields include:
 - `recovery_id`, aircraft/carrier IDs and types, recovery mode, session and generation;
 - `pilot_kind` (`human` or `ai`), never the UCID;
 - approach/final grade, optional points, outcome, cause, confidence, completeness and grading source;
+- backward-compatible multiple causes: legacy `cause` remains the primary cause and `causes`
+  contains `{ primary, secondary[] }`. Position buffer loss, telemetry gaps, invalid telemetry,
+  insufficient gates and unconfirmed arrest are retained independently; hook/event truncation is
+  diagnostic only;
 - intended/nearest spot, spot score and informational spot-zone observation;
 - estimated/DCS wire, divergence and primary display provenance;
 - gate quality plus raw/corrected telemetry diagnostics;
 - ordered event evidence, raw hook observation and first-contact horizontal speed.
-- recording/completion times and LSO/DCS-gRPC version evidence;
+- `event_correlation`, with stream status (`available`, `unavailable` or intentionally `disabled`),
+  detailed end/failure information, whether outcome evidence preceded the outage, and an independent
+  outcome-confirmation decision. `event_stream_unavailable` is a secondary cause and never changes
+  positional completeness;
+- recording/completion times, Git commit/dirty state and DCS-gRPC client/server compatibility;
 - explicit grading availability and live telemetry health;
 - timestamped hook samples with success/timeout/error/stale state and pre-touch provenance;
-- continuous hook-plane wire crossings, estimate confidence and reason.
+- continuous hook-plane wire crossings, estimate confidence and reason;
+- per-recovery frequency, gap/source-age and paired-transform poll latency percentiles.
+
+When detector suspension is enabled, `detector_suspension_scope` is `same_aircraft`: detectors for
+other aircraft continue polling so simultaneous recoveries remain discoverable.
+
+`baseline_manifest` is a typed, optional operator-supplied manifest. It carries DCS build,
+mission/module versions and SHA-256 values for the mission and deployed DCS-gRPC DLL/Lua files.
+Unknown values remain absent rather than being inferred. When a manifest is supplied, unknown keys,
+an empty object and malformed SHA-256 strings are rejected.
 
 Individual JSON, PNG, ACMI, Discord payloads and public logs must never contain an UCID. The
 deterministic recovery ID contains only session/generation/unit IDs and DCS time.
 
 ## SQLite
 
-`lso.db` is private dynamic state. `/api/passes` may expose `pilot_ucid` because the dashboard is a
-loopback-only private endpoint in phase 1.
+`lso.db` is private dynamic state. It is neither opened nor created in `--positions-only` mode, and
+the dashboard is disabled in that mode. `/api/passes` may expose `pilot_ucid` because the dashboard
+is a loopback-only private endpoint in phase 1.
 
 Migrations are additive and recorded in `schema_migrations`:
 
@@ -35,6 +53,7 @@ Migrations are additive and recorded in `schema_migrations`:
 | 3 | `points_awarded`, separating a real zero from no points |
 | 4 | separate intended spot, actual nearest active spot and distance to intended spot |
 | 5 | scored-segment gap, telemetry health, wire-estimate confidence and grading availability |
+| 6 | JSON-encoded secondary diagnostic causes; the legacy `cause` column remains primary |
 
 Startup inspects `PRAGMA table_info(passes)` before each `ALTER TABLE`. Unexpected migration errors
 are returned; they are never swallowed as duplicate-column errors. Existing rows are preserved.
@@ -44,7 +63,13 @@ compatibility and `points_awarded = false`; API serialization returns the latter
 display a fabricated zero-point score.
 
 `recovery_id` has a unique partial index. Inserts are `INSERT OR IGNORE` and report whether a new row
-was created. This controls session-log and Discord idempotence.
+was created. This controls session-log and Discord idempotence. File publication is atomic
+create-if-absent: JSON ownership identifies the winning producer, and only that producer continues
+with ACMI, SQLite, rendering and Discord. Existing artifacts are never replaced.
+
+`lso_dirty` covers modified, staged and deleted tracked files. Untracked files deliberately do not
+participate; this keeps the definition aligned with Cargo rebuild triggers and avoids watching
+`target/` or creating rebuild loops.
 
 ## Compatibility policy
 

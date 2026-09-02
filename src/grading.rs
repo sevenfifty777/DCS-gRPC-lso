@@ -372,14 +372,17 @@ mod tests {
             three_quarter_quality: GateQuality {
                 status: GateStatus::Valid,
                 reason: None,
+                bracket_gap_ms: Some(100.0),
             },
             half_quality: GateQuality {
                 status: GateStatus::Valid,
                 reason: None,
+                bracket_gap_ms: Some(100.0),
             },
             quarter_quality: GateQuality {
                 status: GateStatus::Valid,
                 reason: None,
+                bracket_gap_ms: Some(100.0),
             },
         }
     }
@@ -564,7 +567,7 @@ mod tests {
 
         assert_eq!(
             compute_pass_grade(&grading, &g, Some(16.5)),
-            PassGrade::Incomplete
+            PassGrade::OkParentheses
         );
     }
 

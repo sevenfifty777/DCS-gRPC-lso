@@ -22,6 +22,15 @@ pub async fn detect_recovery_attempt(params: TaskParams<'_>) -> Result<(), crate
         crate::utils::interval::interval(Duration::from_secs(2), params.shutdown.clone());
 
     while interval.next().await.is_some() {
+        if params.suspend_detectors_during_recovery
+            && params.active_priority_planes.contains(params.plane_id)
+        {
+            tracing::trace!(
+                plane_id = params.plane_id,
+                "same-aircraft detector polling suspended for priority recovery collection"
+            );
+            continue;
+        }
         let result = futures_util::future::try_join(
             client1.get_transform(params.carrier_name),
             client2.get_transform(params.plane_name),

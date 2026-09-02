@@ -4,14 +4,14 @@ use std::io::Cursor;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::Either;
-use futures_util::stream::select;
+use futures_util::stream::{select, BoxStream};
 use futures_util::StreamExt;
 use once_cell::sync::Lazy;
 use serenity::builder::{CreateAttachment, CreateEmbed, ExecuteWebhook};
 use serenity::http::Http;
 use serenity::model::id::UserId;
 use serenity::model::mention::Mention;
-use stubs::common::v0::{initiator, Airbase, Coalition, Initiator, Unit};
+use stubs::common::v0::{initiator, Airbase, Coalition, Initiator};
 use stubs::mission::v0::stream_events_response::{
     CrashEvent, DeadEvent, Event, LandEvent, LandingQualityMarkEvent, PlayerLeaveUnitEvent,
     RunwayTouchEvent, UnitLostEvent,
@@ -23,8 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::client::{HookClient, MissionClient, UnitClient};
 use crate::grading::{PassGrade, SpotGrade};
-use crate::metrics::RpcKind;
-use crate::telemetry::{TelemetryAligner, TelemetryInvalidReason, ACTIVE_WATCHDOG_MS};
+use crate::telemetry::{TelemetryInvalidReason, ACTIVE_WATCHDOG_MS};
 use crate::track::{Datum, GateDeviations, Grading, HookSampleStatus, Track};
 use crate::transform::Transform;
 
@@ -76,9 +75,21 @@ struct RecoveryReport<'a> {
     touchdown_time_dcs: Option<f64>,
     lso_version: &'static str,
     lso_commit: &'static str,
+    lso_dirty: bool,
     dcs_grpc_version: &'a str,
+    dcs_grpc_client_stubs: &'static str,
+    dcs_grpc_compatibility: &'a str,
+    acquisition_source: &'static str,
+    collection_profile: &'static str,
+    target_frequency_hz: u32,
+    missed_tick_behavior: &'static str,
+    detectors_suspended: bool,
+    detector_suspension_scope: &'static str,
+    baseline_manifest: &'a super::BaselineManifest,
     outcome: &'a str,
+    /// Legacy primary-cause alias retained for schema-v3 consumers.
     cause: &'a str,
+    causes: ReportCauses<'a>,
     confidence: &'a str,
     grading_version: &'static str,
     grading_source: &'static str,
@@ -93,18 +104,24 @@ struct RecoveryReport<'a> {
     spot_zone: &'a crate::track::SpotZoneObservation,
     touchdown_horizontal_speed_mps: Option<f64>,
     hook_observation: &'a crate::track::HookObservation,
+    event_correlation: &'a super::event_correlator::EventCorrelationSummary,
+}
+
+#[derive(serde::Serialize)]
+struct ReportCauses<'a> {
+    primary: &'a str,
+    secondary: &'a [&'static str],
 }
 
 const GRADING_VERSION: &str = "project-derived-v1";
 const GRADING_SOURCE: &str = "PROJECT-DERIVED";
-static OUTPUT_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 #[derive(Debug)]
 struct HookPoll {
     received_at: Instant,
     received_unix_ms: u64,
     raw: Option<f64>,
     status: HookSampleStatus,
+    grpc_code: Option<String>,
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -112,6 +129,36 @@ struct AbortOnDrop(tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+struct PriorityCollectorGuard {
+    active: Option<std::sync::Arc<super::ActivePriorityPlanes>>,
+    plane_id: u32,
+}
+
+impl PriorityCollectorGuard {
+    fn new(params: &TaskParams<'_>) -> Self {
+        if params.suspend_detectors_during_recovery {
+            params.active_priority_planes.activate(params.plane_id);
+            Self {
+                active: Some(params.active_priority_planes.clone()),
+                plane_id: params.plane_id,
+            }
+        } else {
+            Self {
+                active: None,
+                plane_id: params.plane_id,
+            }
+        }
+    }
+}
+
+impl Drop for PriorityCollectorGuard {
+    fn drop(&mut self) {
+        if let Some(active) = &self.active {
+            active.deactivate(self.plane_id);
+        }
     }
 }
 
@@ -127,26 +174,59 @@ async fn sample_hook(
     let mut client = UnitClient::new(channel);
     loop {
         interval.tick().await;
-        let (raw, status) = match client
+        let (raw, status, grpc_code) = match client
             .get_draw_argument_value_with_timeout(&plane_name, 25, config.timeout)
             .await
         {
-            Ok(raw) if raw.is_finite() => (Some(raw), HookSampleStatus::Success),
-            Ok(_) => (None, HookSampleStatus::Error),
-            Err(status) if status.code() == tonic::Code::DeadlineExceeded => {
-                (None, HookSampleStatus::Timeout)
-            }
-            Err(_) => (None, HookSampleStatus::Error),
+            Ok(raw) if raw.is_finite() => (Some(raw), HookSampleStatus::Success, None),
+            Ok(_) => (
+                None,
+                HookSampleStatus::Error,
+                Some("non_finite_response".to_string()),
+            ),
+            Err(status) if status.code() == tonic::Code::DeadlineExceeded => (
+                None,
+                HookSampleStatus::Timeout,
+                Some(grpc_code_name(status.code()).to_string()),
+            ),
+            Err(status) => (
+                None,
+                HookSampleStatus::Error,
+                Some(grpc_code_name(status.code()).to_string()),
+            ),
         };
         let poll = HookPoll {
             received_at: Instant::now(),
             received_unix_ms: unix_time_ms(),
             raw,
             status,
+            grpc_code,
         };
         if tx.try_send(poll).is_err() {
             crate::metrics::RUNTIME_METRICS.hook_sample_dropped();
         }
+    }
+}
+
+fn grpc_code_name(code: tonic::Code) -> &'static str {
+    match code {
+        tonic::Code::Ok => "ok",
+        tonic::Code::Cancelled => "cancelled",
+        tonic::Code::Unknown => "unknown",
+        tonic::Code::InvalidArgument => "invalid_argument",
+        tonic::Code::DeadlineExceeded => "deadline_exceeded",
+        tonic::Code::NotFound => "not_found",
+        tonic::Code::AlreadyExists => "already_exists",
+        tonic::Code::PermissionDenied => "permission_denied",
+        tonic::Code::ResourceExhausted => "resource_exhausted",
+        tonic::Code::FailedPrecondition => "failed_precondition",
+        tonic::Code::Aborted => "aborted",
+        tonic::Code::OutOfRange => "out_of_range",
+        tonic::Code::Unimplemented => "unimplemented",
+        tonic::Code::Internal => "internal",
+        tonic::Code::Unavailable => "unavailable",
+        tonic::Code::DataLoss => "data_loss",
+        tonic::Code::Unauthenticated => "unauthenticated",
     }
 }
 
@@ -172,26 +252,15 @@ fn drain_hook_samples(
         } else {
             poll.status
         };
-        track.observe_hook_sample(
+        track.observe_hook_sample_with_error(
             associated_time_dcs,
             poll.received_unix_ms,
             age_ms,
             poll.raw,
             status,
+            poll.grpc_code,
         );
     }
-}
-
-/// Builds an event transform only when DCS supplied the position and orientation
-/// required to correlate the evidence geometrically. A zero/default transform is
-/// not evidence of a touchdown.
-fn transform_from_event_unit(time: f64, unit: Unit) -> Option<Transform> {
-    Some(Transform::from((
-        time,
-        unit.position?,
-        unit.orientation?,
-        unit.velocity.unwrap_or_default(),
-    )))
 }
 
 pub static FILENAME_DATETIME_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>> =
@@ -218,11 +287,33 @@ fn recovery_outcome(grading: &Grading, is_vstol: bool) -> String {
         (
             false,
             Grading::Recovered {
-                cable_estimated, ..
+                cable,
+                cable_estimated,
             },
-        ) => cable_estimated
-            .map(|wire| format!("Wire #{}", wire))
-            .unwrap_or_else(|| "-".to_string()),
+        ) => match (cable, cable_estimated) {
+            (Some(dcs), Some(estimated)) if dcs == estimated => {
+                format!("Arrested — wire {dcs} (DCS/LQM + Rust)")
+            }
+            (Some(dcs), Some(estimated)) => {
+                format!("Arrested — DCS/LQM wire {dcs}; Rust estimate {estimated}")
+            }
+            (Some(dcs), None) => {
+                format!("Arrested — DCS/LQM wire {dcs}; Rust estimate unavailable")
+            }
+            (None, Some(estimated)) => format!("Wire #{estimated} (Rust estimate)"),
+            (None, None) => "Arrested — wire evidence unavailable".to_string(),
+        },
+    }
+}
+
+fn completeness_cause(completeness: crate::track::Completeness) -> &'static str {
+    match completeness {
+        crate::track::Completeness::InsufficientGates => "insufficient_gates",
+        crate::track::Completeness::TelemetryGap => "telemetry_gap",
+        crate::track::Completeness::InvalidTelemetry => "invalid_telemetry",
+        crate::track::Completeness::UnconfirmedArrest => "unconfirmed_arrest",
+        crate::track::Completeness::BufferLimit => "position_buffer_limit",
+        crate::track::Completeness::Complete => "complete",
     }
 }
 
@@ -232,6 +323,7 @@ fn recovery_outcome(grading: &Grading, is_vstol: bool) -> String {
 )]
 pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error::Error> {
     let _recovery_guard = crate::metrics::RUNTIME_METRICS.recovery();
+    let _priority_guard = PriorityCollectorGuard::new(&params);
     tracing::debug!("started recording");
 
     // Identity was resolved against the occupied network slot when the task was
@@ -249,11 +341,15 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         .filter(|c| c.is_ascii_alphanumeric())
         .collect::<String>();
 
-    let mut client1 = UnitClient::new(params.ch.clone());
-    let mut client2 = UnitClient::new(params.ch.clone());
-    let mut mission = MissionClient::new(params.ch.clone());
-    let mut hook = HookClient::new(params.ch.clone());
-    let mut world = crate::client::WorldClient::new(params.ch.clone());
+    let mut acmi_unit_client = params
+        .record_acmi
+        .then(|| UnitClient::new(params.ch.clone()));
+    let mut legacy_hook_client = (params.hook_sampling.mode
+        == super::HookSamplingMode::LegacyInline)
+        .then(|| UnitClient::new(params.ch.clone()));
+    let mut position_collector =
+        super::position_collector::PositionCollector::new(params.ch.clone());
+    let mut mission = (!params.positions_only).then(|| MissionClient::new(params.ch.clone()));
     let interval = crate::utils::interval::interval(Duration::from_millis(100), params.shutdown);
 
     let mut acmi = Cursor::new(Vec::new());
@@ -270,17 +366,27 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         };
     }
     let mut datums = Track::new(pilot_name.clone(), params.carrier_info, params.plane_info);
-    let mut telemetry_aligner = TelemetryAligner::new();
+    let mut event_correlator = if params.positions_only {
+        super::event_correlator::EventCorrelator::disabled(params.plane_id, params.carrier_id)
+    } else {
+        super::event_correlator::EventCorrelator::new(params.plane_id, params.carrier_id)
+    };
     let mut last_telemetry_success = Instant::now();
 
     if params.record_acmi {
-        let reference_time = mission.get_scenario_start_time().await?;
+        let reference_time = mission
+            .as_mut()
+            .expect("mission client enabled with ACMI")
+            .get_scenario_start_time()
+            .await?;
         write_acmi!(GlobalProperty::ReferenceTime(reference_time));
         write_acmi!(GlobalProperty::RecordingTime(
             OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
         ));
 
-        let mission_name = hook.get_mission_name().await?;
+        let mission_name = HookClient::new(params.ch.clone())
+            .get_mission_name()
+            .await?;
         write_acmi!(GlobalProperty::Title(format!(
             "Carrier Recovery during {}",
             mission_name
@@ -292,11 +398,18 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     }
 
     // Query the theatre (map) name once at the start of the recording.
-    let map_name: String = match world.get_theatre().await {
-        Ok(t) => t,
-        Err(err) => {
-            tracing::warn!(?err, "failed to query theatre name");
-            String::new()
+    let map_name: String = if params.positions_only {
+        String::new()
+    } else {
+        match crate::client::WorldClient::new(params.ch.clone())
+            .get_theatre()
+            .await
+        {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::warn!(?err, "failed to query theatre name");
+                String::new()
+            }
         }
     };
 
@@ -305,23 +418,46 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut lon_ref = 0.0;
 
     if params.record_acmi {
-        write_acmi!(create_initial_update(&mut client1, 1, params.carrier_name).await?);
-        write_acmi!(create_initial_update(&mut client1, 2, params.plane_name).await?);
+        let client = acmi_unit_client.as_mut().expect("ACMI unit client enabled");
+        write_acmi!(create_initial_update(client, 1, params.carrier_name).await?);
+        write_acmi!(create_initial_update(client, 2, params.plane_name).await?);
     }
 
-    let events = mission.stream_events().await?;
-    let _event_stream_guard = crate::metrics::RUNTIME_METRICS.stream();
-    let (hook_tx, mut hook_rx) = mpsc::channel(64);
-    let _hook_sampler = (!params.carrier_info.is_vstol()
-        && params.hook_sampling.mode == super::HookSamplingMode::Independent)
-        .then(|| {
-            AbortOnDrop(tokio::spawn(sample_hook(
+    let events: BoxStream<'_, Result<(f64, Event), tonic::Status>> = if params.positions_only {
+        futures_util::stream::pending().boxed()
+    } else {
+        match mission
+            .as_mut()
+            .expect("mission client enabled outside positions-only")
+            .stream_events()
+            .await
+        {
+            Ok(events) => events
+                .chain(futures_util::stream::once(async {
+                    Err(tonic::Status::unavailable("clean_end_of_event_stream"))
+                }))
+                .boxed(),
+            Err(status) => futures_util::stream::once(async move { Err(*status) }).boxed(),
+        }
+    };
+    let _event_stream_guard =
+        (!params.positions_only).then(|| crate::metrics::RUNTIME_METRICS.stream());
+    let (mut hook_rx, _hook_sampler) = if !params.carrier_info.is_vstol()
+        && params.hook_sampling.mode == super::HookSamplingMode::Independent
+    {
+        let (hook_tx, hook_rx) = mpsc::channel(64);
+        (
+            Some(hook_rx),
+            Some(AbortOnDrop(tokio::spawn(sample_hook(
                 params.ch.clone(),
                 params.plane_name.to_string(),
                 params.hook_sampling,
                 hook_tx,
-            )))
-        });
+            )))),
+        )
+    } else {
+        (None, None)
+    };
 
     let mut known_carrier_coords = None;
     let mut known_plane_coords = None;
@@ -348,20 +484,17 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         .as_micros()
                         .min(u64::MAX as u128) as u64,
                 );
-                let (carrier_observed, plane_observed) = match futures_util::future::try_join(
-                    client1
-                        .get_observed_transform_for(params.carrier_name, RpcKind::TransformCarrier),
-                    client2.get_observed_transform_for(params.plane_name, RpcKind::TransformPlane),
-                )
-                .await
+                let sample = match position_collector
+                    .poll(params.carrier_name, params.plane_name)
+                    .await
                 {
-                    Ok(pair) => pair,
+                    Ok(sample) => sample,
                     Err(status) if status.code() == tonic::Code::NotFound => {
                         tracing::info!("stop tracking because a unit no longer exists");
                         return Ok(());
                     }
                     Err(status) => {
-                        telemetry_aligner.reset();
+                        position_collector.reset();
                         let silent_for = last_telemetry_success.elapsed();
                         tracing::warn!(?status, ?silent_for, "transform polling failed");
                         if silent_for >= Duration::from_millis(ACTIVE_WATCHDOG_MS) {
@@ -371,7 +504,6 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         continue;
                     }
                 };
-                let sample = telemetry_aligner.align(carrier_observed, plane_observed);
                 if sample.is_valid() && sample.source_age_ms <= f64::EPSILON {
                     last_telemetry_success = Instant::now();
                 }
@@ -401,65 +533,69 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 }
                 let carrier = &sample.carrier;
                 let plane = &sample.plane;
-                let hook_state = if params.carrier_info.is_vstol()
-                    || params.hook_sampling.mode == super::HookSamplingMode::Independent
+                let hook_state = if !params.carrier_info.is_vstol()
+                    && params.hook_sampling.mode == super::HookSamplingMode::LegacyInline
                 {
-                    None
-                } else {
-                    client2
+                    legacy_hook_client
+                        .as_mut()
+                        .expect("legacy hook client enabled")
                         .get_draw_argument_value(params.plane_name, 25)
                         .await
                         .ok()
-                };
-
-                if !ref_written {
-                    lat_ref = carrier.lat;
-                    lon_ref = carrier.lon;
-                    write_acmi!(GlobalProperty::ReferenceLatitude(lat_ref));
-                    write_acmi!(GlobalProperty::ReferenceLongitude(lon_ref));
-                    ref_written = true;
-                }
-
-                let carrier_update = Update {
-                    id: 1,
-                    props: vec![Property::T(remove_unchanged(
-                        Coords::default()
-                            .position(carrier.lat - lat_ref, carrier.lon - lon_ref, carrier.alt)
-                            .uv(carrier.position.x, carrier.position.z)
-                            .orientation(carrier.yaw, carrier.pitch, carrier.roll)
-                            .heading(carrier.heading),
-                        &mut known_carrier_coords,
-                    ))],
-                };
-                let plane_update = Update {
-                    id: 2,
-                    props: vec![
-                        Property::T(remove_unchanged(
-                            Coords::default()
-                                .position(plane.lat - lat_ref, plane.lon - lon_ref, plane.alt)
-                                .uv(plane.position.x, plane.position.z)
-                                .orientation(plane.yaw, plane.pitch, plane.roll)
-                                .heading(plane.heading),
-                            &mut known_plane_coords,
-                        )),
-                        Property::AOA(plane.aoa),
-                    ],
-                };
-
-                if (carrier.time - plane.time).abs() < 0.01 {
-                    write_acmi!(Record::Frame(carrier.time));
-                    write_acmi!(carrier_update);
-                    write_acmi!(plane_update);
-                } else if carrier.time < plane.time {
-                    write_acmi!(Record::Frame(carrier.time));
-                    write_acmi!(carrier_update);
-                    write_acmi!(Record::Frame(plane.time));
-                    write_acmi!(plane_update);
                 } else {
-                    write_acmi!(Record::Frame(plane.time));
-                    write_acmi!(plane_update);
-                    write_acmi!(Record::Frame(carrier.time));
-                    write_acmi!(carrier_update);
+                    None
+                };
+
+                if params.record_acmi {
+                    if !ref_written {
+                        lat_ref = carrier.lat;
+                        lon_ref = carrier.lon;
+                        write_acmi!(GlobalProperty::ReferenceLatitude(lat_ref));
+                        write_acmi!(GlobalProperty::ReferenceLongitude(lon_ref));
+                        ref_written = true;
+                    }
+
+                    let carrier_update = Update {
+                        id: 1,
+                        props: vec![Property::T(remove_unchanged(
+                            Coords::default()
+                                .position(carrier.lat - lat_ref, carrier.lon - lon_ref, carrier.alt)
+                                .uv(carrier.position.x, carrier.position.z)
+                                .orientation(carrier.yaw, carrier.pitch, carrier.roll)
+                                .heading(carrier.heading),
+                            &mut known_carrier_coords,
+                        ))],
+                    };
+                    let plane_update = Update {
+                        id: 2,
+                        props: vec![
+                            Property::T(remove_unchanged(
+                                Coords::default()
+                                    .position(plane.lat - lat_ref, plane.lon - lon_ref, plane.alt)
+                                    .uv(plane.position.x, plane.position.z)
+                                    .orientation(plane.yaw, plane.pitch, plane.roll)
+                                    .heading(plane.heading),
+                                &mut known_plane_coords,
+                            )),
+                            Property::AOA(plane.aoa),
+                        ],
+                    };
+
+                    if (carrier.time - plane.time).abs() < 0.01 {
+                        write_acmi!(Record::Frame(carrier.time));
+                        write_acmi!(carrier_update);
+                        write_acmi!(plane_update);
+                    } else if carrier.time < plane.time {
+                        write_acmi!(Record::Frame(carrier.time));
+                        write_acmi!(carrier_update);
+                        write_acmi!(Record::Frame(plane.time));
+                        write_acmi!(plane_update);
+                    } else {
+                        write_acmi!(Record::Frame(plane.time));
+                        write_acmi!(plane_update);
+                        write_acmi!(Record::Frame(carrier.time));
+                        write_acmi!(carrier_update);
+                    }
                 }
 
                 last_carrier_lat = carrier.lat;
@@ -469,9 +605,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 lowest_altitude = lowest_altitude.min(plane.alt);
 
                 let keep_tracking = datums.next_sample(&sample, hook_state);
-                if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                if let Some(hook_rx) = hook_rx.as_mut() {
                     drain_hook_samples(
-                        &mut hook_rx,
+                        hook_rx,
                         &mut datums,
                         plane.time,
                         params.hook_sampling.frequency_hz,
@@ -490,8 +626,12 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
             Either::Right(Err(status)) => {
                 tracing::warn!(?status, "mission event stream ended during recovery");
-                datums.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
-                break;
+                let detail = if status.message() == "clean_end_of_event_stream" {
+                    "clean_end_of_stream".to_string()
+                } else {
+                    format!("{}: {}", grpc_code_name(status.code()), status.message())
+                };
+                event_correlator.stream_unavailable(&mut datums, detail);
             }
 
             // DCS landing grade
@@ -510,19 +650,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                             }),
                         comment,
                     }),
-                ) if plane.id == params.plane_id && carrier.id == params.carrier_id => {
+                ) if event_correlator.accepts_pair(plane.id, carrier.id) => {
                     tracing::info!(%comment, "landing quality mark event");
-                    let accepted = datums.set_dcs_grading(comment.clone());
-                    datums.record_event(
-                        "landing_quality_mark",
-                        time,
-                        accepted,
-                        if accepted {
-                            "first_matching_event"
-                        } else {
-                            "duplicate_ignored"
-                        },
-                    );
+                    event_correlator.landing_quality_mark(&mut datums, time, comment.clone());
                     write_acmi!(Record::Frame(time));
 
                     let carrier = Transform::from((
@@ -586,33 +716,18 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                                 ..
                             }),
                     }),
-                ) if plane.id == params.plane_id && carrier.id == params.carrier_id => {
-                    let Some((carrier, plane)) = transform_from_event_unit(time, carrier)
-                        .zip(transform_from_event_unit(time, plane))
-                    else {
-                        datums.record_event("land", time, false, "missing_transform_evidence");
-                        continue;
-                    };
-                    if params.hook_sampling.mode == super::HookSamplingMode::Independent {
+                ) if event_correlator.accepts_pair(plane.id, carrier.id) => {
+                    if let Some(hook_rx) = hook_rx.as_mut() {
                         drain_hook_samples(
-                            &mut hook_rx,
+                            hook_rx,
                             &mut datums,
-                            plane.time,
+                            time,
                             params.hook_sampling.frequency_hz,
                         );
                     }
-                    let accepted = datums.landed(&carrier, &plane);
-                    datums.record_event(
-                        "land",
-                        time,
-                        accepted,
-                        if accepted {
-                            "ids_and_geometry_correlated"
-                        } else {
-                            "duplicate_or_geometry_rejected"
-                        },
-                    );
-                    if accepted {
+                    let correlation =
+                        event_correlator.touchdown(&mut datums, "land", time, carrier, plane);
+                    if correlation.accepted {
                         track_stopped = Some(Instant::now());
                     }
                 }
@@ -631,18 +746,25 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                                 ..
                             }),
                     }),
-                ) if plane.id == params.plane_id && carrier.id == params.carrier_id => {
+                ) if event_correlator.accepts_pair(plane.id, carrier.id) => {
                     tracing::info!("land event");
 
-                    let Some((carrier, plane)) = transform_from_event_unit(time, carrier)
-                        .zip(transform_from_event_unit(time, plane))
-                    else {
-                        datums.record_event(
-                            "runway_touch",
+                    if let Some(hook_rx) = hook_rx.as_mut() {
+                        drain_hook_samples(
+                            hook_rx,
+                            &mut datums,
                             time,
-                            false,
-                            "missing_transform_evidence",
+                            params.hook_sampling.frequency_hz,
                         );
+                    }
+                    let correlation = event_correlator.touchdown(
+                        &mut datums,
+                        "runway_touch",
+                        time,
+                        carrier,
+                        plane,
+                    );
+                    let Some((carrier, plane)) = correlation.carrier.zip(correlation.plane) else {
                         continue;
                     };
 
@@ -684,28 +806,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     // the continuous trajectory. It used to manufacture a
                     // near-event wire-4 crossing and could also make the last
                     // post-touch hook value look like pre-touch evidence.
-                    if params.hook_sampling.mode == super::HookSamplingMode::Independent {
-                        drain_hook_samples(
-                            &mut hook_rx,
-                            &mut datums,
-                            plane.time,
-                            params.hook_sampling.frequency_hz,
-                        );
-                    }
-                    let accepted = datums.landed(&carrier, &plane);
-                    datums.record_event(
-                        "runway_touch",
-                        time,
-                        accepted,
-                        if accepted {
-                            "ids_and_geometry_correlated"
-                        } else {
-                            "duplicate_or_geometry_rejected"
-                        },
-                    );
-
                     // don't stop right away, track a couple of more seconds
-                    if accepted {
+                    if correlation.accepted {
                         track_stopped = Some(Instant::now());
                     }
                 }
@@ -737,7 +839,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                                 initiator: Some(initiator::Initiator::Unit(unit)),
                             }),
                     }),
-                ) if unit.id == params.plane_id || unit.id == params.carrier_id => {
+                ) if event_correlator.is_tracked_unit(unit.id) => {
                     tracing::info!("stop (either carrier or plane despawned)");
                     return Ok(());
                 }
@@ -771,7 +873,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     } else {
         Vec::new()
     };
+    datums.set_position_collector_metrics(position_collector.metrics());
     let track = std::sync::Arc::new(datums.finish());
+    let event_correlation = event_correlator.summary(&track.grading);
 
     // Discard if no recognisable outcome was established (e.g. plane flew through the zone
     // without ever entering the groove).
@@ -802,25 +906,21 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         },
         recovery_id,
     );
-    let acmi_path = if params.record_acmi {
-        let path = params.out_dir.join(&filename).with_extension("zip.acmi");
-        match write_atomic_if_absent(&path, &data).await {
-            Ok(()) => Some(path),
-            Err(err) => {
-                tracing::error!(?err, path = %path.display(), "failed to persist ACMI output");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // Query in-mission date/time from the DCS scenario clock (non-fatal).
-    let mission_datetime: String = match mission.get_scenario_current_time().await {
-        Ok(dt) => dt,
-        Err(err) => {
-            tracing::warn!(?err, "failed to query in-mission datetime");
-            String::new()
+    let mission_datetime: String = if params.positions_only {
+        String::new()
+    } else {
+        match mission
+            .as_mut()
+            .expect("mission client enabled outside positions-only")
+            .get_scenario_current_time()
+            .await
+        {
+            Ok(dt) => dt,
+            Err(err) => {
+                tracing::warn!(?err, "failed to query in-mission datetime");
+                String::new()
+            }
         }
     };
 
@@ -834,7 +934,18 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         _ => (None, None),
     };
     let wire_divergent = matches!((wire_estimated, wire_dcs), (Some(a), Some(b)) if a != b);
+    let wire_primary = match (wire_dcs, wire_estimated) {
+        (Some(dcs), Some(estimated)) if dcs == estimated => "agreement",
+        (Some(_), _) => "dcs_lqm",
+        (None, Some(_)) => "rust_estimated",
+        (None, None) => "none",
+    };
+    let event_outcome_unavailable = matches!(
+        &event_correlation.stream_status,
+        super::event_correlator::EventStreamStatus::Unavailable
+    ) && !event_correlation.outcome_confirmed;
     let confidence = match track.telemetry_quality.completeness {
+        _ if event_outcome_unavailable => "insufficient",
         crate::track::Completeness::Complete
             if wire_estimated == wire_dcs && wire_dcs.is_some() =>
         {
@@ -844,8 +955,12 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         _ => "insufficient",
     };
     let cause = match track.telemetry_quality.completeness {
-        crate::track::Completeness::UnconfirmedArrest => "unconfirmed_arrest",
-        _ => match track.grading {
+        cause @ (crate::track::Completeness::InsufficientGates
+        | crate::track::Completeness::TelemetryGap
+        | crate::track::Completeness::InvalidTelemetry
+        | crate::track::Completeness::UnconfirmedArrest
+        | crate::track::Completeness::BufferLimit) => completeness_cause(cause),
+        crate::track::Completeness::Complete => match track.grading {
             Grading::WaveoffUnknown => "go_around_initiator_unknown",
             Grading::Bolter => "deck_crossing_without_arrest",
             Grading::TouchAndGo { .. } => "hook_up_near_deck",
@@ -853,21 +968,49 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             Grading::Unknown => "unknown",
         },
     };
+    let mut secondary_causes = track
+        .telemetry_quality
+        .unavailability_causes
+        .iter()
+        .copied()
+        .filter(|secondary| *secondary != track.telemetry_quality.completeness)
+        .map(completeness_cause)
+        .collect::<Vec<_>>();
+    secondary_causes.extend(
+        track
+            .telemetry_quality
+            .diagnostics
+            .iter()
+            .map(|cause| match cause {
+                crate::track::DiagnosticCause::HookHistoryTruncated => "hook_history_truncated",
+                crate::track::DiagnosticCause::EventHistoryTruncated => "event_history_truncated",
+                crate::track::DiagnosticCause::EventStreamUnavailable => "event_stream_unavailable",
+            }),
+    );
     // Availability describes whether Rust had enough evidence to apply the
     // rules, independently from whether the resulting performance earns points.
     let grading_availability =
-        if track.telemetry_quality.completeness == crate::track::Completeness::Complete {
-            "available"
-        } else {
+        if track.telemetry_quality.completeness != crate::track::Completeness::Complete {
             "unavailable_technical"
+        } else if event_outcome_unavailable {
+            "unavailable_event_outcome"
+        } else {
+            "available"
         };
     let aircraft_id = crate::data::get_aircraft_id(params.plane_type);
     let completed_at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default();
 
-    // Write JSON report.
-    let json_path = params.out_dir.join(&filename).with_extension("json");
+    let pipeline = super::report_pipeline::ReportPipeline::new(params.out_dir, &filename);
+    let Some(mut recovery_claim) = pipeline.claim_recovery(&recovery_id) else {
+        tracing::info!(
+            recovery_id,
+            "recovery already owned by another producer in this session/generation"
+        );
+        return Ok(());
+    };
+    let json_path = pipeline.json_path();
     // `spot` is retained as the legacy phase-1 alias. New consumers must use the
     // independent intended/nearest fields below.
     let spot_label = track.intended_spot;
@@ -907,16 +1050,38 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         touchdown_time_dcs: track.touchdown_time_dcs,
         lso_version: env!("CARGO_PKG_VERSION"),
         lso_commit: option_env!("GIT_COMMIT_HASH").unwrap_or("unknown"),
+        lso_dirty: option_env!("GIT_DIRTY") == Some("true"),
         dcs_grpc_version: params.dcs_grpc_version,
+        dcs_grpc_client_stubs: "0.9.0",
+        dcs_grpc_compatibility: params.dcs_grpc_compatibility,
+        acquisition_source: "paired_unary_polling_v1",
+        collection_profile: if params.positions_only {
+            "positions_only"
+        } else {
+            "normal"
+        },
+        target_frequency_hz: 10,
+        missed_tick_behavior: "skip",
+        detectors_suspended: params.suspend_detectors_during_recovery,
+        detector_suspension_scope: if params.suspend_detectors_during_recovery {
+            "same_aircraft"
+        } else {
+            "none"
+        },
+        baseline_manifest: &params.baseline_manifest,
         outcome: &outcome,
         cause,
+        causes: ReportCauses {
+            primary: cause,
+            secondary: &secondary_causes,
+        },
         confidence,
         grading_version: GRADING_VERSION,
         grading_source: GRADING_SOURCE,
         wire_estimated,
         wire_dcs,
         wire_divergent,
-        wire_primary: "estimated",
+        wire_primary,
         wire_estimation: &track.wire_estimation,
         grading_availability,
         telemetry_quality: &track.telemetry_quality,
@@ -924,17 +1089,44 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         spot_zone: &track.spot_zone,
         touchdown_horizontal_speed_mps: track.touchdown_horizontal_speed_mps,
         hook_observation: &track.hook_observation,
+        event_correlation: &event_correlation,
     };
-    match serde_json::to_vec_pretty(&report) {
-        Ok(json) => {
-            if let Err(err) = write_atomic_if_absent(&json_path, &json).await {
-                tracing::error!(?err, path = %json_path.display(), "failed to persist JSON report");
-            }
+    let json = serde_json::to_vec_pretty(&report)?;
+    match pipeline.publish_json(&json).await {
+        Ok(super::report_pipeline::Publication::Created) => recovery_claim.commit(),
+        Ok(super::report_pipeline::Publication::AlreadyExists) => {
+            recovery_claim.commit();
+            tracing::info!(
+                recovery_id,
+                path = %json_path.display(),
+                "recovery already published; concurrent producer is not allowed to replace it"
+            );
+            return Ok(());
         }
-        Err(err) => tracing::error!(?err, "failed to serialise JSON report"),
+        Err(source) => return Err(crate::error::Error::file_at(json_path, source)),
     }
 
-    let wire = wire_estimated;
+    let acmi_path = if params.record_acmi {
+        let path = pipeline.acmi_path();
+        match pipeline.publish_acmi(&data).await {
+            Ok(super::report_pipeline::Publication::Created) => Some(path),
+            Ok(super::report_pipeline::Publication::AlreadyExists) => {
+                tracing::error!(
+                    recovery_id,
+                    path = %path.display(),
+                    "ACMI coherence conflict: an artifact already exists and was not replaced"
+                );
+                None
+            }
+            Err(err) => {
+                tracing::error!(error = %err, path = %path.display(), "failed to persist ACMI output");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let display_type = match aircraft_id {
         Some(2) => "F-14A/B",
         Some(3) => "F-14B(U)",
@@ -946,7 +1138,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         pilot_name: track.pilot_name.clone(),
         pass_grade: track.pass_grade,
         grade_points: track.grade_points,
-        wire,
+        wire: wire_dcs.or(wire_estimated),
         spot: spot_label.map(|s| s.to_string()),
         spot_grade: track.spot_grade,
         spot_distance_m: track.spot_distance_m,
@@ -968,15 +1160,19 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     };
 
     // Append to in-memory session greenie board log.
-    if let Ok(mut log) = params.session_log.lock() {
-        if !log.iter().any(|pass| pass.timestamp == completed.timestamp) {
-            log.push(completed.clone());
+    if !params.positions_only {
+        if let Ok(mut log) = params.session_log.lock() {
+            if !log.iter().any(|pass| pass.timestamp == completed.timestamp) {
+                log.push(completed.clone());
+            }
         }
     }
 
     // Persist to SQLite database (non-fatal — a write failure must not abort the recovery).
-    let db_inserted = {
-        let db = params.db.clone();
+    let db_inserted = if params.positions_only {
+        None
+    } else if let Some(db) = params.db.clone() {
+        let db_path = db.path().to_path_buf();
         let entry = crate::db::DbPass {
             recovery_id: recovery_id.clone(),
             timestamp: completed.timestamp.clone(),
@@ -1010,7 +1206,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             recovery_mode: completed.recovery_mode.clone(),
             session_id: completed.session_id,
             generation: completed.generation,
-            completeness: format!("{:?}", track.telemetry_quality.completeness).to_lowercase(),
+            completeness: track.telemetry_quality.completeness.as_str().to_string(),
             max_sample_gap_ms: track.telemetry_quality.max_sample_gap_ms,
             max_scoring_sample_gap_ms: track.telemetry_quality.max_scoring_sample_gap_ms,
             max_skew_ms: track.telemetry_quality.max_skew_ms,
@@ -1020,6 +1216,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             wire_divergent,
             confidence: confidence.to_string(),
             cause: cause.to_string(),
+            secondary_causes_json: serde_json::to_string(&secondary_causes)
+                .unwrap_or_else(|_| "[]".to_string()),
             grading_version: GRADING_VERSION.to_string(),
             wire_estimation_confidence: track.wire_estimation.confidence.to_string(),
             grading_availability: grading_availability.to_string(),
@@ -1027,7 +1225,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(inserted)) => Some(inserted),
             Ok(Err(err)) => {
-                tracing::error!(?err, "failed to persist pass to database");
+                tracing::error!(error = %err, path = %db_path.display(), "failed to persist pass to database");
                 None
             }
             Err(err) => {
@@ -1035,30 +1233,34 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 None
             }
         }
+    } else {
+        tracing::error!("SQLite unavailable outside positions-only mode");
+        None
     };
 
-    let render_track = track.clone();
-    let render_dir = params.out_dir.to_path_buf();
-    let render_filename = filename.clone();
-    let rendered = match tokio::task::spawn_blocking(move || {
-        let started = Instant::now();
-        let chart = crate::draw::draw_chart(&render_dir, &render_filename, &render_track)?;
-        let pattern =
-            crate::draw::draw_pattern_chart(&render_dir, &render_filename, &render_track)?;
-        crate::metrics::RUNTIME_METRICS
-            .observe_render(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
-        Ok::<_, crate::error::Error>((chart, pattern))
-    })
-    .await
-    {
-        Ok(Ok(paths)) => Some(paths),
-        Ok(Err(err)) => {
-            tracing::error!(?err, "PNG rendering failed after persistence");
-            None
-        }
-        Err(err) => {
-            tracing::error!(?err, "PNG rendering task panicked after persistence");
-            None
+    let rendered = if params.positions_only {
+        None
+    } else {
+        let render_track = track.clone();
+        let render_pipeline = pipeline.clone();
+        match tokio::task::spawn_blocking(move || {
+            let started = Instant::now();
+            let rendered = render_pipeline.render_and_publish(&render_track)?;
+            crate::metrics::RUNTIME_METRICS
+                .observe_render(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
+            Ok::<_, crate::error::Error>(rendered)
+        })
+        .await
+        {
+            Ok(Ok(paths)) => Some(paths),
+            Ok(Err(err)) => {
+                tracing::error!(error = %err, error_chain = ?err, "PNG rendering failed after persistence");
+                None
+            }
+            Err(err) => {
+                tracing::error!(?err, "PNG rendering task panicked after persistence");
+                None
+            }
         }
     };
 
@@ -1151,31 +1353,6 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     ),
                     false,
                 );
-
-            if track.carrier_info.is_vstol() {
-                if let (Some(spot_grade), Some(distance_m)) =
-                    (track.spot_grade, track.spot_distance_m)
-                {
-                    embed = embed.field(
-                        "Spot 7.5",
-                        format!(
-                            "{} — {:.2} m — +{:.2} pt",
-                            spot_grade.label(),
-                            distance_m,
-                            spot_grade.bonus_points()
-                        ),
-                        false,
-                    );
-                }
-            }
-
-            // LSO notation and plain-English notes from DCS grading string.
-            if let Some(ref notation) = track.dcs_grading {
-                embed = embed.field("LSO Notation", notation.as_str(), false);
-                let notes = crate::lso_notation::to_english(notation);
-                if !notes.is_empty() {
-                    embed = embed.field("LSO Notes", notes, false);
-                }
             }
 
             if track.carrier_info.is_vstol() {
@@ -1224,39 +1401,13 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         }
         .await;
         if let Err(err) = publish_result {
-            tracing::error!(?err, "Discord publication failed after local persistence");
+            tracing::error!(error = %err, error_chain = ?err, "Discord publication failed after local persistence");
         }
     } else if params.discord_webhook.is_some() && db_inserted != Some(true) {
         tracing::warn!("Discord publication skipped because this recovery was not newly persisted");
     }
 
     Ok(())
-}
-
-async fn write_atomic_if_absent(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if tokio::fs::try_exists(path).await? {
-        return Ok(());
-    }
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("output");
-    let sequence = OUTPUT_TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temporary =
-        path.with_extension(format!("{extension}.tmp-{}-{sequence}", std::process::id()));
-    tokio::fs::write(&temporary, bytes).await?;
-    crate::metrics::RUNTIME_METRICS.add_io_bytes(bytes.len());
-    match tokio::fs::rename(&temporary, path).await {
-        Ok(()) => Ok(()),
-        Err(_err) if tokio::fs::try_exists(path).await.unwrap_or(false) => {
-            let _ = tokio::fs::remove_file(&temporary).await;
-            Ok(())
-        }
-        Err(err) => {
-            let _ = tokio::fs::remove_file(&temporary).await;
-            Err(err)
-        }
-    }
 }
 
 fn recovery_id(
@@ -1394,11 +1545,9 @@ fn changed_precision(a: Option<f64>, b: Option<f64>, theta: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        drain_hook_samples, recovery_id, recovery_outcome, transform_from_event_unit,
-        write_atomic_if_absent, HookPoll,
-    };
+    use super::{drain_hook_samples, grpc_code_name, recovery_id, recovery_outcome, HookPoll};
     use crate::data::{AirplaneInfo, CarrierInfo};
+    use crate::tasks::event_correlator::transform_from_event_unit;
     use crate::track::{Grading, HookSampleStatus, Track};
     use stubs::common::v0::{Orientation, Position, Unit};
 
@@ -1417,6 +1566,22 @@ mod tests {
     }
 
     #[test]
+    fn hook_grpc_codes_use_documented_snake_case_names() {
+        assert_eq!(
+            grpc_code_name(tonic::Code::DeadlineExceeded),
+            "deadline_exceeded"
+        );
+        assert_eq!(
+            grpc_code_name(tonic::Code::ResourceExhausted),
+            "resource_exhausted"
+        );
+        assert_eq!(
+            grpc_code_name(tonic::Code::FailedPrecondition),
+            "failed_precondition"
+        );
+    }
+
+    #[test]
     fn stale_and_timed_out_hook_polls_never_become_certain_state() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         tx.try_send(HookPoll {
@@ -1424,6 +1589,7 @@ mod tests {
             received_unix_ms: 1,
             raw: Some(1.0),
             status: HookSampleStatus::Success,
+            grpc_code: None,
         })
         .unwrap();
         tx.try_send(HookPoll {
@@ -1431,6 +1597,7 @@ mod tests {
             received_unix_ms: 2,
             raw: None,
             status: HookSampleStatus::Timeout,
+            grpc_code: Some("deadline_exceeded".to_string()),
         })
         .unwrap();
 
@@ -1444,16 +1611,29 @@ mod tests {
         assert_eq!(result.hook_observation.timeout_samples, 1);
         assert_eq!(result.hook_observation.successful_samples, 0);
         assert_eq!(result.hook_observation.interpreted_state, "unknown");
+        assert_eq!(
+            result
+                .hook_observation
+                .timeline
+                .back()
+                .unwrap()
+                .grpc_code
+                .as_deref(),
+            Some("deadline_exceeded")
+        );
     }
 
     #[test]
-    fn arrested_recovery_without_detected_wire_uses_dash_outcome() {
+    fn arrested_recovery_without_wire_evidence_is_explicit() {
         let grading = Grading::Recovered {
             cable: None,
             cable_estimated: None,
         };
 
-        assert_eq!(recovery_outcome(&grading, false), "-");
+        assert_eq!(
+            recovery_outcome(&grading, false),
+            "Arrested — wire evidence unavailable"
+        );
     }
 
     #[test]
@@ -1501,57 +1681,5 @@ mod tests {
             ..Unit::default()
         };
         assert!(transform_from_event_unit(1.0, complete).is_some());
-    }
-
-    #[tokio::test]
-    async fn simultaneous_output_writers_do_not_collide_or_overwrite_partially() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = std::env::temp_dir().join(format!(
-            "dcs-grpc-lso-output-collision-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&directory).expect("create isolated output fixture");
-        let path = directory.join("same-recovery.json");
-
-        let (first, second) = tokio::join!(
-            write_atomic_if_absent(&path, b"first-complete-payload"),
-            write_atomic_if_absent(&path, b"second-complete-payload")
-        );
-        first.expect("first writer");
-        second.expect("second writer is idempotent");
-
-        let bytes = std::fs::read(&path).expect("read final output");
-        assert!(
-            bytes == b"first-complete-payload" || bytes == b"second-complete-payload",
-            "the target must contain one complete payload"
-        );
-        let entries = std::fs::read_dir(&directory)
-            .expect("list output fixture")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("read output entries");
-        assert_eq!(entries.len(), 1, "temporary files must be cleaned up");
-
-        std::fs::remove_file(path).expect("remove output fixture file");
-        std::fs::remove_dir(directory).expect("remove output fixture directory");
-    }
-
-    #[tokio::test]
-    async fn failed_atomic_output_is_reported_without_leaving_a_partial_target() {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir()
-            .join(format!(
-                "dcs-grpc-lso-missing-parent-{}-{unique}",
-                std::process::id()
-            ))
-            .join("report.json");
-        let result = write_atomic_if_absent(&path, b"payload").await;
-        assert!(result.is_err());
-        assert!(!path.exists());
     }
 }

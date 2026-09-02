@@ -7,6 +7,14 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Added
 
+- Independent `EventCorrelator` and `ReportPipeline` components, including additive event-stream
+  status/outcome-confirmation evidence in schema-v3 JSON.
+- A priority `PositionCollector`, `--positions-only` baseline mode, optional suspension of background
+  detector transforms, `Skip` missed-tick scheduling and per-recovery acquisition percentiles.
+- Build Git commit/dirty provenance, explicit DCS-gRPC client/server API-line compatibility, sliding
+  telemetry health and additive primary/secondary causes (SQLite migration 6).
+- Hook gRPC status codes and recent-evidence ring retention.
+
 - Session/generation-aware supervision, two-second RPC/watchdog deadlines, monotonic freshness and
   explicit skew/gap diagnostics with conservative short extrapolation.
 - Strict AV-8B/Tarawa and hook-aircraft/arrested-carrier pairing, slot/UCID human identity and
@@ -32,6 +40,38 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 - `--no-acmi` to keep charts and JSON without saving Tacview recordings.
 - `--no-acmi` now also skips TacView serialization and ACMI-only metadata/unit RPCs instead of only
   suppressing the final file.
+
+### Fixed
+
+- Event-stream errors and clean closure no longer become positional `telemetry_gap`; existing gates
+  remain intact while outcome availability is assessed separately.
+- Plane/carrier respawns with a changed ID abort every stale same-name task within the current
+  session/generation, preventing old-ID collectors from polling a current name.
+- DCS/LQM wire parsing accepts only cables 1-4 and rejects zero, overflow and malformed suffixes.
+- JSON, ACMI and rendered files use atomic create-if-absent publication on Windows and Unix; the JSON
+  winner alone may continue to SQLite/render/Discord, and temporary files/directories are cleaned.
+- Positions-only ignores missing or invalid Discord user configuration and does not start event,
+  hook, ACMI, SQLite, dashboard, render, board or Discord components.
+- Errors now retain useful IO paths, JSON line/column data and underlying JSON, SQLite, rendering,
+  ACMI and Discord causes.
+- Git dirty provenance now intentionally covers tracked files only, with tracked-path/index/HEAD
+  rebuild triggers and deterministic parser tests; untracked files and `target/` are excluded.
+- CI uses locked build/tests, all-target Clippy with warnings denied, rustfmt, and a pinned locked
+  `cargo-audit` installation that consumes the existing `.cargo/audit.toml` ignore list unchanged.
+- Detector suspension is scoped to the aircraft already being collected, so a second aircraft can
+  still start a simultaneous recovery; positions-only no longer opens or migrates SQLite.
+- Unconfirmed arrest no longer overwrites telemetry/gate causes; all independent unavailability
+  causes are retained and SQLite completeness values now use the JSON snake-case vocabulary.
+- Hook gRPC codes use documented snake-case names, baseline manifests are strict, Git dirty-state
+  rebuild tracking covers every tracked file, and acquisition percentiles use bounded online
+  histograms instead of unbounded vectors and end-of-pass sorting.
+- Positions-only skips TacView update construction, and the direct Axum dependency is aligned with
+  Tonic's 0.8 dependency line.
+- Repaired the malformed Discord block left by the previous merge.
+- Hook/event diagnostic truncation no longer changes positional completeness or masks
+  `insufficient_gates`; hook history retains the newest 512 observations.
+- Wire crossings are segmented at final entry, DCS/LQM wire evidence remains visible when the Rust
+  estimate is unavailable, and each invalid gate displays its own bracket gap.
 - Additional F-14 type aliases and distinct F-14A, F-14B, and F-14B(U) display names.
 - Carrier-position EMA smoothing for final-approach geometry.
 - Independent, timestamped hook sampling with configurable 2-4 Hz cadence, 250-300 ms timeout and

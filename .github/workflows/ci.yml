@@ -38,13 +38,20 @@ jobs:
           components: rustfmt, clippy
 
       - name: Build
-        run: cargo build
+        run: cargo build --locked
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace --no-fail-fast
 
       - name: Lint
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Check formatting
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.21.2 --locked
+
+      - name: Audit dependencies
+        # cargo-audit automatically loads the reviewed ignore list from .cargo/audit.toml.
+        run: cargo audit

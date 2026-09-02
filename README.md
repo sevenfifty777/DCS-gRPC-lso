@@ -19,6 +19,10 @@ or through Discord.
 - Aircraft/carrier transforms stay on the priority loop; CATOBAR hook state is sampled independently
   at 4 Hz by default with a 300 ms timeout. Stale or unknown hook data is never reused as certainty.
 - Separate outcome, grade, points, cause, confidence, completeness, rule version and wire provenance.
+- Event correlation and positional completeness are independent: an event-stream outage is reported
+  as `event_stream_unavailable` and cannot manufacture a positional gap or a favourable outcome.
+- Per-recovery cadence/gap/source-age and paired-transform latency percentiles, plus sliding-window
+  telemetry health that identifies sustained gate-capture risk.
 - JSON reports, optional compressed Tacview ACMI recordings, and persistent SQLite history.
 - Optional Discord reports, terminal session summary, and HTTP greenie board.
 - Offline regeneration of the approach chart from ACMI files created by LSO.
@@ -65,6 +69,12 @@ Common examples:
 .\lso.exe run -o C:\LSO\recordings --hook-sampling-hz 4 --hook-timeout-ms 300
 .\lso.exe run -o C:\LSO\recordings --legacy-inline-hook-sampling
 
+# Minimal acquisition baseline: positions + JSON quality report only
+.\lso.exe run -o C:\LSO\recordings --positions-only --baseline-manifest .\baseline.json
+
+# Keep normal outputs but suspend redundant same-aircraft detector transforms during collection
+.\lso.exe run -o C:\LSO\recordings --suspend-detectors-during-recovery
+
 # Enable debug or trace logging; global flags go before the subcommand
 .\lso.exe -v run -o C:\LSO\recordings
 .\lso.exe -vv run -o C:\LSO\recordings
@@ -76,6 +86,14 @@ Common examples:
 Use `lso.exe --help` and `lso.exe run --help` for the complete generated CLI reference.
 With `--no-acmi`, the TacView writer and ACMI-only metadata/unit RPCs are not started; live grading,
 JSON, PNG, SQLite and health diagnostics use the same telemetry path as normal.
+`--positions-only` additionally disables event/hook sampling, ACMI, SQLite, PNG, Discord and the
+session/dashboard outputs. It does not read `--discord-users`, open or create `lso.db`, or query
+output-only DCS metadata; it retains the JSON position report so cadence and latency percentiles can
+be compared between live runs. Detector suspension is scoped by aircraft: another aircraft can still
+be discovered and recorded concurrently.
+Copy [`docs/BASELINE_MANIFEST.example.json`](docs/BASELINE_MANIFEST.example.json) and fill in the DCS
+build, mission/module versions and deployed DLL/Lua hashes to make those comparisons attributable.
+Supplied manifests reject unknown keys, empty content and malformed SHA-256 values.
 
 ## Output
 
@@ -92,6 +110,13 @@ A completed live pass writes or updates the following items in `--out-dir`:
 Pilot names in filenames are reduced to ASCII alphanumeric characters. Offline `file` mode writes
 only a regenerated approach PNG to the current working directory; it does not update JSON,
 SQLite, Discord, or the pattern chart.
+
+Artifact publication is create-if-absent on Windows and Unix. A completed temporary file is linked
+atomically into place, so a concurrent producer cannot replace the winner; JSON ownership gates the
+matching ACMI, SQLite, render and Discord work for a `recovery_id`.
+
+Build provenance defines `lso_dirty` from tracked Git files only. Modified, staged or deleted tracked
+files participate; untracked files (including `target/`) deliberately do not.
 
 ## Supported units
 

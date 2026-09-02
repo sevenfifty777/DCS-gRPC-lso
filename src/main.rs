@@ -38,7 +38,7 @@ struct Opts {
 #[derive(clap::Parser)]
 enum Command {
     /// Connect to DCS-gRPC to track carrier recoveries.
-    Run(commands::run::Opts),
+    Run(Box<commands::run::Opts>),
 
     /// Extract carrier recoveries from ACMI recordings (must be recordings created by the LSO;
     /// recordings directly from TacView will not work).
@@ -71,11 +71,11 @@ async fn main() {
     });
 
     let result = match opts.command {
-        Command::Run(opts) => commands::run::execute(opts, shutdown_handle).await,
+        Command::Run(opts) => commands::run::execute(*opts, shutdown_handle).await,
         Command::File(opts) => commands::file::execute(opts),
     };
     if let Err(err) = result {
-        tracing::error!(%err, "LSO terminated with an error");
+        tracing::error!(error = %err, error_chain = ?err, "LSO terminated with an error");
         std::process::exit(1);
     }
 }

@@ -8,7 +8,10 @@ use tokio::task::JoinHandle;
 
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::db::{RecoveryDb, SharedDb};
-use crate::tasks::{HookSamplingConfig, HookSamplingMode, PilotKind, SessionLog, TaskParams};
+use crate::tasks::{
+    ActivePriorityPlanes, BaselineManifest, HookSamplingConfig, HookSamplingMode, PilotKind,
+    SessionLog, TaskParams,
+};
 use crate::utils::shutdown::ShutdownHandle;
 use backoff::ExponentialBackoff;
 use futures_util::future::select;
@@ -24,7 +27,77 @@ use tokio::sync::mpsc;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::Status;
 
-type RecoveryTaskMap = Arc<Mutex<HashMap<(u32, u32), JoinHandle<()>>>>;
+type RecoveryTaskMap = Arc<Mutex<RecoveryTaskRegistry>>;
+const DCS_GRPC_CLIENT_STUB_VERSION: &str = "0.9.0";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct RecoveryTaskKey {
+    session_id: i64,
+    generation: u64,
+    plane_id: u32,
+    carrier_id: u32,
+}
+
+struct RegisteredRecoveryTask {
+    key: RecoveryTaskKey,
+    plane_name: String,
+    carrier_name: String,
+    handle: JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct RecoveryTaskRegistry {
+    tasks: HashMap<RecoveryTaskKey, RegisteredRecoveryTask>,
+}
+
+impl RecoveryTaskRegistry {
+    fn register(
+        &mut self,
+        key: RecoveryTaskKey,
+        plane_name: String,
+        carrier_name: String,
+        handle: JoinHandle<()>,
+    ) {
+        self.tasks.retain(|_, existing| {
+            let same_generation = existing.key.session_id == key.session_id
+                && existing.key.generation == key.generation;
+            let replaced_plane =
+                existing.plane_name == plane_name && existing.key.plane_id != key.plane_id;
+            let replaced_carrier =
+                existing.carrier_name == carrier_name && existing.key.carrier_id != key.carrier_id;
+            let same_pair = existing.key == key;
+            let keep = !(same_generation && (replaced_plane || replaced_carrier || same_pair));
+            if !keep {
+                tracing::debug!(
+                    old_plane_id = existing.key.plane_id,
+                    old_carrier_id = existing.key.carrier_id,
+                    new_plane_id = key.plane_id,
+                    new_carrier_id = key.carrier_id,
+                    session_id = key.session_id,
+                    generation = key.generation,
+                    "aborting stale recovery task after unit respawn"
+                );
+                existing.handle.abort();
+            }
+            keep
+        });
+        self.tasks.insert(
+            key,
+            RegisteredRecoveryTask {
+                key,
+                plane_name,
+                carrier_name,
+                handle,
+            },
+        );
+    }
+
+    fn abort_all(&mut self) {
+        for (_, task) in self.tasks.drain() {
+            task.handle.abort();
+        }
+    }
+}
 
 #[derive(clap::Parser)]
 pub struct Opts {
@@ -64,6 +137,18 @@ pub struct Opts {
     #[clap(long)]
     legacy_inline_hook_sampling: bool,
 
+    /// Diagnostic mode: collect transforms and JSON metrics only; disables hook, ACMI, DB, PNG and Discord.
+    #[clap(long)]
+    positions_only: bool,
+
+    /// Suspend redundant detectors for an aircraft while that aircraft is being collected.
+    #[clap(long)]
+    suspend_detectors_during_recovery: bool,
+
+    /// JSON manifest describing the DCS build, mission, modules and deployed DLL/Lua hashes.
+    #[clap(long)]
+    baseline_manifest: Option<PathBuf>,
+
     /// Port to serve the web greenie board on (e.g. 8080). Disabled if not specified.
     #[clap(long)]
     web_port: Option<u16>,
@@ -73,18 +158,22 @@ pub async fn execute(
     opts: Opts,
     shutdown_handle: ShutdownHandle,
 ) -> Result<(), crate::error::Error> {
-    if opts.discord_webhook.is_some() {
+    if !opts.positions_only && opts.discord_webhook.is_some() {
         tracing::info!("Discord integration enabled.");
     }
 
     tracing::info!(uri = %opts.uri, "Connecting to gRPC server");
 
-    let users: Arc<HashMap<String, u64>> =
-        Arc::new(if let Some(path) = opts.discord_users.as_deref() {
-            serde_json::from_slice(&tokio::fs::read(path).await?)?
-        } else {
-            Default::default()
-        });
+    let users = Arc::new(load_discord_users(&opts).await?);
+    let baseline_manifest = Arc::new(if let Some(path) = opts.baseline_manifest.as_deref() {
+        let manifest = read_json_file::<BaselineManifest>(path).await?;
+        manifest
+            .validate()
+            .map_err(crate::error::Error::InvalidBaselineManifest)?;
+        manifest
+    } else {
+        BaselineManifest::default()
+    });
 
     let backoff = ExponentialBackoff {
         // never wait longer than 30s for a retry
@@ -95,7 +184,7 @@ pub async fn execute(
     };
 
     let session_log: SessionLog = Arc::new(Mutex::new(Vec::new()));
-    let db: SharedDb = Arc::new(RecoveryDb::open(&opts.out_dir.join("lso.db"))?);
+    let db = open_recovery_db(&opts.out_dir, opts.positions_only)?;
     let generation_counter = Arc::new(AtomicU64::new(0));
     let metrics_started = Instant::now();
     let metrics_shutdown = shutdown_handle.clone();
@@ -107,13 +196,14 @@ pub async fn execute(
     });
 
     // Optionally start the web greenie board dashboard.
-    if let Some(port) = opts.web_port {
-        let db = db.clone();
+    if let (Some(port), Some(db)) = (opts.web_port, db.clone()) {
         tokio::spawn(async move {
             if let Err(err) = crate::web::serve(db, port).await {
                 tracing::error!(%err, "web dashboard server error");
             }
         });
+    } else if opts.web_port.is_some() {
+        tracing::warn!("web dashboard disabled in positions-only mode because SQLite is disabled");
     }
 
     select(
@@ -129,6 +219,7 @@ pub async fn execute(
                     shutdown_handle.clone(),
                     session_log.clone(),
                     db.clone(),
+                    baseline_manifest.clone(),
                     generation,
                 )
                 .await
@@ -148,9 +239,30 @@ pub async fn execute(
     .await;
     metrics_handle.abort();
 
-    print_greenie_board(&session_log);
+    if !opts.positions_only {
+        print_greenie_board(&session_log);
+    }
 
     Ok(())
+}
+
+async fn read_json_file<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+) -> Result<T, crate::error::Error> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|source| crate::error::Error::file_at(path, source))?;
+    serde_json::from_slice(&bytes).map_err(|source| crate::error::Error::json_at(path, source))
+}
+
+async fn load_discord_users(opts: &Opts) -> Result<HashMap<String, u64>, crate::error::Error> {
+    if opts.positions_only {
+        return Ok(HashMap::new());
+    }
+    match opts.discord_users.as_deref() {
+        Some(path) => read_json_file(path).await,
+        None => Ok(HashMap::new()),
+    }
 }
 
 async fn run(
@@ -158,7 +270,8 @@ async fn run(
     users: Arc<HashMap<String, u64>>,
     shutdown_handle: ShutdownHandle,
     session_log: SessionLog,
-    db: SharedDb,
+    db: Option<SharedDb>,
+    baseline_manifest: Arc<BaselineManifest>,
     generation: u64,
 ) -> Result<(), crate::error::Error> {
     let out_dir = opts.out_dir.clone();
@@ -184,6 +297,25 @@ async fn run(
             "unknown".to_string()
         }
     };
+    let dcs_grpc_compatibility = dcs_grpc_compatibility(&dcs_grpc_version);
+    match dcs_grpc_compatibility {
+        "exact" => tracing::info!(
+            client = DCS_GRPC_CLIENT_STUB_VERSION,
+            server = %dcs_grpc_version,
+            "DCS-gRPC client/server versions match"
+        ),
+        "compatible_same_api_line" => tracing::warn!(
+            client = DCS_GRPC_CLIENT_STUB_VERSION,
+            server = %dcs_grpc_version,
+            "DCS-gRPC patch versions differ; same 0.9 API line accepted pending live validation"
+        ),
+        compatibility => tracing::warn!(
+            client = DCS_GRPC_CLIENT_STUB_VERSION,
+            server = %dcs_grpc_version,
+            compatibility,
+            "DCS-gRPC compatibility is not established"
+        ),
+    }
     let session_id = match mission_client.get_session_id().await {
         Ok(id) => id,
         Err(err) => {
@@ -280,12 +412,22 @@ async fn run(
     // Tracks the active detect_recovery_attempt task for each (plane_id, carrier_id) pair.
     // When a Birth event re-spawns a known unit the old task is aborted before a new one starts,
     // preventing duplicate recordings.
-    let active_tasks: RecoveryTaskMap = Arc::new(Mutex::new(HashMap::new()));
+    let active_tasks: RecoveryTaskMap = Arc::new(Mutex::new(RecoveryTaskRegistry::default()));
+    let active_priority_planes = Arc::new(ActivePriorityPlanes::default());
 
-    let discord_webhook = opts.discord_webhook.clone();
-    let record_acmi = !opts.no_acmi;
+    let positions_only = opts.positions_only;
+    let discord_webhook = if positions_only {
+        None
+    } else {
+        opts.discord_webhook.clone()
+    };
+    let record_acmi = !opts.no_acmi && !positions_only;
+    let suspend_detectors_during_recovery =
+        opts.suspend_detectors_during_recovery || positions_only;
     let hook_sampling = HookSamplingConfig {
-        mode: if opts.legacy_inline_hook_sampling {
+        mode: if positions_only {
+            HookSamplingMode::Disabled
+        } else if opts.legacy_inline_hook_sampling {
             HookSamplingMode::LegacyInline
         } else {
             HookSamplingMode::Independent
@@ -294,9 +436,12 @@ async fn run(
         timeout: Duration::from_millis(opts.hook_timeout_ms),
     };
     let active_tasks2 = active_tasks.clone();
+    let priority_planes = active_priority_planes.clone();
+    let baseline_manifest_for_tasks = baseline_manifest.clone();
     let session_channel = channel.clone();
     let session_shutdown = shutdown_handle.clone();
     let dcs_grpc_version = dcs_grpc_version.clone();
+    let dcs_grpc_compatibility = dcs_grpc_compatibility.to_string();
     let spawn_detect_recovery_attempt =
         move |carrier_id: u32,
               carrier_name: String,
@@ -324,6 +469,11 @@ async fn run(
             let session_log = session_log.clone();
             let db = db.clone();
             let dcs_grpc_version = dcs_grpc_version.clone();
+            let dcs_grpc_compatibility = dcs_grpc_compatibility.clone();
+            let active_priority_planes = priority_planes.clone();
+            let baseline_manifest = baseline_manifest_for_tasks.clone();
+            let registry_plane_name = plane_name.clone();
+            let registry_carrier_name = carrier_name.clone();
             let handle = tokio::spawn(async move {
                 if let Err(err) =
                     crate::tasks::detect_recovery_attempt::detect_recovery_attempt(TaskParams {
@@ -351,22 +501,29 @@ async fn run(
                         session_id,
                         generation,
                         dcs_grpc_version: &dcs_grpc_version,
+                        dcs_grpc_compatibility: &dcs_grpc_compatibility,
+                        positions_only,
+                        suspend_detectors_during_recovery,
+                        active_priority_planes,
+                        baseline_manifest,
                     })
                     .await
                 {
                     tracing::error!(%err, plane_id, carrier_id, session_id, generation, "recovery pair stopped after isolated error");
                 }
             });
-            // Abort any existing task for this pair before registering the new one.
-            if let Ok(mut map) = active_tasks2.lock() {
-                if let Some(old) = map.insert((plane_id, carrier_id), handle) {
-                    tracing::debug!(
+            if let Ok(mut registry) = active_tasks2.lock() {
+                registry.register(
+                    RecoveryTaskKey {
+                        session_id,
+                        generation,
                         plane_id,
                         carrier_id,
-                        "aborting stale detect_recovery_attempt task for re-spawned unit"
-                    );
-                    old.abort();
-                }
+                    },
+                    registry_plane_name,
+                    registry_carrier_name,
+                    handle,
+                );
             }
         };
 
@@ -571,15 +728,45 @@ async fn run(
         None => Err(tonic::Status::aborted("All tasks finished unexpectedly").into()),
     };
     if let Ok(mut tasks) = active_tasks.lock() {
-        for (_, handle) in tasks.drain() {
-            handle.abort();
-        }
+        tasks.abort_all();
     }
     event_handle.abort();
     session_watchdog.abort();
     result
 
     // This point is reached after shutdown or fatal error; print the greenie board.
+}
+
+fn dcs_grpc_compatibility(server: &str) -> &'static str {
+    if server == DCS_GRPC_CLIENT_STUB_VERSION {
+        return "exact";
+    }
+    let api_line = |version: &str| {
+        let mut parts = version.trim_start_matches('v').split('.');
+        Some((
+            parts.next()?.parse::<u64>().ok()?,
+            parts.next()?.parse::<u64>().ok()?,
+        ))
+    };
+    match (api_line(DCS_GRPC_CLIENT_STUB_VERSION), api_line(server)) {
+        (Some(client), Some(server)) if client == server => "compatible_same_api_line",
+        (Some(_), Some(_)) => "incompatible_api_line",
+        _ => "unknown",
+    }
+}
+
+fn open_recovery_db(
+    out_dir: &std::path::Path,
+    positions_only: bool,
+) -> Result<Option<SharedDb>, crate::error::Error> {
+    if positions_only {
+        Ok(None)
+    } else {
+        let path = out_dir.join("lso.db");
+        RecoveryDb::open(&path)
+            .map(|db| Some(Arc::new(db)))
+            .map_err(|source| crate::error::Error::db_at(path, source))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -851,5 +1038,189 @@ mod tests {
         assert_eq!(opts.hook_sampling_hz, 2);
         assert_eq!(opts.hook_timeout_ms, 250);
         assert!(opts.legacy_inline_hook_sampling);
+    }
+
+    #[test]
+    fn positions_only_and_detector_suspension_are_explicit_modes() {
+        let opts = Opts::try_parse_from([
+            "lso-run",
+            "--positions-only",
+            "--suspend-detectors-during-recovery",
+        ])
+        .expect("valid diagnostic options");
+        assert!(opts.positions_only);
+        assert!(opts.suspend_detectors_during_recovery);
+    }
+
+    #[test]
+    fn dcs_grpc_compatibility_is_checked_by_api_line() {
+        assert_eq!(dcs_grpc_compatibility("0.9.0"), "exact");
+        assert_eq!(dcs_grpc_compatibility("0.9.1"), "compatible_same_api_line");
+        assert_eq!(dcs_grpc_compatibility("0.10.0"), "incompatible_api_line");
+        assert_eq!(dcs_grpc_compatibility("unknown"), "unknown");
+    }
+
+    #[test]
+    fn positions_only_does_not_open_or_create_sqlite() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let out_dir = std::env::temp_dir().join(format!("lso-positions-only-{unique}"));
+        let db = open_recovery_db(&out_dir, true).expect("positions-only database selection");
+        assert!(db.is_none());
+        assert!(!out_dir.join("lso.db").exists());
+    }
+
+    #[tokio::test]
+    async fn airplane_respawn_aborts_every_old_id_pair_for_the_same_name() {
+        let mut registry = RecoveryTaskRegistry::default();
+        for carrier_id in [20, 21] {
+            registry.register(
+                RecoveryTaskKey {
+                    session_id: 7,
+                    generation: 3,
+                    plane_id: 10,
+                    carrier_id,
+                },
+                "Hornet-1".to_string(),
+                format!("Carrier-{carrier_id}"),
+                tokio::spawn(std::future::pending()),
+            );
+        }
+        registry.register(
+            RecoveryTaskKey {
+                session_id: 7,
+                generation: 3,
+                plane_id: 11,
+                carrier_id: 20,
+            },
+            "Hornet-1".to_string(),
+            "Carrier-20".to_string(),
+            tokio::spawn(std::future::pending()),
+        );
+
+        assert_eq!(registry.tasks.len(), 1);
+        assert!(registry.tasks.keys().all(|key| key.plane_id == 11));
+        registry.abort_all();
+    }
+
+    #[tokio::test]
+    async fn carrier_respawn_aborts_every_old_id_pair_for_the_same_name() {
+        let mut registry = RecoveryTaskRegistry::default();
+        for plane_id in [10, 11] {
+            registry.register(
+                RecoveryTaskKey {
+                    session_id: 7,
+                    generation: 3,
+                    plane_id,
+                    carrier_id: 20,
+                },
+                format!("Plane-{plane_id}"),
+                "CVN-71".to_string(),
+                tokio::spawn(std::future::pending()),
+            );
+        }
+        registry.register(
+            RecoveryTaskKey {
+                session_id: 7,
+                generation: 3,
+                plane_id: 10,
+                carrier_id: 22,
+            },
+            "Plane-10".to_string(),
+            "CVN-71".to_string(),
+            tokio::spawn(std::future::pending()),
+        );
+
+        assert_eq!(registry.tasks.len(), 1);
+        assert!(registry.tasks.keys().all(|key| key.carrier_id == 22));
+        registry.abort_all();
+    }
+
+    #[tokio::test]
+    async fn respawn_cleanup_never_crosses_session_or_generation() {
+        let mut registry = RecoveryTaskRegistry::default();
+        for generation in [3, 4] {
+            registry.register(
+                RecoveryTaskKey {
+                    session_id: 7,
+                    generation,
+                    plane_id: 10 + generation as u32,
+                    carrier_id: 20,
+                },
+                "Hornet-1".to_string(),
+                "CVN-71".to_string(),
+                tokio::spawn(std::future::pending()),
+            );
+        }
+        assert_eq!(registry.tasks.len(), 2);
+        registry.abort_all();
+    }
+
+    #[tokio::test]
+    async fn positions_only_ignores_missing_and_invalid_discord_user_files() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let missing = std::env::temp_dir().join(format!("missing-discord-{unique}.json"));
+        let opts = Opts::try_parse_from([
+            "lso-run",
+            "--positions-only",
+            "--discord-users",
+            missing.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert!(load_discord_users(&opts).await.unwrap().is_empty());
+
+        let invalid = std::env::temp_dir().join(format!("invalid-discord-{unique}.json"));
+        std::fs::write(&invalid, b"not-json").unwrap();
+        let opts = Opts::try_parse_from([
+            "lso-run",
+            "--positions-only",
+            "--discord-users",
+            invalid.to_str().unwrap(),
+        ])
+        .unwrap();
+        assert!(load_discord_users(&opts).await.unwrap().is_empty());
+        std::fs::remove_file(invalid).unwrap();
+    }
+
+    #[tokio::test]
+    async fn manifest_errors_include_path_json_location_and_unknown_key() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("lso-manifest-errors-{unique}"));
+        std::fs::create_dir(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        let error = read_json_file::<BaselineManifest>(&missing)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing.json"));
+        assert!(error.contains("I/O error"));
+
+        let invalid = dir.join("invalid.json");
+        std::fs::write(&invalid, b"{\n  \"mission\":\n}").unwrap();
+        let error = read_json_file::<BaselineManifest>(&invalid)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid.json"));
+        assert!(error.contains("line 3"));
+        assert!(error.contains("column"));
+
+        let unknown = dir.join("unknown.json");
+        std::fs::write(&unknown, b"{\"misson\":\"cq.miz\"}").unwrap();
+        let error = read_json_file::<BaselineManifest>(&unknown)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown.json"));
+        assert!(error.contains("unknown field"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

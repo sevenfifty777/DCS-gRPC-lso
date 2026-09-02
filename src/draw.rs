@@ -443,14 +443,29 @@ pub fn draw_chart(
             Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
             Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
             Grading::Recovered {
-                cable_estimated, ..
+                cable,
+                cable_estimated,
             } => {
                 if track.carrier_info.is_vstol() {
                     Cow::Borrowed("V/STOL recovery")
                 } else {
-                    cable_estimated
-                        .map(|wire| Cow::Owned(format!("Wire {} (estimated)", wire)))
-                        .unwrap_or(Cow::Borrowed("(failed to detect cable)"))
+                    match (cable, cable_estimated) {
+                        (Some(dcs), Some(estimated)) if dcs == estimated => {
+                            Cow::Owned(format!("Arrested — wire {} (DCS/LQM + Rust)", dcs))
+                        }
+                        (Some(dcs), Some(estimated)) => Cow::Owned(format!(
+                            "Arrested — DCS/LQM wire {}; Rust estimate {}",
+                            dcs, estimated
+                        )),
+                        (Some(dcs), None) => Cow::Owned(format!(
+                            "Arrested — DCS/LQM wire {}; Rust estimate unavailable",
+                            dcs
+                        )),
+                        (None, Some(estimated)) => {
+                            Cow::Owned(format!("Wire {} (Rust estimate)", estimated))
+                        }
+                        (None, None) => Cow::Borrowed("Wire evidence unavailable"),
+                    }
                 }
             }
         },
@@ -485,12 +500,7 @@ pub fn draw_chart(
             &format!(
                 "{}: {}",
                 label,
-                fmt_gate(
-                    gate,
-                    quality,
-                    track.telemetry_quality.max_sample_gap_ms,
-                    track.carrier_info.is_vstol(),
-                )
+                fmt_gate(gate, quality, track.carrier_info.is_vstol())
             ),
             &text_style_small,
             (16, y_pos),
@@ -1103,12 +1113,7 @@ fn text_style() -> TextStyle<'static> {
     TextStyle::from(("sans-serif", 20).into_font()).color(&THEME_FG)
 }
 
-fn fmt_gate(
-    gate: Option<&GateDatum>,
-    quality: &GateQuality,
-    max_sample_gap_ms: f64,
-    vstol: bool,
-) -> String {
+fn fmt_gate(gate: Option<&GateDatum>, quality: &GateQuality, vstol: bool) -> String {
     match gate {
         Some(g) if vstol => format!("ALT {:+.0}ft  LAT {:+.0}ft", g.gs_deviation_ft, g.lineup_ft),
         Some(g) => format!(
@@ -1118,7 +1123,10 @@ fn fmt_gate(
         None if quality.status == GateStatus::Late => "LATE".to_string(),
         None if quality.status == GateStatus::Invalid => {
             if quality.reason.as_deref() == Some("stale_gate_bracket") {
-                format!("INVALID — gap up to {:.0} ms", max_sample_gap_ms)
+                quality.bracket_gap_ms.map_or_else(
+                    || "INVALID — stale bracket".to_string(),
+                    |gap| format!("INVALID — bracket gap {:.0} ms", gap),
+                )
             } else {
                 format!(
                     "INVALID — {}",

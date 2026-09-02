@@ -12,6 +12,7 @@ pub type SharedDb = Arc<RecoveryDb>;
 /// operation. Callers in async code should use `tokio::task::spawn_blocking`.
 pub struct RecoveryDb {
     conn: Mutex<Connection>,
+    path: std::path::PathBuf,
 }
 
 /// Pass record ready for insertion, with all values owned (required for `spawn_blocking`).
@@ -60,6 +61,7 @@ pub struct DbPass {
     pub wire_divergent: bool,
     pub confidence: String,
     pub cause: String,
+    pub secondary_causes_json: String,
     pub grading_version: String,
     pub wire_estimation_confidence: String,
     pub grading_availability: String,
@@ -111,6 +113,7 @@ pub struct StoredPass {
     pub wire_divergent: Option<bool>,
     pub confidence: Option<String>,
     pub cause: Option<String>,
+    pub secondary_causes: Vec<String>,
     pub grading_version: Option<String>,
     pub wire_estimation_confidence: Option<String>,
     pub grading_availability: Option<String>,
@@ -180,6 +183,7 @@ impl RecoveryDb {
             ("grading_version", "TEXT"),
             ("wire_estimation_confidence", "TEXT"),
             ("grading_availability", "TEXT"),
+            ("secondary_causes_json", "TEXT NOT NULL DEFAULT '[]'"),
             // Existing rows predate optional points and historically always
             // represented an awarded numeric value.
             ("points_awarded", "INTEGER NOT NULL DEFAULT 1"),
@@ -195,11 +199,17 @@ impl RecoveryDb {
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: path.to_path_buf(),
         })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Persist a completed recovery pass.
@@ -211,9 +221,9 @@ impl RecoveryDb {
                  map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                  recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                  confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability) \
+                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
+                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -256,6 +266,7 @@ impl RecoveryDb {
                 &pass.telemetry_health,
                 &pass.wire_estimation_confidence,
                 &pass.grading_availability,
+                &pass.secondary_causes_json,
             ],
         )?;
         Ok(inserted == 1)
@@ -269,7 +280,7 @@ impl RecoveryDb {
                     map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                     recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                     confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability \
+                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -322,6 +333,10 @@ impl RecoveryDb {
                 telemetry_health: row.get(39)?,
                 wire_estimation_confidence: row.get(40)?,
                 grading_availability: row.get(41)?,
+                secondary_causes: row
+                    .get::<_, Option<String>>(42)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
             })
         })?;
         rows.collect()
@@ -401,6 +416,7 @@ mod tests {
             wire_divergent: false,
             confidence: "high".to_string(),
             cause: "correlated_touchdown".to_string(),
+            secondary_causes_json: "[\"hook_history_truncated\"]".to_string(),
             grading_version: "project-derived-v1".to_string(),
             wire_estimation_confidence: "high".to_string(),
             grading_availability: "available".to_string(),
@@ -416,6 +432,7 @@ mod tests {
         assert_eq!(passes[0].intended_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].actual_nearest_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].distance_to_intended_spot_m, Some(1.25));
+        assert_eq!(passes[0].secondary_causes, ["hook_history_truncated"]);
     }
 
     #[test]

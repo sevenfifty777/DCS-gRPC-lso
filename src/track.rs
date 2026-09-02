@@ -76,6 +76,7 @@ const MAX_TRACK_SAMPLES: usize = 72_000;
 const MAX_EVENT_EVIDENCE: usize = 256;
 const MAX_HOOK_EVIDENCE: usize = 512;
 const GATE_BUFFER_WINDOW_S: f64 = 2.0;
+const HEALTH_WINDOW_S: f64 = 10.0;
 /// PROJECT-DERIVED provisional observation radius. It is informational only
 /// until the Tarawa spot geometry is validated against the future live corpus.
 const VSTOL_SPOT_OBSERVATION_RADIUS_M: f64 = 15.0;
@@ -167,6 +168,8 @@ pub struct HookSampleEvidence {
     pub age_ms: f64,
     pub raw: Option<f64>,
     pub status: HookSampleStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grpc_code: Option<String>,
     pub in_groove: bool,
     pub in_final_window: bool,
     pub before_touchdown: bool,
@@ -207,7 +210,7 @@ pub struct HookObservation {
     pub error_samples: u32,
     pub stale_samples: u32,
     pub interpreted_state: &'static str,
-    pub timeline: Vec<HookSampleEvidence>,
+    pub timeline: VecDeque<HookSampleEvidence>,
     /// Calibration is module-specific; unknown modules are never inferred.
     pub polarity: &'static str,
 }
@@ -252,6 +255,10 @@ pub struct Track {
     health_red_announced: bool,
     previous_wire_plane: [Option<(f64, f64)>; 4],
     wire_crossings: Vec<WireCrossingEvidence>,
+    recent_health_samples: VecDeque<(f64, f64)>,
+    telemetry_gap_stats: OnlineMetricStats,
+    first_sample_time: Option<f64>,
+    last_sample_time: Option<f64>,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -295,6 +302,8 @@ pub struct GateQuality {
     pub status: GateStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bracket_gap_ms: Option<f64>,
 }
 
 impl Default for GateQuality {
@@ -302,6 +311,7 @@ impl Default for GateQuality {
         Self {
             status: GateStatus::Missing,
             reason: Some("not_observed".to_string()),
+            bracket_gap_ms: None,
         }
     }
 }
@@ -346,6 +356,30 @@ pub enum Completeness {
     BufferLimit,
 }
 
+impl Completeness {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::InsufficientGates => "insufficient_gates",
+            Self::TelemetryGap => "telemetry_gap",
+            Self::InvalidTelemetry => "invalid_telemetry",
+            Self::UnconfirmedArrest => "unconfirmed_arrest",
+            Self::BufferLimit => "buffer_limit",
+        }
+    }
+
+    const fn priority(self) -> u8 {
+        match self {
+            Self::BufferLimit => 0,
+            Self::TelemetryGap => 1,
+            Self::InvalidTelemetry => 2,
+            Self::InsufficientGates => 3,
+            Self::UnconfirmedArrest => 4,
+            Self::Complete => u8::MAX,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryHealth {
@@ -353,6 +387,104 @@ pub enum TelemetryHealth {
     Green,
     Orange,
     Red,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticCause {
+    HookHistoryTruncated,
+    EventHistoryTruncated,
+    EventStreamUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PositionCollectionMetrics {
+    pub polls: u32,
+    pub errors: u32,
+    pub timeouts: u32,
+    pub mean_latency_ms: f64,
+    pub p50_latency_ms: f64,
+    pub p95_latency_ms: f64,
+    pub p99_latency_ms: f64,
+    pub max_latency_ms: f64,
+}
+
+const METRIC_HISTOGRAM_MAX_MS: usize = 10_000;
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct OnlineMetricStats {
+    bins: Vec<u32>,
+    count: u64,
+    sum: f64,
+    max: f64,
+    above_warning: u64,
+}
+
+impl Default for OnlineMetricStats {
+    fn default() -> Self {
+        Self {
+            bins: vec![0; METRIC_HISTOGRAM_MAX_MS + 1],
+            count: 0,
+            sum: 0.0,
+            max: 0.0,
+            above_warning: 0,
+        }
+    }
+}
+
+impl OnlineMetricStats {
+    pub(crate) fn observe(&mut self, value_ms: f64) {
+        if !value_ms.is_finite() || value_ms < 0.0 {
+            return;
+        }
+        let bin = value_ms.round().min(METRIC_HISTOGRAM_MAX_MS as f64) as usize;
+        self.bins[bin] = self.bins[bin].saturating_add(1);
+        self.count = self.count.saturating_add(1);
+        self.sum += value_ms;
+        self.max = self.max.max(value_ms);
+        if value_ms > SAMPLE_GAP_WARNING_MS {
+            self.above_warning = self.above_warning.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn count(&self) -> u64 {
+        self.count
+    }
+
+    pub(crate) fn mean(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.sum / self.count as f64
+        }
+    }
+
+    pub(crate) fn max(&self) -> f64 {
+        self.max
+    }
+
+    pub(crate) fn ratio_above_warning(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.above_warning as f64 / self.count as f64
+        }
+    }
+
+    pub(crate) fn percentile(&self, quantile: f64) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        let rank = (((self.count - 1) as f64 * quantile).ceil() as u64) + 1;
+        let mut cumulative = 0_u64;
+        for (value_ms, count) in self.bins.iter().enumerate() {
+            cumulative += u64::from(*count);
+            if cumulative >= rank {
+                return value_ms as f64;
+            }
+        }
+        METRIC_HISTOGRAM_MAX_MS as f64
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -368,7 +500,28 @@ pub struct TelemetryQuality {
     pub scoring_invalid_samples: u32,
     pub max_scoring_sample_gap_ms: f64,
     pub dropped_samples: u32,
+    pub dropped_position_samples: u32,
+    pub dropped_hook_samples: u32,
+    pub dropped_event_samples: u32,
+    pub sample_count: u32,
+    pub effective_frequency_hz: f64,
+    pub degraded_sample_ratio: f64,
+    pub gap_p50_ms: f64,
+    pub gap_p90_ms: f64,
+    pub gap_p95_ms: f64,
+    pub gap_p99_ms: f64,
+    pub max_source_age_ms: f64,
+    pub position_polls: u32,
+    pub position_poll_errors: u32,
+    pub position_poll_timeouts: u32,
+    pub position_poll_mean_latency_ms: f64,
+    pub position_poll_p50_latency_ms: f64,
+    pub position_poll_p95_latency_ms: f64,
+    pub position_poll_p99_latency_ms: f64,
+    pub position_poll_max_latency_ms: f64,
     pub reasons: Vec<TelemetryInvalidReason>,
+    pub diagnostics: Vec<DiagnosticCause>,
+    pub unavailability_causes: Vec<Completeness>,
 }
 
 impl Default for TelemetryQuality {
@@ -385,8 +538,43 @@ impl Default for TelemetryQuality {
             scoring_invalid_samples: 0,
             max_scoring_sample_gap_ms: 0.0,
             dropped_samples: 0,
+            dropped_position_samples: 0,
+            dropped_hook_samples: 0,
+            dropped_event_samples: 0,
+            sample_count: 0,
+            effective_frequency_hz: 0.0,
+            degraded_sample_ratio: 0.0,
+            gap_p50_ms: 0.0,
+            gap_p90_ms: 0.0,
+            gap_p95_ms: 0.0,
+            gap_p99_ms: 0.0,
+            max_source_age_ms: 0.0,
+            position_polls: 0,
+            position_poll_errors: 0,
+            position_poll_timeouts: 0,
+            position_poll_mean_latency_ms: 0.0,
+            position_poll_p50_latency_ms: 0.0,
+            position_poll_p95_latency_ms: 0.0,
+            position_poll_p99_latency_ms: 0.0,
+            position_poll_max_latency_ms: 0.0,
             reasons: Vec::new(),
+            diagnostics: Vec::new(),
+            unavailability_causes: Vec::new(),
         }
+    }
+}
+
+impl TelemetryQuality {
+    fn add_unavailability_cause(&mut self, cause: Completeness) {
+        if cause == Completeness::Complete {
+            return;
+        }
+        if !self.unavailability_causes.contains(&cause) {
+            self.unavailability_causes.push(cause);
+            self.unavailability_causes
+                .sort_by_key(|cause| cause.priority());
+        }
+        self.completeness = self.unavailability_causes[0];
     }
 }
 
@@ -496,6 +684,10 @@ impl Track {
             health_red_announced: false,
             previous_wire_plane: [None; 4],
             wire_crossings: Vec::new(),
+            recent_health_samples: VecDeque::new(),
+            telemetry_gap_stats: OnlineMetricStats::default(),
+            first_sample_time: None,
+            last_sample_time: None,
         }
     }
 
@@ -513,31 +705,77 @@ impl Track {
     pub fn next_sample(&mut self, sample: &TelemetrySample, hook_state: Option<f64>) -> bool {
         let carrier = &sample.carrier;
         let plane = &sample.plane;
-        self.previous_sample_time = Some(carrier.time.max(plane.time));
+        let sample_time = carrier.time.max(plane.time);
+        let observed_gap_ms = sample.sample_gap_ms.max(sample.source_age_ms);
+        self.previous_sample_time = Some(sample_time);
+        self.first_sample_time.get_or_insert(sample_time);
+        self.last_sample_time = Some(sample_time);
+        self.telemetry_gap_stats.observe(observed_gap_ms);
+        self.telemetry_quality.sample_count =
+            self.telemetry_gap_stats.count().min(u64::from(u32::MAX)) as u32;
+        self.telemetry_quality.max_source_age_ms = self
+            .telemetry_quality
+            .max_source_age_ms
+            .max(sample.source_age_ms);
+        self.recent_health_samples
+            .push_back((sample_time, observed_gap_ms));
+        while self
+            .recent_health_samples
+            .front()
+            .is_some_and(|(time, _)| sample_time - time > HEALTH_WINDOW_S)
+        {
+            self.recent_health_samples.pop_front();
+        }
         self.telemetry_quality.max_sample_gap_ms = self
             .telemetry_quality
             .max_sample_gap_ms
-            .max(sample.sample_gap_ms.max(sample.source_age_ms));
+            .max(observed_gap_ms);
         self.telemetry_quality.max_skew_ms = self.telemetry_quality.max_skew_ms.max(sample.skew_ms);
         if sample.has_warning() {
             self.telemetry_quality.warning_samples += 1;
         }
-        let (health, health_reason) = if sample.invalid_reason.is_some()
+        let window_span_s = self
+            .recent_health_samples
+            .front()
+            .map_or(0.0, |(time, _)| sample_time - time);
+        let window_frequency_hz = if window_span_s > 0.0 {
+            (self.recent_health_samples.len().saturating_sub(1)) as f64 / window_span_s
+        } else {
+            0.0
+        };
+        let degraded_ratio = if self.recent_health_samples.is_empty() {
+            0.0
+        } else {
+            self.recent_health_samples
+                .iter()
+                .filter(|(_, gap)| *gap > SAMPLE_GAP_WARNING_MS)
+                .count() as f64
+                / self.recent_health_samples.len() as f64
+        };
+        let (current_health, current_health_reason) = if sample.invalid_reason.is_some()
             || sample.sample_gap_ms > crate::telemetry::SAMPLE_GAP_INCOMPLETE_MS
             || sample.source_age_ms > crate::telemetry::SAMPLE_GAP_INCOMPLETE_MS
         {
             (TelemetryHealth::Red, "invalid_or_incomplete_sample")
+        } else if window_span_s >= 5.0 && (window_frequency_hz < 6.0 || degraded_ratio >= 0.15) {
+            (TelemetryHealth::Red, "sustained_gate_capture_risk")
+        } else if window_span_s >= 5.0 && (window_frequency_hz < 8.0 || degraded_ratio >= 0.05) {
+            (TelemetryHealth::Orange, "degraded_window_cadence")
         } else if sample.has_warning() {
             (TelemetryHealth::Orange, "degraded_cadence_or_freshness")
         } else {
             (TelemetryHealth::Green, "nominal")
         };
-        self.telemetry_quality.health = health;
-        self.telemetry_quality.health_reason = health_reason;
-        if health == TelemetryHealth::Red && !self.health_red_announced {
+        if health_rank(current_health) >= health_rank(self.telemetry_quality.health) {
+            self.telemetry_quality.health = current_health;
+            self.telemetry_quality.health_reason = current_health_reason;
+        }
+        if current_health == TelemetryHealth::Red && !self.health_red_announced {
             tracing::warn!(
                 before_groove = !self.entered_groove,
-                health_reason,
+                health_reason = current_health_reason,
+                window_frequency_hz,
+                degraded_ratio,
                 "live grading health is red"
             );
             self.health_red_announced = true;
@@ -579,7 +817,9 @@ impl Track {
                 });
             } else {
                 self.telemetry_quality.dropped_samples += 1;
-                self.telemetry_quality.completeness = Completeness::BufferLimit;
+                self.telemetry_quality.dropped_position_samples += 1;
+                self.telemetry_quality
+                    .add_unavailability_cause(Completeness::BufferLimit);
             }
         }
 
@@ -775,13 +1015,11 @@ impl Track {
         if let Some(reason) = sample.invalid_reason {
             if scoring_relevant {
                 self.telemetry_quality.scoring_invalid_samples += 1;
-                self.telemetry_quality.completeness = match reason {
+                let cause = match reason {
                     TelemetryInvalidReason::TelemetryGap => Completeness::TelemetryGap,
-                    _ if self.telemetry_quality.completeness != Completeness::TelemetryGap => {
-                        Completeness::InvalidTelemetry
-                    }
-                    _ => self.telemetry_quality.completeness,
+                    _ => Completeness::InvalidTelemetry,
                 };
+                self.telemetry_quality.add_unavailability_cause(cause);
             } else {
                 self.telemetry_quality.pattern_invalid_samples += 1;
             }
@@ -895,14 +1133,17 @@ impl Track {
             {
                 self.gate_samples.pop_front();
             }
-            self.previous_gate_sample = Some(current);
-
             // Mark groove entry: inside 3/4 nm, below 300 ft AGL, and lined up (±10°).
             // The lateral constraint prevents the timer from starting prematurely while the
             // aircraft is still performing a wide turn to final on the base leg.
             if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 && lineup_deg.abs() <= 10.0 {
-                if self.groove_entry_time.is_none() {
+                if !self.entered_groove {
                     self.groove_entry_time = Some(plane.time);
+                    // Start a new wire-evidence segment for the final inbound
+                    // branch. An earlier overhead/pattern deck crossing must not
+                    // reserve a wire number for the actual recovery.
+                    self.previous_wire_plane = [None; 4];
+                    self.wire_crossings.clear();
                 }
                 self.entered_groove = true;
             }
@@ -930,7 +1171,9 @@ impl Track {
             });
         } else {
             self.telemetry_quality.dropped_samples += 1;
-            self.telemetry_quality.completeness = Completeness::BufferLimit;
+            self.telemetry_quality.dropped_position_samples += 1;
+            self.telemetry_quality
+                .add_unavailability_cause(Completeness::BufferLimit);
         }
 
         self.previous_x = x;
@@ -1135,10 +1378,9 @@ impl Track {
                 (approach_grade, approach_points)
             };
 
-        if !self.gate_deviations.all_valid()
-            && self.telemetry_quality.completeness == Completeness::Complete
-        {
-            self.telemetry_quality.completeness = Completeness::InsufficientGates;
+        if !self.gate_deviations.all_valid() {
+            self.telemetry_quality
+                .add_unavailability_cause(Completeness::InsufficientGates);
         }
         if matches!(self.carrier_info.recovery, CarrierRecovery::Arrested)
             && matches!(grading, Grading::Recovered { cable: None, .. })
@@ -1146,12 +1388,29 @@ impl Track {
             // RunwayTouch/Land prove contact, not an arrest. Until sustained
             // kinematics or a DCS wire/LQM confirms the trap, the pass cannot
             // receive a favourable grade.
-            self.telemetry_quality.completeness = Completeness::UnconfirmedArrest;
+            self.telemetry_quality
+                .add_unavailability_cause(Completeness::UnconfirmedArrest);
         }
         if self.telemetry_quality.completeness != Completeness::Complete {
             pass_grade = PassGrade::Incomplete;
             grade_points = None;
         }
+
+        self.telemetry_quality.gap_p50_ms = self.telemetry_gap_stats.percentile(0.50);
+        self.telemetry_quality.gap_p90_ms = self.telemetry_gap_stats.percentile(0.90);
+        self.telemetry_quality.gap_p95_ms = self.telemetry_gap_stats.percentile(0.95);
+        self.telemetry_quality.gap_p99_ms = self.telemetry_gap_stats.percentile(0.99);
+        self.telemetry_quality.degraded_sample_ratio =
+            self.telemetry_gap_stats.ratio_above_warning();
+        self.telemetry_quality.effective_frequency_hz =
+            match (self.first_sample_time, self.last_sample_time) {
+                (Some(first), Some(last))
+                    if last > first && self.telemetry_gap_stats.count() > 1 =>
+                {
+                    (self.telemetry_gap_stats.count() - 1) as f64 / (last - first)
+                }
+                _ => 0.0,
+            };
 
         TrackResult {
             pilot_name: self.pilot_name,
@@ -1202,7 +1461,7 @@ impl Track {
             -self.carrier_info.deck_angle.to_radians(),
         ));
 
-        [
+        let cables = [
             (1, &self.carrier_info.cable1),
             (2, &self.carrier_info.cable2),
             (3, &self.carrier_info.cable3),
@@ -1288,6 +1547,25 @@ impl Track {
         raw: Option<f64>,
         status: HookSampleStatus,
     ) {
+        self.observe_hook_sample_with_error(
+            associated_time_dcs,
+            observed_unix_ms,
+            age_ms,
+            raw,
+            status,
+            None,
+        );
+    }
+
+    pub fn observe_hook_sample_with_error(
+        &mut self,
+        associated_time_dcs: f64,
+        observed_unix_ms: u64,
+        age_ms: f64,
+        raw: Option<f64>,
+        status: HookSampleStatus,
+        grpc_code: Option<String>,
+    ) {
         if !matches!(self.carrier_info.recovery, CarrierRecovery::Arrested) {
             return;
         }
@@ -1323,21 +1601,33 @@ impl Track {
             }
         }
 
-        if self.hook_observation.timeline.len() < MAX_HOOK_EVIDENCE {
-            self.hook_observation.timeline.push(HookSampleEvidence {
+        if self.hook_observation.timeline.len() == MAX_HOOK_EVIDENCE {
+            self.hook_observation.timeline.pop_front();
+            self.telemetry_quality.dropped_samples += 1;
+            self.telemetry_quality.dropped_hook_samples += 1;
+            if !self
+                .telemetry_quality
+                .diagnostics
+                .contains(&DiagnosticCause::HookHistoryTruncated)
+            {
+                self.telemetry_quality
+                    .diagnostics
+                    .push(DiagnosticCause::HookHistoryTruncated);
+            }
+        }
+        self.hook_observation
+            .timeline
+            .push_back(HookSampleEvidence {
                 associated_time_dcs,
                 observed_unix_ms,
                 age_ms,
                 raw,
                 status,
+                grpc_code,
                 in_groove,
                 in_final_window,
                 before_touchdown,
             });
-        } else {
-            self.telemetry_quality.dropped_samples += 1;
-            self.telemetry_quality.completeness = Completeness::BufferLimit;
-        }
         self.hook_observation.interpreted_state = match self.calibrated_hook_state() {
             CalibratedHookState::Up => "up",
             CalibratedHookState::Down => "down",
@@ -1398,13 +1688,25 @@ impl Track {
             || (self.previous_x > 0.0 && self.previous_x <= GATE_THREE_QUARTER_NM)
         {
             self.telemetry_quality.scoring_invalid_samples += 1;
-            self.telemetry_quality.completeness = Completeness::TelemetryGap;
+            self.telemetry_quality
+                .add_unavailability_cause(Completeness::TelemetryGap);
         } else {
             self.telemetry_quality.pattern_invalid_samples += 1;
         }
         if !self.telemetry_quality.reasons.contains(&reason) {
             self.telemetry_quality.reasons.push(reason);
         }
+    }
+
+    pub fn set_position_collector_metrics(&mut self, metrics: PositionCollectionMetrics) {
+        self.telemetry_quality.position_polls = metrics.polls;
+        self.telemetry_quality.position_poll_errors = metrics.errors;
+        self.telemetry_quality.position_poll_timeouts = metrics.timeouts;
+        self.telemetry_quality.position_poll_mean_latency_ms = metrics.mean_latency_ms;
+        self.telemetry_quality.position_poll_p50_latency_ms = metrics.p50_latency_ms;
+        self.telemetry_quality.position_poll_p95_latency_ms = metrics.p95_latency_ms;
+        self.telemetry_quality.position_poll_p99_latency_ms = metrics.p99_latency_ms;
+        self.telemetry_quality.position_poll_max_latency_ms = metrics.max_latency_ms;
     }
 
     pub fn record_event(
@@ -1427,8 +1729,36 @@ impl Track {
             });
         } else {
             self.telemetry_quality.dropped_samples += 1;
-            self.telemetry_quality.completeness = Completeness::BufferLimit;
+            self.telemetry_quality.dropped_event_samples += 1;
+            if !self
+                .telemetry_quality
+                .diagnostics
+                .contains(&DiagnosticCause::EventHistoryTruncated)
+            {
+                self.telemetry_quality
+                    .diagnostics
+                    .push(DiagnosticCause::EventHistoryTruncated);
+            }
         }
+    }
+
+    pub fn mark_event_stream_unavailable(&mut self, reason: impl Into<String>) {
+        if !self
+            .telemetry_quality
+            .diagnostics
+            .contains(&DiagnosticCause::EventStreamUnavailable)
+        {
+            self.telemetry_quality
+                .diagnostics
+                .push(DiagnosticCause::EventStreamUnavailable);
+        }
+        let timestamp_dcs = self
+            .datums
+            .last()
+            .map(|datum| datum.time)
+            .or(self.previous_sample_time)
+            .unwrap_or_default();
+        self.record_event("event_stream_unavailable", timestamp_dcs, false, reason);
     }
 
     fn observe_vstol_spot_zone(&mut self, carrier: &Transform, plane: &Transform) {
@@ -1450,6 +1780,14 @@ impl Track {
         {
             self.spot_zone.exited_at_dcs = Some(plane.time);
         }
+    }
+}
+
+fn health_rank(health: TelemetryHealth) -> u8 {
+    match health {
+        TelemetryHealth::Green => 0,
+        TelemetryHealth::Orange => 1,
+        TelemetryHealth::Red => 2,
     }
 }
 
@@ -1528,6 +1866,7 @@ fn capture_gate(
         return;
     }
     let bracket_gap_ms = (current.time - previous.time) * 1_000.0;
+    quality.bracket_gap_ms = Some(bracket_gap_ms);
     if bracket_gap_ms > SAMPLE_GAP_WARNING_MS {
         quality.status = GateStatus::Invalid;
         quality.reason = Some("stale_gate_bracket".to_string());
@@ -1582,17 +1921,29 @@ fn capture_gate(
     });
     quality.status = GateStatus::Valid;
     quality.reason = None;
+    quality.bracket_gap_ms = Some(bracket_gap_ms);
 }
 
 fn parse_dcs_wire(comment: &str) -> Option<u8> {
     let (_, suffix) = comment.split_once("WIRE#")?;
-    suffix
-        .trim_start()
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
-        .parse()
+    let suffix = suffix.trim_start();
+    let digit_count = suffix.bytes().take_while(u8::is_ascii_digit).count();
+    if digit_count == 0 {
+        return None;
+    }
+    let (digits, remainder) = suffix.split_at(digit_count);
+    if !remainder.is_empty()
+        && !remainder
+            .chars()
+            .next()
+            .is_some_and(|next| next.is_ascii_whitespace() || next == '[')
+    {
+        return None;
+    }
+    let wire = digits.parse::<u64>().ok()?;
+    u8::try_from(wire)
         .ok()
+        .filter(|wire| (1..=4).contains(wire))
 }
 
 fn normalize_grading_for_recovery(grading: Grading, recovery: &CarrierRecovery) -> Grading {
@@ -1639,6 +1990,7 @@ mod tests {
         GateQuality {
             status: GateStatus::Valid,
             reason: None,
+            bracket_gap_ms: Some(100.0),
         }
     }
 
@@ -1713,6 +2065,9 @@ mod tests {
             assert!(datum.is_none());
             assert_eq!(quality.status, GateStatus::Invalid);
             assert_eq!(quality.reason.as_deref(), Some(reason));
+            if reason == "stale_gate_bracket" {
+                assert!((quality.bracket_gap_ms.expect("bracket gap") - 400.0).abs() < 0.001);
+            }
         }
     }
 
@@ -1821,6 +2176,182 @@ mod tests {
     }
 
     #[test]
+    fn event_stream_failure_before_touchdown_preserves_gates_without_favourable_outcome() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(1.0)),
+            at_half_nm: Some(gate(2.0)),
+            at_quarter_nm: Some(gate(3.0)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
+        track.entered_groove = true;
+        let mut correlator = crate::tasks::event_correlator::EventCorrelator::new(10, 20);
+        correlator.stream_unavailable(&mut track, "unavailable: before touchdown");
+
+        let result = track.finish();
+        assert_eq!(
+            result.telemetry_quality.completeness,
+            Completeness::Complete
+        );
+        assert!(result
+            .telemetry_quality
+            .diagnostics
+            .contains(&DiagnosticCause::EventStreamUnavailable));
+        assert_eq!(result.grading, Grading::WaveoffUnknown);
+        assert_eq!(result.grade_points, None);
+    }
+
+    #[test]
+    fn event_stream_failure_after_confirmed_touchdown_does_not_revoke_position_evidence() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(1.0)),
+            at_half_nm: Some(gate(2.0)),
+            at_quarter_nm: Some(gate(3.0)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
+        track.grading = Some(Grading::Recovered {
+            cable: None,
+            cable_estimated: Some(3),
+        });
+        let mut correlator = crate::tasks::event_correlator::EventCorrelator::new(10, 20);
+        assert!(correlator.landing_quality_mark(
+            &mut track,
+            12.0,
+            "LSO: GRADE:OK : WIRE# 3".to_string()
+        ));
+        correlator.stream_unavailable(&mut track, "clean_end_of_stream");
+
+        let result = track.finish();
+        assert_eq!(
+            result.telemetry_quality.completeness,
+            Completeness::Complete
+        );
+        assert!(result
+            .telemetry_quality
+            .diagnostics
+            .contains(&DiagnosticCause::EventStreamUnavailable));
+        assert_ne!(result.pass_grade, PassGrade::Incomplete);
+        assert!(result.grade_points.is_some());
+        let summary = correlator.summary(&result.grading);
+        assert!(summary.outcome_confirmed);
+    }
+
+    #[test]
+    fn dcs_wire_parser_accepts_only_wires_one_through_four() {
+        for wire in 1..=4 {
+            assert_eq!(
+                parse_dcs_wire(&format!("LSO: GRADE:OK : WIRE# {wire}[BC]")),
+                Some(wire)
+            );
+        }
+        for malformed in [
+            "WIRE# 0",
+            "WIRE# 5",
+            "WIRE# 99",
+            "WIRE# 255",
+            "WIRE# 256",
+            "WIRE# 184467440737095516160",
+            "WIRE# -1",
+            "WIRE# 1foo",
+            "WIRE#",
+        ] {
+            assert_eq!(parse_dcs_wire(malformed), None, "{malformed}");
+        }
+    }
+
+    #[test]
+    fn invalid_dcs_wire_never_confirms_an_arrest_or_awards_points() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        for invalid in [
+            "WIRE# 0",
+            "WIRE# 5",
+            "WIRE# 255",
+            "WIRE# 999999999999999999999",
+        ] {
+            let mut track = Track::new("pilot", carrier, plane);
+            track.gate_deviations = GateDeviations {
+                at_three_quarter_nm: Some(gate(1.0)),
+                at_half_nm: Some(gate(2.0)),
+                at_quarter_nm: Some(gate(3.0)),
+                three_quarter_quality: valid_quality(),
+                half_quality: valid_quality(),
+                quarter_quality: valid_quality(),
+            };
+            track.grading = Some(Grading::Recovered {
+                cable: None,
+                cable_estimated: Some(3),
+            });
+            assert!(track.set_dcs_grading(invalid.to_string()));
+            let result = track.finish();
+            assert_eq!(
+                result.telemetry_quality.completeness,
+                Completeness::UnconfirmedArrest,
+                "{invalid}"
+            );
+            assert_eq!(result.pass_grade, PassGrade::Incomplete, "{invalid}");
+            assert_eq!(result.grade_points, None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn unconfirmed_arrest_does_not_overwrite_telemetry_cause() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(1.0)),
+            at_half_nm: Some(gate(2.0)),
+            at_quarter_nm: Some(gate(3.0)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
+        track.entered_groove = true;
+        track.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
+        track.grading = Some(Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        });
+
+        let result = track.finish();
+        assert_eq!(
+            result.telemetry_quality.completeness,
+            Completeness::TelemetryGap
+        );
+        assert_eq!(
+            result.telemetry_quality.unavailability_causes,
+            [Completeness::TelemetryGap, Completeness::UnconfirmedArrest]
+        );
+    }
+
+    #[test]
+    fn completeness_database_names_match_json_names() {
+        for completeness in [
+            Completeness::Complete,
+            Completeness::InsufficientGates,
+            Completeness::TelemetryGap,
+            Completeness::InvalidTelemetry,
+            Completeness::UnconfirmedArrest,
+            Completeness::BufferLimit,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&completeness).unwrap(),
+                format!("\"{}\"", completeness.as_str())
+            );
+        }
+    }
+
+    #[test]
     fn event_evidence_preserves_arrival_order_and_first_touchdown() {
         let carrier = CarrierInfo::by_type("LHA_Tarawa").unwrap();
         let plane_info = AirplaneInfo::by_type("AV8BNA").unwrap();
@@ -1848,7 +2379,7 @@ mod tests {
     }
 
     #[test]
-    fn event_buffer_is_bounded_and_overload_marks_result_incomplete() {
+    fn event_buffer_is_bounded_without_masking_primary_completeness() {
         let carrier = CarrierInfo::by_type("CVN_71").unwrap();
         let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
         let mut track = Track::new("pilot", carrier, plane);
@@ -1860,9 +2391,84 @@ mod tests {
         assert_eq!(result.telemetry_quality.dropped_samples, 10);
         assert_eq!(
             result.telemetry_quality.completeness,
+            Completeness::InsufficientGates
+        );
+        assert_eq!(result.telemetry_quality.dropped_event_samples, 10);
+        assert!(result
+            .telemetry_quality
+            .diagnostics
+            .contains(&DiagnosticCause::EventHistoryTruncated));
+        assert_eq!(result.grade_points, None);
+    }
+
+    #[test]
+    fn hook_history_is_a_recent_ring_and_never_changes_position_completeness() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        track.entered_groove = true;
+        track.previous_x = 400.0;
+        for sequence in 0..(MAX_HOOK_EVIDENCE + 88) {
+            track.observe_hook_sample(
+                sequence as f64,
+                sequence as u64,
+                0.0,
+                Some(1.0),
+                HookSampleStatus::Success,
+            );
+        }
+        let result = track.finish();
+        assert_eq!(result.hook_observation.timeline.len(), MAX_HOOK_EVIDENCE);
+        assert_eq!(
+            result
+                .hook_observation
+                .timeline
+                .front()
+                .unwrap()
+                .associated_time_dcs,
+            88.0
+        );
+        assert_eq!(
+            result
+                .hook_observation
+                .timeline
+                .back()
+                .unwrap()
+                .associated_time_dcs,
+            (MAX_HOOK_EVIDENCE + 87) as f64
+        );
+        assert_eq!(result.telemetry_quality.dropped_hook_samples, 88);
+        assert_ne!(
+            result.telemetry_quality.completeness,
             Completeness::BufferLimit
         );
-        assert_eq!(result.grade_points, None);
+    }
+
+    #[test]
+    fn sustained_five_hz_collection_turns_health_red_and_reports_percentiles() {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        for sequence in 0..=30 {
+            let time = sequence as f64 * 0.2;
+            let carrier = Transform {
+                time,
+                forward: DVec3::unit_z(),
+                ..Transform::default()
+            };
+            let plane = Transform {
+                time,
+                position: DVec3::new(0.0, 50.0, -1_000.0),
+                alt: 50.0,
+                ..Transform::default()
+            };
+            assert!(track.next(&carrier, &plane, None));
+        }
+        let quality = track.finish().telemetry_quality;
+        assert_eq!(quality.health, TelemetryHealth::Red);
+        assert_eq!(quality.health_reason, "sustained_gate_capture_risk");
+        assert!((quality.effective_frequency_hz - 5.0).abs() < 0.01);
+        assert!((quality.gap_p99_ms - 200.0).abs() < 0.01);
     }
 
     #[test]
