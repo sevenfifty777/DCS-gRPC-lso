@@ -377,11 +377,15 @@ fn side_range_y(track: &TrackResult) -> Range<f64> {
     }
 }
 
-fn recovery_label(grading: &Grading, is_vstol: bool) -> Cow<'static, str> {
+fn recovery_label(grading: &Grading, is_vstol: bool, arrest_evidence: &str) -> Cow<'static, str> {
     match grading {
         Grading::Unknown => Cow::Borrowed(""),
         Grading::Bolter => Cow::Borrowed("Bolter"),
+        Grading::Recovered { .. } if !is_vstol && arrest_evidence == "unconfirmed" => {
+            Cow::Borrowed("Deck contact (arrest unconfirmed)")
+        }
         Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
+        Grading::WaveoffDcs => Cow::Borrowed("Waveoff (DCS LSO)"),
         Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
         Grading::Recovered {
             cable,
@@ -393,7 +397,7 @@ fn recovery_label(grading: &Grading, is_vstol: bool) -> Cow<'static, str> {
                 match crate::track::select_wire_for_display(*cable_estimated, *cable) {
                     (Some(wire), "estimated") => Cow::Owned(format!("Wire {} (estimated)", wire)),
                     (Some(wire), "dcs") => Cow::Owned(format!("Wire {} (DCS)", wire)),
-                    _ => Cow::Borrowed("(failed to detect cable)"),
+                    _ => Cow::Borrowed("Arrested (wire unknown)"),
                 }
             }
         }
@@ -460,7 +464,11 @@ pub fn draw_chart(
     )?;
 
     root_drawing_area.draw_text(
-        &recovery_label(&track.grading, track.carrier_info.is_vstol()),
+        &recovery_label(
+            &track.grading,
+            track.carrier_info.is_vstol(),
+            track.arrest_evidence,
+        ),
         &text_style,
         (16, 112),
     )?;
@@ -1239,7 +1247,7 @@ mod layout_tests {
             cable_estimated: None,
         };
 
-        assert_eq!(recovery_label(&grading, false), "Wire 4 (DCS)");
+        assert_eq!(recovery_label(&grading, false, "dcs_wire"), "Wire 4 (DCS)");
     }
 
     #[test]
@@ -1249,7 +1257,28 @@ mod layout_tests {
             cable_estimated: Some(3),
         };
 
-        assert_eq!(recovery_label(&grading, false), "Wire 4 (DCS)");
+        assert_eq!(recovery_label(&grading, false, "dcs_wire"), "Wire 4 (DCS)");
+    }
+
+    #[test]
+    fn catobar_recovery_label_separates_kinematic_arrest_from_unconfirmed_contact() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+
+        assert_eq!(
+            recovery_label(&grading, false, "kinematic"),
+            "Arrested (wire unknown)"
+        );
+        assert_eq!(
+            recovery_label(&grading, false, "unconfirmed"),
+            "Deck contact (arrest unconfirmed)"
+        );
+        assert_eq!(
+            recovery_label(&Grading::WaveoffDcs, false, "none"),
+            "Waveoff (DCS LSO)"
+        );
     }
 
     fn two_complete_final_approach_runs() -> Vec<Datum> {

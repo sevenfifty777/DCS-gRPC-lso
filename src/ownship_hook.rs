@@ -7,6 +7,10 @@ use crate::client::HookClient;
 use crate::tasks::HookSamplingConfig;
 
 const MAX_EVIDENCE: usize = 512;
+/// `LoGetMechInfo` only exists for a locally occupied cockpit. After this many
+/// consecutive unavailable answers (a dedicated server never has one) the
+/// diagnostic sampler stops instead of polling for the whole recovery.
+const MAX_CONSECUTIVE_UNAVAILABLE: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,7 +51,7 @@ pub(crate) struct OwnshipHookObservation {
     error_samples: u32,
     stale_samples: u32,
     compacted_samples: u32,
-    timeline: Vec<SampleEvidence>,
+    timeline: std::collections::VecDeque<SampleEvidence>,
 }
 
 impl OwnshipHookObservation {
@@ -64,7 +68,7 @@ impl OwnshipHookObservation {
             error_samples: 0,
             stale_samples: 0,
             compacted_samples: 0,
-            timeline: Vec::new(),
+            timeline: std::collections::VecDeque::new(),
         }
     }
 
@@ -77,10 +81,10 @@ impl OwnshipHookObservation {
         self.count(poll.status);
 
         if self.timeline.len() == MAX_EVIDENCE {
-            self.timeline.remove(0);
+            self.timeline.pop_front();
             self.compacted_samples += 1;
         }
-        self.timeline.push(SampleEvidence {
+        self.timeline.push_back(SampleEvidence {
             model_time_dcs: poll.model_time_dcs,
             observed_unix_ms: poll.received_unix_ms,
             age_ms,
@@ -164,14 +168,30 @@ async fn sample(
     let mut interval = tokio::time::interval(period);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut client = HookClient::new(channel);
+    let mut consecutive_unavailable = 0_u32;
     loop {
         interval.tick().await;
         let poll = poll_once(&mut client, target_unit_id, config).await;
-        let stop = poll.status == SampleStatus::Unimplemented;
+        if matches!(
+            poll.status,
+            SampleStatus::Unavailable | SampleStatus::IdentityUnavailable
+        ) {
+            consecutive_unavailable += 1;
+        } else {
+            consecutive_unavailable = 0;
+        }
+        let stop = poll.status == SampleStatus::Unimplemented
+            || consecutive_unavailable >= MAX_CONSECUTIVE_UNAVAILABLE;
         if tx.try_send(poll).is_err() {
             crate::metrics::RUNTIME_METRICS.hook_sample_dropped();
         }
         if stop {
+            if consecutive_unavailable >= MAX_CONSECUTIVE_UNAVAILABLE {
+                tracing::info!(
+                    "ownship hook mechanization unavailable (no local cockpit on this DCS \
+                     instance); stopping the diagnostic sampler for this recovery"
+                );
+            }
             break;
         }
     }

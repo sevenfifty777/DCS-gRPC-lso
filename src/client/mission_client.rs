@@ -43,12 +43,15 @@ impl MissionClient {
         Ok(res.datetime)
     }
 
+    /// Opens the long-lived mission event stream. No `grpc-timeout` is attached:
+    /// the deadline used for unary calls would apply to the whole stream.
     pub async fn stream_events(
         &mut self,
     ) -> GrpcResult<impl Stream<Item = Result<(f64, Event), Status>>> {
+        crate::metrics::RUNTIME_METRICS.count_rpc();
         let events = self
             .svc
-            .stream_events(request_with_deadline(mission::v0::StreamEventsRequest {}))
+            .stream_events(tonic::Request::new(mission::v0::StreamEventsRequest {}))
             .await
             .map_err(Box::new)?
             .into_inner()

@@ -1,5 +1,14 @@
 # Grading branch review
 
+> **Obsolete — superseded (2026-09-03).** This document reviews the historical `grading` branch
+> (`257c4a7` against `origin/main` at `88224a9`) and is kept only as a record. Its facts are stale:
+> the hook draw argument is now per aircraft (`1305` for F-14 variants, `25` for F/A-18C and T-45)
+> and arrives inside the atomic `GetRecoverySnapshot`; the `IntentionalBolter`/`Qualif Bolter`
+> model has been replaced by the outcome/completeness/evidence model in
+> [GRADING_REFERENCE.md](GRADING_REFERENCE.md) and [RELIABILITY_ARCHITECTURE.md](RELIABILITY_ARCHITECTURE.md);
+> the test counts below are from that branch, not the current suite (see CI). For the current
+> state and plan see [the 2026-09-03 state and plan](claude-plan/as-rust-dcs-scripting-gentle-cat.md).
+
 ## Review status
 
 - Branch: `grading`

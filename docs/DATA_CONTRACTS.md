@@ -2,7 +2,7 @@
 
 ## JSON recovery report
 
-New live reports use `schema_version: 7`. The legacy top-level fields (`pilot_name`, `grading`,
+New live reports use `schema_version: 8`. The legacy top-level fields (`pilot_name`, `grading`,
 `pass_grade`, `dcs_grading`, `gate_deviations`, `datums`, `mission_datetime`) remain present with
 compatible meanings. Additive fields include:
 
@@ -30,15 +30,27 @@ compatible meanings. Additive fields include:
   correlation lag, estimate confidence and reason. An estimate requires a stable hook-down value,
   a sharp transient near touchdown, recovery to the down value within eight seconds, and a valid
   cable crossing no more than 200 ms before that transient. A stable hook-up value or an
-  incomplete transient produces no estimate.
+  incomplete transient produces no estimate;
+- schema 8: `hook_state` (commanded hook state `up`/`down`/`unknown`), `arrest_evidence`
+  (`dcs_wire`, `hook_transient`, `kinematic`, `unconfirmed`, `none`), `arrest_kinematics`
+  (confirmation, reason, reference/slow-since times, held seconds, minimum relative speed),
+  `dcs_lso` (parsed `GRADE:` token, wire and waveoff call), `hook_observation.baseline_*`
+  (state, mean value, sample count, window and reason), per-datum `raw_carrier_velocity` and,
+  when DCS-gRPC 0.9.2 provides them, `queue_wait_ms`, `lua_exec_ms` and `queue_depth`.
+  `approach_grade` is omitted when the pass is incomplete.
+
+LSO-written ACMI files carry the raw hook draw argument as the custom Tacview property `LSOHook`
+on each aircraft frame; `lso file` and the replay fixtures read it back so the hook classifier and
+wire estimator behave as they did live. Older ACMI files without the property replay with no hook
+evidence.
 
 Individual JSON, PNG, ACMI, Discord payloads and public logs must never contain an UCID. The
 deterministic recovery ID contains only session/generation/unit IDs and DCS time.
 
 ## SQLite
 
-`lso.db` is private dynamic state. `/api/passes` may expose `pilot_ucid` because the dashboard is a
-loopback-only private endpoint in phase 1.
+`lso.db` is private dynamic state. `/api/passes` strips `pilot_ucid` unless the operator starts LSO
+with `--web-expose-ucid`; the dashboard is a loopback-only private endpoint in phase 1.
 
 Migrations are additive and recorded in `schema_migrations`:
 
@@ -49,6 +61,7 @@ Migrations are additive and recorded in `schema_migrations`:
 | 3 | `points_awarded`, separating a real zero from no points |
 | 4 | separate intended spot, actual nearest active spot and distance to intended spot |
 | 5 | scored-segment gap, telemetry health, wire-estimate confidence and grading availability |
+| 6 | `arrest_evidence` and commanded `hook_state` |
 
 Startup inspects `PRAGMA table_info(passes)` before each `ALTER TABLE`. Unexpected migration errors
 are returned; they are never swallowed as duplicate-column errors. Existing rows are preserved.

@@ -63,6 +63,10 @@ pub struct DbPass {
     pub grading_version: String,
     pub wire_estimation_confidence: String,
     pub grading_availability: String,
+    /// `dcs_wire`, `hook_transient`, `kinematic`, `unconfirmed` or `none`.
+    pub arrest_evidence: String,
+    /// Commanded hook state: `up`, `down` or `unknown`.
+    pub hook_state: String,
 }
 
 /// Pass record as returned from a database query (JSON-serialisable for the web API).
@@ -114,6 +118,8 @@ pub struct StoredPass {
     pub grading_version: Option<String>,
     pub wire_estimation_confidence: Option<String>,
     pub grading_availability: Option<String>,
+    pub arrest_evidence: Option<String>,
+    pub hook_state: Option<String>,
 }
 
 impl RecoveryDb {
@@ -186,6 +192,9 @@ impl RecoveryDb {
             ("intended_spot", "TEXT"),
             ("actual_nearest_spot", "TEXT"),
             ("distance_to_intended_spot_m", "REAL"),
+            // Migration 6: arrest confirmation source and commanded hook state.
+            ("arrest_evidence", "TEXT"),
+            ("hook_state", "TEXT"),
         ] {
             ensure_column(&conn, "passes", name, definition)?;
         }
@@ -195,7 +204,8 @@ impl RecoveryDb {
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -204,16 +214,18 @@ impl RecoveryDb {
 
     /// Persist a completed recovery pass.
     pub fn insert(&self, pass: &DbPass) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = crate::utils::lock_unpoisoned(&self.conn);
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO passes \
                 (timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
                  map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                  recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                  confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability) \
+                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability,
+                 arrest_evidence, hook_state) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
+                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
+                     ?42, ?43)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -256,6 +268,8 @@ impl RecoveryDb {
                 &pass.telemetry_health,
                 &pass.wire_estimation_confidence,
                 &pass.grading_availability,
+                &pass.arrest_evidence,
+                &pass.hook_state,
             ],
         )?;
         Ok(inserted == 1)
@@ -263,13 +277,14 @@ impl RecoveryDb {
 
     /// Return all passes ordered newest-first.
     pub fn all_passes(&self) -> rusqlite::Result<Vec<StoredPass>> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = crate::utils::lock_unpoisoned(&self.conn);
         let mut stmt = conn.prepare(
             "SELECT id, timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
                     map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                     recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                     confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability \
+                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability,
+                    arrest_evidence, hook_state \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -322,6 +337,8 @@ impl RecoveryDb {
                 telemetry_health: row.get(39)?,
                 wire_estimation_confidence: row.get(40)?,
                 grading_availability: row.get(41)?,
+                arrest_evidence: row.get(42)?,
+                hook_state: row.get(43)?,
             })
         })?;
         rows.collect()
@@ -404,6 +421,8 @@ mod tests {
             grading_version: "project-derived-v1".to_string(),
             wire_estimation_confidence: "high".to_string(),
             grading_availability: "available".to_string(),
+            arrest_evidence: "dcs_wire".to_string(),
+            hook_state: "down".to_string(),
         };
         assert!(db.insert(&entry).expect("insert pass"));
         assert!(!db.insert(&entry).expect("duplicate is idempotent"));
@@ -412,6 +431,8 @@ mod tests {
 
         assert_eq!(passes.len(), 1);
         assert_eq!(passes[0].outcome, "Qualif Bolter");
+        assert_eq!(passes[0].arrest_evidence.as_deref(), Some("dcs_wire"));
+        assert_eq!(passes[0].hook_state.as_deref(), Some("down"));
         assert_eq!(passes[0].points_awarded, Some(true));
         assert_eq!(passes[0].intended_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].actual_nearest_spot.as_deref(), Some("7.5"));
@@ -453,6 +474,8 @@ mod tests {
         assert_eq!(passes[0].points_awarded, Some(true));
         assert_eq!(passes[0].intended_spot, None);
         assert_eq!(passes[0].actual_nearest_spot, None);
+        assert_eq!(passes[0].arrest_evidence, None);
+        assert_eq!(passes[0].hook_state, None);
         drop(db);
         std::fs::remove_file(path).expect("remove isolated migration fixture");
     }

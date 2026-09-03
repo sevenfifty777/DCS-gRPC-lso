@@ -56,7 +56,14 @@ async fn main() {
     };
     tracing_subscriber::registry()
         .with(filter::filter_fn(move |m| {
-            m.target().starts_with("lso") && m.level() <= &max_level
+            let target = m.target();
+            // Transport-level failures (tonic/h2/hyper) are otherwise invisible
+            // even at -vv; keep their warnings and errors.
+            (target.starts_with("lso") && m.level() <= &max_level)
+                || ((target.starts_with("tonic")
+                    || target.starts_with("h2")
+                    || target.starts_with("hyper"))
+                    && m.level() <= &tracing::Level::WARN)
         }))
         .with(fmt::layer().with_ansi(opts.color))
         .init();

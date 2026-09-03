@@ -162,8 +162,12 @@ pub struct RuntimeMetrics {
     rpc: [LatencyStats; 5],
     recovery_loop: LatencyStats,
     tick_lag: LatencyStats,
+    /// Server-side snapshot queue wait / Lua execution (DCS-gRPC >= 0.9.2).
+    snapshot_queue_wait: LatencyStats,
+    snapshot_lua_exec: LatencyStats,
     active_streams: AtomicU64,
     active_recoveries: AtomicU64,
+    active_recordings: AtomicU64,
     queue_high_watermark: AtomicU64,
     hook_samples_dropped: AtomicU64,
     io_bytes: AtomicU64,
@@ -188,12 +192,30 @@ impl RuntimeMetrics {
         self.tick_lag.observe(elapsed_us, TimerOutcome::Success);
     }
 
+    /// Records the server-side diagnostics of one recovery snapshot.
+    pub fn observe_snapshot_timing(&self, queue_wait_ms: Option<f64>, lua_exec_ms: Option<f64>) {
+        if let Some(ms) = queue_wait_ms.filter(|ms| ms.is_finite() && *ms >= 0.0) {
+            self.snapshot_queue_wait
+                .observe((ms * 1_000.0) as u64, TimerOutcome::Success);
+        }
+        if let Some(ms) = lua_exec_ms.filter(|ms| ms.is_finite() && *ms >= 0.0) {
+            self.snapshot_lua_exec
+                .observe((ms * 1_000.0) as u64, TimerOutcome::Success);
+        }
+    }
+
     pub fn stream(&self) -> GaugeGuard<'_> {
         GaugeGuard::new(&self.active_streams)
     }
 
     pub fn recovery(&self) -> GaugeGuard<'_> {
         GaugeGuard::new(&self.active_recoveries)
+    }
+
+    /// Number of recording tasks alive at the last supervisor tick.
+    pub fn observe_active_recordings(&self, count: usize) {
+        self.active_recordings
+            .store(count as u64, Ordering::Relaxed);
     }
 
     pub fn observe_queue_depth(&self, depth: usize) {
@@ -220,11 +242,14 @@ impl RuntimeMetrics {
         let render_time_us = self.render_time_us.load(Ordering::Relaxed);
         let loop_stats = self.recovery_loop.snapshot();
         let tick_stats = self.tick_lag.snapshot();
+        let queue_wait = self.snapshot_queue_wait.snapshot();
+        let lua_exec = self.snapshot_lua_exec.snapshot();
         tracing::info!(
             rpc_calls,
             rpc_per_second = rpc_calls as f64 / elapsed_secs.max(0.001),
             active_streams = self.active_streams.load(Ordering::Relaxed),
             active_recoveries = self.active_recoveries.load(Ordering::Relaxed),
+            active_recordings = self.active_recordings.load(Ordering::Relaxed),
             queue_high_watermark = self.queue_high_watermark.load(Ordering::Relaxed),
             hook_samples_dropped = self.hook_samples_dropped.load(Ordering::Relaxed),
             loop_calls = loop_stats.calls,
@@ -239,6 +264,13 @@ impl RuntimeMetrics {
             tick_lag_p95_ms = tick_stats.p95_ms,
             tick_lag_p99_ms = tick_stats.p99_ms,
             tick_lag_max_ms = tick_stats.max_ms,
+            snapshot_queue_wait_samples = queue_wait.calls,
+            snapshot_queue_wait_p50_ms = queue_wait.p50_ms,
+            snapshot_queue_wait_p95_ms = queue_wait.p95_ms,
+            snapshot_queue_wait_max_ms = queue_wait.max_ms,
+            snapshot_lua_exec_p50_ms = lua_exec.p50_ms,
+            snapshot_lua_exec_p95_ms = lua_exec.p95_ms,
+            snapshot_lua_exec_max_ms = lua_exec.max_ms,
             io_bytes = self.io_bytes.load(Ordering::Relaxed),
             render_count,
             render_mean_ms = if render_count == 0 {

@@ -37,6 +37,10 @@ pub enum TelemetryInvalidReason {
 pub struct TelemetrySample {
     pub observation_sequence: Option<u64>,
     pub request_round_trip_ms: Option<f64>,
+    /// Server-side snapshot diagnostics when the DCS-gRPC fork provides them.
+    pub queue_wait_ms: Option<f64>,
+    pub lua_exec_ms: Option<f64>,
+    pub queue_depth: Option<u32>,
     pub carrier_raw: Transform,
     pub plane_raw: Transform,
     pub carrier: Transform,
@@ -76,6 +80,9 @@ impl TelemetrySample {
         Self {
             observation_sequence: None,
             request_round_trip_ms: None,
+            queue_wait_ms: None,
+            lua_exec_ms: None,
+            queue_depth: None,
             carrier_raw: carrier.clone(),
             plane_raw: plane.clone(),
             carrier,
@@ -213,6 +220,9 @@ impl TelemetryAligner {
         let sample = TelemetrySample {
             observation_sequence: None,
             request_round_trip_ms: None,
+            queue_wait_ms: None,
+            lua_exec_ms: None,
+            queue_depth: None,
             carrier_raw,
             plane_raw,
             carrier,
@@ -243,8 +253,22 @@ impl TelemetryAligner {
         sample
     }
 
+    /// Full reset, used across a session cut. The live loop uses
+    /// `invalidate_history` so outages stay visible in the gap accounting.
+    #[cfg(test)]
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Forbids extrapolation across an RPC failure while keeping the timing
+    /// of the last delivered sample, so the outage shows up in the next
+    /// sample's `sample_gap_ms` instead of being silently reset to zero.
+    pub fn invalidate_history(&mut self) {
+        self.previous_carrier = None;
+        self.previous_plane = None;
+        self.carrier_last_advanced_at = None;
+        self.plane_last_advanced_at = None;
+        self.previous_sample_valid = false;
     }
 }
 

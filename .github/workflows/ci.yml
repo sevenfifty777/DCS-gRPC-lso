@@ -14,6 +14,9 @@ jobs:
 
     env:
       CARGO_TERM_COLOR: always
+      # Cargo.toml pins dcs-grpc-stubs by path to ../rust-server/stubs, so the fork must be
+      # checked out next to this repository. Switch this to the `v0.9.2` tag once it is published.
+      RUST_SERVER_REF: hook-mechanization-api
 
     steps:
       - name: Checkout code
@@ -37,6 +40,9 @@ jobs:
           override: true
           components: rustfmt, clippy
 
+      - name: Clone DCS-gRPC fork (path dependency for dcs-grpc-stubs)
+        run: git clone --depth 1 --branch ${{ env.RUST_SERVER_REF }} https://github.com/sevenfifty777/rust-server ../rust-server
+
       - name: Build
         run: cargo build
 
@@ -48,3 +54,28 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt -- --check
+
+  audit:
+    name: Audit (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit

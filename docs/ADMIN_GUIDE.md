@@ -2,10 +2,11 @@
 
 ## Compatibility
 
-This implementation checkout consumes the adjacent rust-server `0.9.1` stubs containing
-`RecoveryService`. Before release, replace the development path dependency with an exact server
-commit or tag containing the same protobuf and authenticate the deployed DLL/Lua tree as described
-in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
+This implementation checkout consumes the adjacent rust-server `0.9.1`+ stubs (`../rust-server/stubs`,
+branch `hook-mechanization-api`) containing `RecoveryService.GetRecoverySnapshot` and
+`HookService.GetOwnshipHookState`. Before release, replace the development path dependency with an
+exact server commit or tag containing the same protobuf (a tagged `v0.9.2` is being prepared) and
+authenticate the deployed DLL/Lua tree as described in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 
 ## Build and validate
 
@@ -31,9 +32,14 @@ Useful options:
 | `--uri` | DCS-gRPC URI; default `http://127.0.0.1:50051` |
 | `--ki` | include supported AI aircraft; AI remains explicitly labelled |
 | `--no-acmi` | omit ACMI while retaining JSON/PNG/SQLite |
-| `--recovery-telemetry-mode` | `auto` (default), `atomic`, or rollback-compatible `legacy` |
+| `--recovery-telemetry-mode` | `auto` (default: atomic `GetRecoverySnapshot` when the server implements it, legacy transforms only on `UNIMPLEMENTED`), forced `atomic`, or rollback-compatible `legacy` |
 | `--recovery-snapshot-timeout-ms` | atomic RPC timeout, default 250 ms; valid range 100-299 ms |
+| `--hook-sampling-hz` | legacy acquisition only: independent hook draw-argument sampler rate, default 4, range 2-4 |
+| `--hook-timeout-ms` | legacy acquisition only: timeout for one hook draw-argument RPC, default 300 ms, range 250-300 ms |
+| `--legacy-inline-hook-sampling` | legacy acquisition only: A/B diagnostic that restores the old blocking hook read on every position tick |
 | `--web-port` | private dashboard on `127.0.0.1:<port>` |
+| `--web-expose-ucid` | Include pilot UCIDs in `/api/passes` (stripped by default). |
+| `--ownship-hook-diagnostics` | Opt-in `HookService.GetOwnshipHookState` sampling; only meaningful on a client DCS instance with a local cockpit, always unavailable on a dedicated server. |
 | `--discord-webhook` | optional secondary publication |
 
 The dashboard has no OAuth2/TLS in phase 1 and cannot be opened remotely because it binds loopback.
@@ -53,7 +59,7 @@ Never publish UCIDs from the private database/API.
 The base filename includes wall time, sanitized display name, session, generation, aircraft/carrier
 IDs and DCS time. This prevents simultaneous-pass collisions. Outputs are:
 
-- atomic schema-v4 JSON report with acquisition mode and snapshot sequence provenance;
+- atomic schema 7 JSON report with acquisition mode, snapshot sequence provenance and hook/wire evidence;
 - optional atomic compressed ACMI;
 - approach and pattern PNG rendered outside sampling tasks;
 - additive/idempotent `lso.db` row;

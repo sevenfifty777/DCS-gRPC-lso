@@ -18,6 +18,11 @@ pub struct RecoverySnapshot {
     pub plane: ObservedTransform,
     pub draw_argument_status: DrawArgumentStatus,
     pub draw_argument_value: Option<f64>,
+    /// Server-side diagnostics (DCS-gRPC >= 0.9.2): time spent in the mission
+    /// IPC queue, time inside the Lua callback, queue depth at enqueue.
+    pub queue_wait_ms: Option<f64>,
+    pub lua_exec_ms: Option<f64>,
+    pub queue_depth: Option<u32>,
 }
 
 pub struct RecoveryClient {
@@ -100,6 +105,9 @@ impl RecoveryClient {
             plane: observed(plane),
             draw_argument_status,
             draw_argument_value: draw_argument.value,
+            queue_wait_ms: response.queue_wait_ms.filter(|value| value.is_finite()),
+            lua_exec_ms: response.lua_exec_ms.filter(|value| value.is_finite()),
+            queue_depth: response.queue_depth,
         })
     }
 }

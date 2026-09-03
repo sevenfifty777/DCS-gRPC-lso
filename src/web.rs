@@ -6,14 +6,17 @@ use crate::db::{SharedDb, StoredPass};
 #[derive(Clone)]
 struct AppState {
     db: SharedDb,
+    /// Pilot UCIDs are private identity keys; they are only emitted when the
+    /// operator opts in with `--web-expose-ucid`.
+    expose_ucid: bool,
 }
 
 /// Serve the phase-1 LSO web greenie board on loopback only.
 ///
 /// The server runs until an OS-level error occurs (e.g. port in use).
 /// It is intended to be spawned as a background tokio task.
-pub async fn serve(db: SharedDb, port: u16) -> std::io::Result<()> {
-    let state = AppState { db };
+pub async fn serve(db: SharedDb, port: u16, expose_ucid: bool) -> std::io::Result<()> {
+    let state = AppState { db, expose_ucid };
     let app = Router::new()
         .route("/", get(handler_html))
         .route("/api/passes", get(handler_passes))
@@ -32,7 +35,8 @@ async fn handler_html() -> Html<&'static str> {
 async fn handler_passes(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<StoredPass>>, (StatusCode, String)> {
-    let passes = tokio::task::spawn_blocking(move || state.db.all_passes())
+    let expose_ucid = state.expose_ucid;
+    let mut passes = tokio::task::spawn_blocking(move || state.db.all_passes())
         .await
         .map_err(|err| {
             tracing::error!(?err, "dashboard database task panicked");
@@ -48,6 +52,11 @@ async fn handler_passes(
                 "dashboard database query failed".to_string(),
             )
         })?;
+    if !expose_ucid {
+        for pass in &mut passes {
+            pass.pilot_ucid = None;
+        }
+    }
     Ok(Json(passes))
 }
 
@@ -168,9 +177,12 @@ mod tests {
         let db = Arc::new(RecoveryDb::open(Path::new(":memory:")).expect("open test database"));
         db.force_query_failure_for_test();
 
-        let error = handler_passes(State(AppState { db }))
-            .await
-            .expect_err("query must fail");
+        let error = handler_passes(State(AppState {
+            db,
+            expose_ucid: false,
+        }))
+        .await
+        .expect_err("query must fail");
         assert_eq!(error.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

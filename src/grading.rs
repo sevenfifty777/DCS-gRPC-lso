@@ -53,6 +53,8 @@ pub enum PassGrade {
     /// Cut pass — dangerously low at the ramp, or landed after being waved off.
     Cut,
     Bolter,
+    /// Waveoff ordered by the DCS LSO and complied with (official `WO` symbol).
+    Waveoff,
     WaveoffUnknown,
     /// Project use of `NC` for insufficient telemetry; never carries points.
     Incomplete,
@@ -69,6 +71,7 @@ impl PassGrade {
             Self::NoGrade => "--",
             Self::Cut => "C",
             Self::Bolter => "B",
+            Self::Waveoff => "WO",
             Self::WaveoffUnknown => "WO?",
             Self::Incomplete => "NC",
         }
@@ -83,6 +86,8 @@ impl PassGrade {
             Self::NoGrade => Some(2.0),
             Self::Cut => Some(0.0),
             Self::Bolter => Some(2.5),
+            // Official scale (NAVAIR 00-80T-111 §16.7): WO = 1.
+            Self::Waveoff => Some(1.0),
             Self::WaveoffUnknown | Self::Incomplete => None,
         }
     }
@@ -177,6 +182,7 @@ pub fn compute_pass_grade(
     match grading {
         Grading::Unknown => PassGrade::Incomplete,
         Grading::WaveoffUnknown => PassGrade::WaveoffUnknown,
+        Grading::WaveoffDcs => PassGrade::Waveoff,
         Grading::Bolter if gates.all_valid() => PassGrade::Bolter,
         Grading::Recovered { .. } if gates.all_valid() => grade_from_gates(gates),
         // A qualification touch-and-go keeps the independently measured
@@ -201,6 +207,7 @@ pub fn compute_vstol_approach_grade_points(
     match grading {
         Grading::Unknown => (PassGrade::Incomplete, None),
         Grading::WaveoffUnknown => (PassGrade::WaveoffUnknown, None),
+        Grading::WaveoffDcs => (PassGrade::Waveoff, PassGrade::Waveoff.points()),
         Grading::Bolter if gates.all_valid() => (PassGrade::Bolter, PassGrade::Bolter.points()),
         Grading::TouchAndGo { .. } => (PassGrade::Incomplete, None),
         Grading::Recovered { .. } if gates.all_valid() => {

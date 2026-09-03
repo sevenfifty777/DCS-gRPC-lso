@@ -4,7 +4,7 @@ LSO is a Rust/Tokio binary with live (`lso run`) and deterministic ACMI replay (
 The reliability implementation is organized as:
 
 ```text
-DCS-gRPC v0.9.0
+DCS-gRPC fork 0.9.1+ (RecoveryService.GetRecoverySnapshot, HookService.GetOwnshipHookState)
   -> session/generation supervisor and strict discovery
   -> one isolated detector per compatible aircraft/carrier pair
   -> 10 Hz recovery recorder + correlated mission events

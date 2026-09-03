@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::Read;
 use std::ops::Neg;
@@ -9,13 +9,18 @@ use std::time::Instant;
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::draw::DrawError;
 use crate::tasks::detect_recovery_attempt::is_recovery_attempt;
-use crate::tasks::record_recovery::FILENAME_DATETIME_FORMAT;
-use crate::track::{Track, TrackResult};
+use crate::tasks::record_recovery::{ACMI_HOOK_PROPERTY, FILENAME_DATETIME_FORMAT};
+use crate::track::{HookSampleStatus, Track, TrackResult};
 use crate::transform::Transform;
 use tacview::record::{Event, EventKind, GlobalProperty, Property, Record, Tag, Update};
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime, UtcOffset};
 use ultraviolet::{DRotor3, DVec3};
+
+/// How long replay keeps feeding samples after the touchdown event so the
+/// hook transient can recover and the deck kinematics can settle, mirroring
+/// the live recorder's post-landing window.
+const REPLAY_POST_LANDING_S: f64 = 10.0;
 
 #[derive(clap::Parser)]
 pub struct Opts {
@@ -28,7 +33,7 @@ pub fn execute(opts: Opts) -> Result<(), crate::error::Error> {
     let start = Instant::now();
 
     let mut file = File::open(opts.input)?;
-    let mut tracks = extract_tracks(&mut file)?;
+    let mut tracks = extract_tracks(&mut file, &[])?;
     for track in &mut tracks {
         track.draw()?;
     }
@@ -38,9 +43,24 @@ pub fn execute(opts: Opts) -> Result<(), crate::error::Error> {
     Ok(())
 }
 
+/// A raw hook draw-argument sample `(dcs_time, value)` supplied alongside an
+/// ACMI that predates the embedded `LSOHook` property.
+pub type HookSample = (f64, f64);
+
 #[allow(unused)] // used in integration tests
 pub fn extract_recoveries(rd: &mut impl Read) -> Result<Vec<TrackResult>, crate::error::Error> {
-    let mut tracks = extract_tracks(rd)?;
+    extract_recoveries_with_hook(rd, &[])
+}
+
+/// Extracts recoveries, feeding `hook_samples` (sorted by time) to the track as
+/// the replay clock passes each sample. Hook values embedded in the ACMI take
+/// precedence for the frame they belong to.
+#[allow(unused)] // used in integration tests
+pub fn extract_recoveries_with_hook(
+    rd: &mut impl Read,
+    hook_samples: &[HookSample],
+) -> Result<Vec<TrackResult>, crate::error::Error> {
+    let mut tracks = extract_tracks(rd, hook_samples)?;
     Ok(tracks
         .into_iter()
         .filter(|t| t.is_recovery_attempt)
@@ -48,7 +68,10 @@ pub fn extract_recoveries(rd: &mut impl Read) -> Result<Vec<TrackResult>, crate:
         .collect())
 }
 
-fn extract_tracks(rd: &mut impl Read) -> Result<Vec<CarrierPlanePair>, crate::error::Error> {
+fn extract_tracks(
+    rd: &mut impl Read,
+    hook_samples: &[HookSample],
+) -> Result<Vec<CarrierPlanePair>, crate::error::Error> {
     let parser = tacview::Parser::new_compressed(rd)?;
 
     let mut recording_time =
@@ -121,6 +144,7 @@ fn extract_tracks(rd: &mut impl Read) -> Result<Vec<CarrierPlanePair>, crate::er
                                             *plane_id,
                                             pilot_name,
                                             plane_info,
+                                            hook_samples,
                                         ));
                                     }
 
@@ -142,6 +166,7 @@ fn extract_tracks(rd: &mut impl Read) -> Result<Vec<CarrierPlanePair>, crate::er
                                             update.id,
                                             pilot_name,
                                             plane_info,
+                                            hook_samples,
                                         ));
                                     }
 
@@ -225,6 +250,12 @@ struct CarrierPlanePair {
     is_done: bool,
     datums: Track,
     landed: bool,
+    /// DCS time at which the touchdown was applied to the track.
+    landed_at: Option<f64>,
+    /// Hook value embedded in the current plane frame, if any.
+    frame_hook: Option<f64>,
+    /// External hook samples not yet fed to the track (sorted by time).
+    pending_hook: VecDeque<HookSample>,
 }
 
 impl CarrierPlanePair {
@@ -235,6 +266,7 @@ impl CarrierPlanePair {
         plane_id: u64,
         pilot_name: &str,
         plane_info: &'static AirplaneInfo,
+        hook_samples: &[HookSample],
     ) -> Self {
         Self {
             recording_time,
@@ -250,6 +282,9 @@ impl CarrierPlanePair {
             is_done: false,
             datums: Track::new(pilot_name, carrier_info, plane_info),
             landed: false,
+            landed_at: None,
+            frame_hook: None,
+            pending_hook: hook_samples.iter().copied().collect(),
         }
     }
 
@@ -323,6 +358,9 @@ impl CarrierPlanePair {
                 Property::AOA(aoa) => {
                     transform.aoa = *aoa;
                 }
+                Property::Unknown(name, value) if is_plane && name == ACMI_HOOK_PROPERTY => {
+                    self.frame_hook = value.trim().parse::<f64>().ok();
+                }
                 _ => {}
             }
         }
@@ -353,11 +391,27 @@ impl CarrierPlanePair {
         }
 
         if self.is_recovery_attempt {
-            // Tacview recordings do not contain the live hook draw argument,
-            // so offline extraction cannot detect a qualification bolter.
-            let mut should_continue = self.datums.next(&self.carrier, &self.plane, None);
-            if self.landed {
+            let frame_hook = self.frame_hook.take();
+            let mut should_continue = self.datums.next(&self.carrier, &self.plane, frame_hook);
+            // External hook samples (sidecar) up to the current replay time.
+            while let Some(&(time, raw)) = self.pending_hook.front() {
+                if time > self.plane.time {
+                    break;
+                }
+                self.pending_hook.pop_front();
+                self.datums
+                    .observe_hook_sample(time, 0, 0.0, Some(raw), HookSampleStatus::Success);
+            }
+            if self.landed && self.landed_at.is_none() {
                 self.datums.landed(&self.carrier, &self.plane);
+                self.landed_at = Some(self.plane.time);
+            }
+            // Like the live recorder, keep feeding samples for a while after the
+            // touchdown so the hook transient and deck kinematics are observed.
+            if self
+                .landed_at
+                .is_some_and(|landed_at| self.plane.time - landed_at > REPLAY_POST_LANDING_S)
+            {
                 should_continue = false;
             }
             if !should_continue {
@@ -391,6 +445,7 @@ impl CarrierPlanePair {
             crate::draw::draw_chart(&out_dir, &filename, &track)?;
             self.is_recovery_attempt = false;
             self.landed = false;
+            self.landed_at = None;
         }
 
         Ok(())

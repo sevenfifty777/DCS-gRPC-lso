@@ -57,8 +57,13 @@ historical module/MOOSE-inspired model pending validation:
 | `--` | `abs(GS) >= 1.0 deg` or `abs(LU) >= 2.0 deg` | 2.0 |
 | `C` | quarter-NM GS strictly below `-2.5 deg` | 0.0 |
 | `B` | confirmed bolter and all three gates valid | 2.5 |
+| `WO` | DCS LSO ordered a waveoff and the aircraft never touched the deck (`OFFICIAL` symbol, `PROJECT-DERIVED` points) | 1.0 |
+| `C` | deck contact after a DCS-ordered waveoff (NAVAIR 00-80T-104: landing after a waveoff), whatever the gates say | 0.0 |
 | `WO?` | neutral waveoff/go-around, initiator unknown | none |
 | `NC` | insufficient/invalid telemetry or unconfirmed trap | none |
+
+A hook-up deck contact (`T&G (CQ)`) keeps the measured approach grade and never receives wire or
+trap upgrades. A `WO` outcome does not require three valid gates; every other grade does.
 
 `OFFICIAL`: `_OK_` is a documented grade symbol in NAVAIR 00-80T-104 section 11.4.1.
 `PROJECT-DERIVED`: the code reserves a five-point value for an explicit/manual `_OK_`, but no
@@ -68,6 +73,31 @@ Groove time and estimated wire cannot produce `_OK_`. A touch-and-go cannot rece
 AoA is chart information only. No AoA table changes the grade. Trends, duration of deviations,
 continuous excursions, power, sink rate, wind, weight and LSO calls are not scored because no
 validated per-aircraft rule has been adopted.
+
+## Commanded hook state
+
+`PROJECT-DERIVED`, validated on the 2026-09-02/03 live corpus. The external draw argument
+(`25` on F/A-18C and T-45, `1305` on all F-14 variants; `0` = up, `1` = down) is the *animated*
+hook position: on a real trap it drops into the up band 0.5-1.4 s before `RunwayTouch` and returns
+1.7-6.5 s later. The commanded state is therefore latched from the latest stable run (at most 3 s,
+at least 5 samples spanning 0.5 s, all in one band) of in-groove samples that ends 1.5 s before the
+earliest contact evidence (touchdown event or deck-threshold crossing). Modules without a validated
+argument, unstable baselines and mixed bands stay `unknown`, which keeps today's conservative
+behaviour. The persisted `hook_observation.baseline_*` fields show the window that was used.
+
+## Arrest confirmation
+
+An arrested outcome is confirmed by, in order of preference: a DCS `WIRE#`; a complete hook
+transient correlated with a cable crossing (below); or `PROJECT-DERIVED` deck kinematics, validated
+on the same corpus: the carrier-relative horizontal displacement over a one-second window falls to
+6 m/s or less and stays below 8 m/s for two consecutive seconds, starting within eight seconds of
+contact, inside the run-out band (-160 m to +60 m along the deck) with no telemetry gap above
+300 ms. The arresting cable pulls the aircraft back at 10-15 m/s for about 1.5 s before it settles,
+which is why the rule looks for any qualifying window rather than the first slow sample. Bolters and
+hook-up touch-and-go passes leave the deck at 45-60 m/s and never qualify. Kinematics confirm the
+arrest only; they never name a wire, so the outcome reads `Arrested (wire unknown)` and
+`arrest_evidence: kinematic`. Deck contact without any of the three proofs stays
+`unconfirmed_arrest` / `NC`.
 
 ## Wire evidence
 
