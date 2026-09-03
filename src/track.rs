@@ -1199,11 +1199,17 @@ impl Track {
             self.telemetry_quality.completeness = Completeness::InsufficientGates;
         }
         if matches!(self.carrier_info.recovery, CarrierRecovery::Arrested)
-            && matches!(grading, Grading::Recovered { cable: None, .. })
+            && matches!(
+                grading,
+                Grading::Recovered {
+                    cable: None,
+                    cable_estimated: None
+                }
+            )
         {
-            // RunwayTouch/Land prove contact, not an arrest. Until sustained
-            // kinematics or a DCS wire/LQM confirms the trap, the pass cannot
-            // receive a favourable grade.
+            // RunwayTouch/Land prove contact, not an arrest. A DCS wire or the
+            // completed hook-deflection/cable-crossing correlation confirms
+            // the trap; without either, the pass cannot receive a favourable grade.
             self.telemetry_quality.completeness = Completeness::UnconfirmedArrest;
         }
         if self.telemetry_quality.completeness != Completeness::Complete {
@@ -2201,10 +2207,10 @@ mod tests {
                 deflection_time: 1881.27,
                 recovery_time: 1884.18,
                 crossings: &[
-                    (1, 1880.385_933),
-                    (2, 1880.629_196),
-                    (3, 1880.882_638),
-                    (4, 1881.139_835),
+                    (1, 1_880.385_933),
+                    (2, 1_880.629_196),
+                    (3, 1_880.882_638),
+                    (4, 1_881.139_835),
                 ],
             },
             LabelledTrap {
@@ -2214,10 +2220,10 @@ mod tests {
                 deflection_time: 2940.18,
                 recovery_time: 2942.97,
                 crossings: &[
-                    (1, 2940.104_828),
-                    (2, 2940.345_659),
-                    (3, 2940.591_212),
-                    (4, 2940.847_226),
+                    (1, 2_940.104_828),
+                    (2, 2_940.345_659),
+                    (3, 2_940.591_212),
+                    (4, 2_940.847_226),
                 ],
             },
             LabelledTrap {
@@ -2227,10 +2233,10 @@ mod tests {
                 deflection_time: 5870.70,
                 recovery_time: 5877.09,
                 crossings: &[
-                    (1, 5870.483_342),
-                    (2, 5870.690_110),
-                    (3, 5870.901_822),
-                    (4, 5871.117_252),
+                    (1, 5_870.483_342),
+                    (2, 5_870.690_110),
+                    (3, 5_870.901_822),
+                    (4, 5_871.117_252),
                 ],
             },
             LabelledTrap {
@@ -2364,6 +2370,14 @@ mod tests {
             cable: None,
             cable_estimated: None,
         });
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(9.0)),
+            at_half_nm: Some(gate(9.5)),
+            at_quarter_nm: Some(gate(9.8)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
         track.wire_crossings.push(WireCrossingEvidence {
             wire: 3,
             timestamp_dcs: 9.95,
@@ -2375,13 +2389,19 @@ mod tests {
         observe_test_hook_sample(&mut track, 10.0, 0.0);
         observe_test_hook_sample(&mut track, 11.0, 1.0);
 
+        let result = track.finish();
         assert_eq!(
-            track.finish().grading,
+            result.grading,
             Grading::Recovered {
                 cable: None,
                 cable_estimated: Some(3),
             }
         );
+        assert_eq!(
+            result.telemetry_quality.completeness,
+            Completeness::Complete
+        );
+        assert_eq!(result.pass_grade, PassGrade::Ok);
     }
 
     fn observe_test_hook_sample(track: &mut Track, time: f64, raw: f64) {
