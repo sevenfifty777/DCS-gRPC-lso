@@ -25,7 +25,12 @@ compatible meanings. Additive fields include:
 - explicit grading availability and live telemetry health;
 - timestamped hook samples with success/timeout/error/stale state and pre-touch provenance;
 - continuous hook-plane wire crossings, estimate confidence and reason;
-- per-recovery frequency, gap/source-age and paired-transform poll latency percentiles.
+- per-recovery frequency, gap/source-age and position-read latency percentiles;
+- `acquisition_source`, with `source_buffered_batch_v1` as the default and
+  `paired_unary_polling_v1` as the explicit rollback;
+- optional `recovery_telemetry` source epoch, sequence/tick range, batch/sample counts, invalid and
+  lost snapshots, overflow/retention counters, missed capture intervals, capacity and configured
+  source period. Absence means a unary or legacy producer, never successful buffering.
 
 When detector suspension is enabled, `detector_suspension_scope` is `same_aircraft`: detectors for
 other aircraft continue polling so simultaneous recoveries remain discoverable.
@@ -78,8 +83,9 @@ participate; this keeps the definition aligned with Cargo rebuild triggers and a
 - old databases are migrated in place and covered by a legacy-schema test;
 - dashboard consumers may ignore unknown fields;
 - absence of a new field means "legacy/unknown", not a favourable default;
-- protobuf and DCS-gRPC remain pinned to v0.9.0 / `5bd6d6e...` until the deployed server is
-  authenticated and a production pin is approved.
+- protobuf and DCS-gRPC must match the `0.10.0` source-buffered contract. During local validation the
+  stubs resolve from the sibling server checkout; publication requires replacing that path with the
+  reviewed immutable server commit/tag without changing generated wire types.
 
 Before any future schema or destructive cleanup, retain fixtures for the oldest database and JSON
 actually found in production and test both forward migration and dashboard display.

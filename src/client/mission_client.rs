@@ -4,16 +4,16 @@ use futures_util::{Stream, StreamExt};
 use stubs::mission;
 use stubs::mission::v0::mission_service_client::MissionServiceClient;
 use stubs::mission::v0::stream_events_response::Event;
-use tonic::{transport::Channel, Status};
+use tonic::Status;
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, GrpcChannel, GrpcResult};
 
 pub struct MissionClient {
-    svc: MissionServiceClient<Channel>,
+    svc: MissionServiceClient<GrpcChannel>,
 }
 
 impl MissionClient {
-    pub fn new(ch: Channel) -> Self {
+    pub fn new(ch: GrpcChannel) -> Self {
         Self {
             svc: MissionServiceClient::new(ch),
         }

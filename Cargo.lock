@@ -599,8 +599,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dcs-grpc-stubs"
-version = "0.9.0"
-source = "git+https://github.com/sevenfifty777/rust-server.git?tag=v0.9.0#5bd6d6e42491c8697a5c5a95e80a2e689923bd3b"
+version = "0.10.0"
 dependencies = [
  "prost",
  "prost-types",
@@ -1962,7 +1961,7 @@ dependencies = [
 [[package]]
 name = "protoc-bundled"
 version = "27.0.0"
-source = "git+https://github.com/rkusa/protoc-bundled.git?rev=27.0.0#d8e8f513cfe007a6243a7eef571677fd366d2cb9"
+source = "git+https://github.com/sevenfifty777/protoc-bundled.git?rev=d8e8f513cfe007a6243a7eef571677fd366d2cb9#d8e8f513cfe007a6243a7eef571677fd366d2cb9"
 
 [[package]]
 name = "pulldown-cmark"

@@ -32,6 +32,8 @@ pub enum Error {
     },
     #[error("invalid baseline manifest: {0}")]
     InvalidBaselineManifest(String),
+    #[error("invalid configuration: {0}")]
+    InvalidConfiguration(String),
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
     #[error("database error for `{path}`: {source}")]

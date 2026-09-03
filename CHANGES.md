@@ -7,6 +7,12 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Added
 
+- Source-buffered `RecoveryTelemetry` acquisition with idempotent start/read/stop lifecycle,
+  exclusive sequence cursors, full-batch processing, epoch/identity validation, explicit
+  retention/capacity loss and invalid-unit diagnostics, plus unary rollback through
+  `--position-source unary`.
+- Optional global DCS-gRPC `X-API-Key` injection from `DCS_GRPC_API_KEY` (or the variable selected by
+  `--api-key-env`), with sensitive metadata marking and no token logging.
 - Independent `EventCorrelator` and `ReportPipeline` components, including additive event-stream
   status/outcome-confirmation evidence in schema-v3 JSON.
 - A priority `PositionCollector`, `--positions-only` baseline mode, optional suspension of background
@@ -81,6 +87,8 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Changed
 
+- DCS-gRPC client stubs are aligned with the sibling `0.10.0` server checkout while its commit is
+  unpublished; release packaging must replace the local path with a reviewed immutable remote pin.
 - The former automatic wire-3/groove-time `_OK_` rule is disabled. `_OK_` is reserved for an
   explicit official/manual grade; incomplete passes and touch-and-go outcomes receive no points.
 - PNG rendering and SQLite work run outside latency-sensitive sampling tasks. Atomic artifact names
@@ -90,7 +98,7 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   below 1,100 ft MSL, without nose-pointing or rear-hemisphere checks.
 - Gate sampling is restricted to inbound crossings below 500 ft above the deck, and groove entry
   also requires lineup within 10 degrees.
-- The DCS-gRPC client stubs now come from the official sevenfifty777 fork release tag `v0.9.0`,
+- The earlier DCS-gRPC migration moved client stubs to the official sevenfifty777 fork release tag `v0.9.0`,
   resolved in `Cargo.lock` to commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`; `tonic` was
   updated to 0.13.
 - Unit discovery safely ignores DCS units whose optional type field is absent.

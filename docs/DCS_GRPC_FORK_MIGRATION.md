@@ -1,11 +1,20 @@
 # DCS-gRPC Fork Migration
 
-**Date:** 2026-08-25; updated for the official release on 2026-08-28
-**Status:** Implemented and validated  
-**LSO version:** 0.2.0  
-**Server/stubs version:** 0.9.0  
-**Official release:** [`v0.9.0`](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0)
-**Locked server commit:** [`5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`](https://github.com/sevenfifty777/rust-server/commit/5bd6d6e42491c8697a5c5a95e80a2e689923bd3b)
+**Date:** 2026-08-25; updated for source-buffered telemetry on 2026-09-02
+**Status:** 0.9 migration historically validated; 0.10 buffered migration implemented locally and awaiting live validation
+
+**LSO version:** 0.2.0
+
+**Current server/stubs version:** local 0.10.0
+
+**Current server commit:** `c6fb3f7737f48c82601866f696d7df66ac727414` (not yet published)
+
+**Historical official baseline:** [`v0.9.0`](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0), commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`
+
+> Sections describing the 0.9 migration are retained as history. The active local validation target
+> is the 0.10.0 source-buffered contract. LSO currently uses `path = "../DCS-gRPC/stubs"` so the two
+> local checkouts cannot drift; this must become a reviewed immutable remote `rev` or tag before a
+> portable release is built.
 
 ## 1. Purpose
 

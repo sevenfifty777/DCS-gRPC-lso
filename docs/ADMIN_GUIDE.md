@@ -2,9 +2,11 @@
 
 ## Compatibility
 
-The client is pinned to DCS-gRPC `v0.9.0`, Cargo revision
-`5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`. Do not change protobuf or this pin before authenticating
-the deployed DLL/Lua tree as described in [LIVE_VALIDATION.md](LIVE_VALIDATION.md).
+The live-validation client targets the local DCS-gRPC `0.10.0` source-buffered contract at server
+commit `c6fb3f7737f48c82601866f696d7df66ac727414`. Until that commit is published, Cargo resolves the
+stubs from `../DCS-gRPC/stubs`. Replace this development path with a reviewed immutable remote pin
+before distribution, and authenticate the deployed DLL/Lua tree as described in
+[LIVE_VALIDATION.md](LIVE_VALIDATION.md).
 
 ## Build and validate
 
@@ -20,6 +22,7 @@ Create the output directory before start:
 
 ```powershell
 New-Item -ItemType Directory -Force C:\LSO\recordings
+$env:DCS_GRPC_API_KEY = "<token configured on the server>"
 .\target\release\lso.exe run -o C:\LSO\recordings
 ```
 
@@ -28,6 +31,8 @@ Useful options:
 | Option | Meaning |
 |---|---|
 | `--uri` | DCS-gRPC URI; default `http://127.0.0.1:50051` |
+| `--api-key-env` | environment variable containing `X-API-Key`; default `DCS_GRPC_API_KEY` |
+| `--position-source` | `buffered` by default; `unary` is the controlled rollback |
 | `--ki` | include supported AI aircraft; AI remains explicitly labelled |
 | `--no-acmi` | omit ACMI while retaining JSON/PNG/SQLite |
 | `--web-port` | private dashboard on `127.0.0.1:<port>` |
@@ -62,8 +67,9 @@ failure returns HTTP 500. The `points_awarded` API field distinguishes no points
 ## Operations
 
 INFO logs include the DCS-gRPC-reported version, session/generation and ten-second runtime metrics.
-Repeated watchdog rotations indicate a silent/unhealthy gRPC channel, not a reason to increase the
-two-second deadline without measurement.
+Buffered recovery logs also identify the source epoch and report sequence/loss diagnostics without
+logging the API token. Repeated watchdog rotations indicate a silent producer or unhealthy gRPC
+channel, not a reason to increase the two-second deadline without measurement.
 
 Use [BENCHMARK_PROTOCOL.md](BENCHMARK_PROTOCOL.md) before performance changes and
 [DEPLOYMENT_ROLLBACK.md](DEPLOYMENT_ROLLBACK.md) for a release switch. The rollback procedure is not

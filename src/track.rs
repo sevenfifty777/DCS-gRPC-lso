@@ -1698,6 +1698,45 @@ impl Track {
         }
     }
 
+    pub fn mark_source_buffer_loss(&mut self, lost_samples: u64) {
+        let lost = lost_samples.min(u64::from(u32::MAX)) as u32;
+        self.telemetry_quality.dropped_samples =
+            self.telemetry_quality.dropped_samples.saturating_add(lost);
+        self.telemetry_quality.dropped_position_samples = self
+            .telemetry_quality
+            .dropped_position_samples
+            .saturating_add(lost);
+        if self.entered_groove
+            || (self.previous_x > 0.0 && self.previous_x <= GATE_THREE_QUARTER_NM)
+        {
+            self.telemetry_quality
+                .add_unavailability_cause(Completeness::BufferLimit);
+        }
+    }
+
+    pub fn mark_invalid_source_observations(&mut self, invalid_samples: u64) {
+        let invalid = invalid_samples.min(u64::from(u32::MAX)) as u32;
+        self.telemetry_quality.invalid_samples = self
+            .telemetry_quality
+            .invalid_samples
+            .saturating_add(invalid);
+        if self.entered_groove
+            || (self.previous_x > 0.0 && self.previous_x <= GATE_THREE_QUARTER_NM)
+        {
+            self.telemetry_quality.scoring_invalid_samples = self
+                .telemetry_quality
+                .scoring_invalid_samples
+                .saturating_add(invalid);
+            self.telemetry_quality
+                .add_unavailability_cause(Completeness::InvalidTelemetry);
+        } else {
+            self.telemetry_quality.pattern_invalid_samples = self
+                .telemetry_quality
+                .pattern_invalid_samples
+                .saturating_add(invalid);
+        }
+    }
+
     pub fn set_position_collector_metrics(&mut self, metrics: PositionCollectionMetrics) {
         self.telemetry_quality.position_polls = metrics.polls;
         self.telemetry_quality.position_poll_errors = metrics.errors;

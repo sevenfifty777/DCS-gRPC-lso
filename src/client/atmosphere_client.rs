@@ -1,19 +1,18 @@
 use stubs::atmosphere::v0::atmosphere_service_client::AtmosphereServiceClient;
 use stubs::atmosphere::v0::GetWindRequest;
 use stubs::common::v0::InputPosition;
-use tonic::transport::Channel;
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, GrpcChannel, GrpcResult};
 
 /// Conversion factor from metres per second to knots.
 const MPS_TO_KNOTS: f32 = 1.944;
 
 pub struct AtmosphereClient {
-    svc: AtmosphereServiceClient<Channel>,
+    svc: AtmosphereServiceClient<GrpcChannel>,
 }
 
 impl AtmosphereClient {
-    pub fn new(ch: Channel) -> Self {
+    pub fn new(ch: GrpcChannel) -> Self {
         Self {
             svc: AtmosphereServiceClient::new(ch),
         }

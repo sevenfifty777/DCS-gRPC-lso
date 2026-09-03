@@ -4,19 +4,20 @@
 
 | Component | Known value | Status |
 |---|---|---|
-| implementation base revision | `95f1d27ff273c93b547c963514d26c8d77b31d7f` | known |
-| working branch | `feature/dev-post-tests-20260831` | known; implementation remains uncommitted |
-| imported reliability change | `53f69f5` applied without commit, then extended from the 2026-08-31 corpus | known working-tree provenance |
-| Rust DCS-gRPC stubs | tag `v0.9.0`, commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b` | pinned in Cargo.lock |
-| protobuf | DCS-gRPC v0.9.0 | unchanged |
+| LSO base revision | `b8533927494aad5868f2197ce5a29131b64f30eb` | known; buffered-client changes are the current working tree |
+| working branch | `feature/refonte-v3-lua-buffer` | known |
+| DCS-gRPC server revision | `c6fb3f7737f48c82601866f696d7df66ac727414` | local committed `0.10.0` build |
+| Rust DCS-gRPC stubs | sibling `../DCS-gRPC/stubs`, version `0.10.0` | exact local contract; immutable remote pin still required for publication |
+| protobuf | DCS-gRPC recovery telemetry `0.10.0` | start/read/stop batch contract |
 | deployed DCS build | not authenticated | required live evidence |
 | deployed `dcs_grpc.dll` SHA-256 | not authenticated | required live evidence |
 | deployed Lua tree SHA-256 | not authenticated | required live evidence |
 | mission `.miz` SHA-256 | per-capture | required |
 | aircraft module versions | not authenticated | required live evidence |
 
-Do not change protobuf or the client pin until the server DLL/Lua manifest is captured and the
-production pin decision is recorded.
+Do not promote the local sibling dependency as a distributable release. Publish/review the server
+commit first, replace the path with its immutable remote revision, regenerate the lockfile, and
+capture the deployed DLL/Lua manifest.
 
 ## Capture package
 
@@ -49,6 +50,11 @@ Run at least:
 11. 40 players/two ships and three-carrier stress.
 12. the same Hornet/CVN recovery in independent and `--legacy-inline-hook-sampling` modes;
 13. both modes with `--no-acmi`, a delayed hook RPC and frozen transform source timestamps.
+14. `--position-source unary` control versus the default buffered source on the identical mission;
+15. buffered delivery delays of 300 ms and 1 s, verifying that captured intermediate sequences are
+    returned and processed;
+16. producer freeze, capacity overflow, retention expiry, epoch change and retry of an identical
+    `after_sequence`, verifying that no position is fabricated or silently lost.
 
 For each event, correlate its raw payload and arrival order across DCS, DCS-gRPC, LSO and ACMI.
 Do not normalize the source log before preserving it.
@@ -79,7 +85,9 @@ four T&G passes and a stable transition to 1 for the arrested pass). Repeat it l
 the pre-touch timeline, not a final post-touch sample, drives the outcome. F-14 polarity must remain
 unknown until an equivalent versioned corpus exists.
 
-During the A/B run, archive the ten-second metric snapshots and calculate observed position samples
-per second. The target remains 10 Hz, but it cannot be certified by unit tests or TacView replay.
+During the A/B run, archive the ten-second metric snapshots and calculate observed source captures,
+delivered snapshots and processed position samples per second separately. The buffered capture target
+is 20 Hz while gate acceptance remains based on the existing 300 ms evidence threshold; neither can
+be certified by unit tests or TacView replay.
 TacView/ACMI may be kept as optional diagnosis only; absence under `--no-acmi` must not change live
 gates, grading availability or health state.

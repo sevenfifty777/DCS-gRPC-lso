@@ -89,6 +89,52 @@ impl TelemetrySample {
             invalid_reason,
         }
     }
+
+    pub fn from_source_pair(
+        carrier: Transform,
+        plane: Transform,
+        previous_time: Option<f64>,
+        source_age_ms: f64,
+    ) -> Self {
+        let received = crate::transform::ObservedTransform::now(carrier.clone());
+        let received_unix_ms = received.received_unix_ms;
+        let sample_gap_ms = previous_time
+            .map(|previous| ((carrier.time.max(plane.time) - previous).max(0.0)) * 1_000.0)
+            .unwrap_or_default();
+        let skew_ms = (carrier.time - plane.time).abs() * 1_000.0;
+        let invalid_reason =
+            if !carrier.time.is_finite() || !plane.time.is_finite() || !source_age_ms.is_finite() {
+                Some(TelemetryInvalidReason::NonFiniteTimestamp)
+            } else if previous_time.is_some_and(|previous| carrier.time.max(plane.time) < previous)
+            {
+                Some(TelemetryInvalidReason::TimeWentBackwards)
+            } else if skew_ms > MAX_EXTRAPOLATION_MS {
+                Some(TelemetryInvalidReason::ExcessiveSkew)
+            } else if sample_gap_ms > SAMPLE_GAP_INCOMPLETE_MS
+                || source_age_ms > SAMPLE_GAP_INCOMPLETE_MS
+            {
+                Some(TelemetryInvalidReason::TelemetryGap)
+            } else {
+                None
+            };
+        Self {
+            carrier_raw: carrier.clone(),
+            plane_raw: plane.clone(),
+            carrier,
+            plane,
+            carrier_received_unix_ms: received_unix_ms,
+            plane_received_unix_ms: received_unix_ms,
+            skew_ms,
+            sample_gap_ms,
+            source_age_ms,
+            method: if invalid_reason.is_some() {
+                AlignmentMethod::Invalid
+            } else {
+                AlignmentMethod::Direct
+            },
+            invalid_reason,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -397,5 +443,19 @@ mod tests {
             after_1100_ms.invalid_reason,
             Some(TelemetryInvalidReason::TelemetryGap)
         );
+    }
+
+    #[test]
+    fn source_pair_uses_capture_gap_and_delivery_age() {
+        let carrier = Transform {
+            time: 10.2,
+            ..Transform::default()
+        };
+        let plane = carrier.clone();
+        let sample = TelemetrySample::from_source_pair(carrier, plane, Some(10.0), 750.0);
+        assert!((sample.sample_gap_ms - 200.0).abs() < 1.0e-6);
+        assert_eq!(sample.source_age_ms, 750.0);
+        assert!(sample.is_valid());
+        assert!(sample.has_warning());
     }
 }

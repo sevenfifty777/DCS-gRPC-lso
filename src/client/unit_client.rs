@@ -1,19 +1,18 @@
 use stubs::common::v0::Unit;
 use stubs::unit;
 use stubs::unit::v0::unit_service_client::UnitServiceClient;
-use tonic::transport::Channel;
 
 use crate::transform::{ObservedTransform, Transform};
 
-use super::{request_with_deadline, request_with_timeout, GrpcResult};
+use super::{request_with_deadline, request_with_timeout, GrpcChannel, GrpcResult};
 use crate::metrics::RpcKind;
 
 pub struct UnitClient {
-    svc: UnitServiceClient<Channel>,
+    svc: UnitServiceClient<GrpcChannel>,
 }
 
 impl UnitClient {
-    pub fn new(ch: Channel) -> Self {
+    pub fn new(ch: GrpcChannel) -> Self {
         Self {
             svc: UnitServiceClient::new(ch),
         }

@@ -16,8 +16,9 @@ or through Discord.
 - Carrier-relative final-approach and overhead-pattern PNG charts with AoA-coloured tracks.
 - Bracketed/interpolated gates at 3/4, 1/2, and 1/4 nm with freshness/skew evidence. Incomplete
   observations receive `NC` and no points.
-- Aircraft/carrier transforms stay on the priority loop; CATOBAR hook state is sampled independently
-  at 4 Hz by default with a 300 ms timeout. Stale or unknown hook data is never reused as certainty.
+- Aircraft/carrier transforms are captured together in DCS mission Lua, retained in a bounded
+  source ring, and read incrementally by sequence. CATOBAR hook state remains an independent 4 Hz
+  sampler with a 300 ms timeout. Stale or unknown hook data is never reused as certainty.
 - Separate outcome, grade, points, cause, confidence, completeness, rule version and wire provenance.
 - Event correlation and positional completeness are independent: an event-stream outage is reported
   as `event_stream_unavailable` and cannot manufacture a positional gap or a favourable outcome.
@@ -34,10 +35,9 @@ uses glideslope and lineup deviations at three gates; AoA colours the charts but
 ## Requirements
 
 - Windows or another platform supported by the Rust dependency stack.
-- DCS World with the official forked
-  [DCS-gRPC `v0.9.0` release](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0).
-  The committed lockfile resolves that tag to commit
-  `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`.
+- DCS World with the matching local DCS-gRPC `0.10.0` fork build. Until that server commit is
+  published, this checkout resolves `dcs-grpc-stubs` from the sibling `../DCS-gRPC/stubs` crate so
+  the live client and deployed server use exactly the same protobuf contract.
 - A Rust stable toolchain only when building from source.
 
 The DCS-gRPC server and this client must use compatible protobuf APIs. Upstream DCS-gRPC 0.8.1 is
@@ -50,11 +50,14 @@ Build LSO from the repository root:
 ```powershell
 cargo build --release
 New-Item -ItemType Directory -Force C:\LSO\recordings
+$env:DCS_GRPC_API_KEY = "<token configured in Config\\dcs-grpc.lua>"
 .\target\release\lso.exe run -o C:\LSO\recordings
 ```
 
 LSO connects to `http://127.0.0.1:50051` by default and retries transient gRPC failures with
-exponential backoff. Use `--uri` when DCS-gRPC is on another host or port.
+exponential backoff. It reads the optional API key from `DCS_GRPC_API_KEY`; change the variable name
+with `--api-key-env` or pass an empty name only for an intentionally unauthenticated server. Use
+`--uri` when DCS-gRPC is on another host or port.
 
 Common examples:
 
@@ -71,6 +74,9 @@ Common examples:
 
 # Minimal acquisition baseline: positions + JSON quality report only
 .\lso.exe run -o C:\LSO\recordings --positions-only --baseline-manifest .\baseline.json
+
+# Explicit rollback/control run using the former paired unary polling source
+.\lso.exe run -o C:\LSO\recordings --position-source unary
 
 # Keep normal outputs but suspend redundant same-aircraft detector transforms during collection
 .\lso.exe run -o C:\LSO\recordings --suspend-detectors-during-recovery
@@ -91,6 +97,10 @@ session/dashboard outputs. It does not read `--discord-users`, open or create `l
 output-only DCS metadata; it retains the JSON position report so cadence and latency percentiles can
 be compared between live runs. Detector suspension is scoped by aircraft: another aircraft can still
 be discovered and recorded concurrently.
+The default `--position-source buffered` lifecycle is idempotent `StartRecoveryTelemetry`, ordered
+`ReadRecoveryTelemetry` batches with an exclusive sequence cursor, then best-effort
+`StopRecoveryTelemetry`. Epoch changes, sequence-contract violations, invalid unit observations and
+source retention/capacity loss remain explicit technical evidence in the schema-v3 report.
 Copy [`docs/BASELINE_MANIFEST.example.json`](docs/BASELINE_MANIFEST.example.json) and fill in the DCS
 build, mission/module versions and deployed DLL/Lua hashes to make those comparisons attributable.
 Supplied manifests reject unknown keys, empty content and malformed SHA-256 values.
@@ -160,7 +170,7 @@ pilot names to Discord numeric user IDs; it is optional.
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGES.md)
 
-`docs/DCS-gRPC-0.9.0/` is a bundled upstream/fork reference snapshot and is not maintained as LSO
+`docs/DCS-gRPC-0.9.0/` is a historical bundled upstream/fork reference snapshot and is not maintained as LSO
 documentation.
 
 ## License

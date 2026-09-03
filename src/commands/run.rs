@@ -24,11 +24,11 @@ use stubs::mission::v0::stream_events_response::Event;
 use stubs::unit::v0::unit_service_client::UnitServiceClient;
 use stubs::{coalition, common, group, mission, unit};
 use tokio::sync::mpsc;
-use tonic::transport::{Channel, Endpoint, Uri};
+use tonic::transport::{Endpoint, Uri};
 use tonic::Status;
 
 type RecoveryTaskMap = Arc<Mutex<RecoveryTaskRegistry>>;
-const DCS_GRPC_CLIENT_STUB_VERSION: &str = "0.9.0";
+const DCS_GRPC_CLIENT_STUB_VERSION: &str = "0.10.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct RecoveryTaskKey {
@@ -109,6 +109,10 @@ pub struct Opts {
     #[clap(long, default_value = "http://127.0.0.1:50051")]
     uri: Uri,
 
+    /// Environment variable containing the optional DCS-gRPC X-API-Key token.
+    #[clap(long, default_value = "DCS_GRPC_API_KEY")]
+    api_key_env: String,
+
     /// A Discord webhook recovery recordings should be posted to.
     #[clap(long)]
     discord_webhook: Option<String>,
@@ -140,6 +144,10 @@ pub struct Opts {
     /// Diagnostic mode: collect transforms and JSON metrics only; disables hook, ACMI, DB, PNG and Discord.
     #[clap(long)]
     positions_only: bool,
+
+    /// Position acquisition implementation. Buffered uses RecoveryTelemetry; unary is the rollback baseline.
+    #[clap(long, value_enum, default_value_t = crate::tasks::PositionSource::Buffered)]
+    position_source: crate::tasks::PositionSource,
 
     /// Suspend redundant detectors for an aircraft while that aircraft is being collected.
     #[clap(long)]
@@ -275,11 +283,31 @@ async fn run(
     generation: u64,
 ) -> Result<(), crate::error::Error> {
     let out_dir = opts.out_dir.clone();
-    let channel = Endpoint::from(opts.uri.clone())
+    let raw_channel = Endpoint::from(opts.uri.clone())
         .connect_timeout(crate::client::RPC_DEADLINE)
         .keep_alive_while_idle(true)
         .connect()
         .await?;
+    let api_key = if opts.api_key_env.is_empty() {
+        None
+    } else {
+        match std::env::var(&opts.api_key_env) {
+            Ok(value) if !value.is_empty() => Some(value),
+            Ok(_) | Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(crate::error::Error::InvalidConfiguration(format!(
+                    "environment variable `{}` is not valid Unicode",
+                    opts.api_key_env
+                )));
+            }
+        }
+    };
+    tracing::info!(
+        api_key_configured = api_key.is_some(),
+        "DCS-gRPC authentication configured"
+    );
+    let interceptor = crate::client::ApiKeyInterceptor::new(api_key.as_deref())?;
+    let channel = crate::client::authenticated_channel(raw_channel, interceptor);
     tracing::info!("Connected");
     let mut coalition_svc = CoalitionServiceClient::new(channel.clone());
     let group_svc = GroupServiceClient::new(channel.clone());
@@ -307,7 +335,7 @@ async fn run(
         "compatible_same_api_line" => tracing::warn!(
             client = DCS_GRPC_CLIENT_STUB_VERSION,
             server = %dcs_grpc_version,
-            "DCS-gRPC patch versions differ; same 0.9 API line accepted pending live validation"
+            "DCS-gRPC patch versions differ; same API line accepted pending live validation"
         ),
         compatibility => tracing::warn!(
             client = DCS_GRPC_CLIENT_STUB_VERSION,
@@ -442,6 +470,7 @@ async fn run(
     let session_shutdown = shutdown_handle.clone();
     let dcs_grpc_version = dcs_grpc_version.clone();
     let dcs_grpc_compatibility = dcs_grpc_compatibility.to_string();
+    let position_source = opts.position_source;
     let spawn_detect_recovery_attempt =
         move |carrier_id: u32,
               carrier_name: String,
@@ -503,6 +532,7 @@ async fn run(
                         dcs_grpc_version: &dcs_grpc_version,
                         dcs_grpc_compatibility: &dcs_grpc_compatibility,
                         positions_only,
+                        position_source,
                         suspend_detectors_during_recovery,
                         active_priority_planes,
                         baseline_manifest,
@@ -839,7 +869,7 @@ enum Candidate {
 }
 
 async fn check_candidate(
-    svc: &mut UnitServiceClient<Channel>,
+    svc: &mut UnitServiceClient<crate::client::GrpcChannel>,
     unit: &common::v0::Unit,
     include_ki: bool,
 ) -> Result<Option<Candidate>, Box<Status>> {
@@ -1054,9 +1084,9 @@ mod tests {
 
     #[test]
     fn dcs_grpc_compatibility_is_checked_by_api_line() {
-        assert_eq!(dcs_grpc_compatibility("0.9.0"), "exact");
-        assert_eq!(dcs_grpc_compatibility("0.9.1"), "compatible_same_api_line");
-        assert_eq!(dcs_grpc_compatibility("0.10.0"), "incompatible_api_line");
+        assert_eq!(dcs_grpc_compatibility("0.10.0"), "exact");
+        assert_eq!(dcs_grpc_compatibility("0.10.1"), "compatible_same_api_line");
+        assert_eq!(dcs_grpc_compatibility("0.9.1"), "incompatible_api_line");
         assert_eq!(dcs_grpc_compatibility("unknown"), "unknown");
     }
 

@@ -1,15 +1,14 @@
 use stubs::hook;
 use stubs::hook::v0::hook_service_client::HookServiceClient;
-use tonic::transport::Channel;
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, GrpcChannel, GrpcResult};
 
 pub struct HookClient {
-    svc: HookServiceClient<Channel>,
+    svc: HookServiceClient<GrpcChannel>,
 }
 
 impl HookClient {
-    pub fn new(ch: Channel) -> Self {
+    pub fn new(ch: GrpcChannel) -> Self {
         Self {
             svc: HookServiceClient::new(ch),
         }

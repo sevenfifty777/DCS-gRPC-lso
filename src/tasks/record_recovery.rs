@@ -80,6 +80,8 @@ struct RecoveryReport<'a> {
     dcs_grpc_client_stubs: &'static str,
     dcs_grpc_compatibility: &'a str,
     acquisition_source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_telemetry: Option<&'a super::position_collector::BufferedCollectionDiagnostics>,
     collection_profile: &'static str,
     target_frequency_hz: u32,
     missed_tick_behavior: &'static str,
@@ -163,7 +165,7 @@ impl Drop for PriorityCollectorGuard {
 }
 
 async fn sample_hook(
-    channel: tonic::transport::Channel,
+    channel: crate::client::GrpcChannel,
     plane_name: String,
     config: super::HookSamplingConfig,
     tx: mpsc::Sender<HookPoll>,
@@ -347,8 +349,17 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut legacy_hook_client = (params.hook_sampling.mode
         == super::HookSamplingMode::LegacyInline)
         .then(|| UnitClient::new(params.ch.clone()));
-    let mut position_collector =
-        super::position_collector::PositionCollector::new(params.ch.clone());
+    let mut position_collector = super::position_collector::PositionCollector::start(
+        params.ch.clone(),
+        params.position_source,
+        params.session_id,
+        params.generation,
+        params.carrier_id,
+        params.carrier_name,
+        params.plane_id,
+        params.plane_name,
+    )
+    .await?;
     let mut mission = (!params.positions_only).then(|| MissionClient::new(params.ch.clone()));
     let interval = crate::utils::interval::interval(Duration::from_millis(100), params.shutdown);
 
@@ -470,10 +481,13 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut warning_window_started = Instant::now();
     let mut warning_count = 0_u32;
     let mut warning_max_gap_ms = 0.0_f64;
+    let mut last_invalid_source_warning: Option<Instant> = None;
+    let mut pending_invalid_batches = 0_u64;
+    let mut pending_invalid_snapshots = 0_u64;
 
     let mut stream = select(interval.map(Either::Left), events.map(Either::Right));
 
-    while let Some(next) = stream.next().await {
+    'recording: while let Some(next) = stream.next().await {
         match next {
             // next interval
             Either::Left(scheduled_tick) => {
@@ -484,14 +498,14 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         .as_micros()
                         .min(u64::MAX as u128) as u64,
                 );
-                let sample = match position_collector
+                let batch = match position_collector
                     .poll(params.carrier_name, params.plane_name)
                     .await
                 {
-                    Ok(sample) => sample,
+                    Ok(batch) => batch,
                     Err(status) if status.code() == tonic::Code::NotFound => {
                         tracing::info!("stop tracking because a unit no longer exists");
-                        return Ok(());
+                        break 'recording;
                     }
                     Err(status) => {
                         position_collector.reset();
@@ -499,128 +513,179 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                         tracing::warn!(?status, ?silent_for, "transform polling failed");
                         if silent_for >= Duration::from_millis(ACTIVE_WATCHDOG_MS) {
                             datums.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
-                            break;
+                            break 'recording;
                         }
                         continue;
                     }
                 };
-                if sample.is_valid() && sample.source_age_ms <= f64::EPSILON {
-                    last_telemetry_success = Instant::now();
+                if batch.lost_snapshots > 0 {
+                    tracing::warn!(
+                        lost_snapshots = batch.lost_snapshots,
+                        "source recovery telemetry reported retained-position loss"
+                    );
+                    datums.mark_source_buffer_loss(batch.lost_snapshots);
                 }
-                if last_telemetry_success.elapsed() >= Duration::from_millis(ACTIVE_WATCHDOG_MS) {
+                if batch.invalid_snapshots > 0 {
+                    datums.mark_invalid_source_observations(batch.invalid_snapshots);
+                    pending_invalid_batches = pending_invalid_batches.saturating_add(1);
+                    pending_invalid_snapshots =
+                        pending_invalid_snapshots.saturating_add(batch.invalid_snapshots);
+                    let should_report = last_invalid_source_warning.is_none_or(|last_reported| {
+                        last_reported.elapsed() >= Duration::from_secs(10)
+                    });
+                    if should_report {
+                        tracing::warn!(
+                            invalid_batches = pending_invalid_batches,
+                            invalid_snapshots = pending_invalid_snapshots,
+                            "source recovery telemetry contained invalid unit observations"
+                        );
+                        last_invalid_source_warning = Some(Instant::now());
+                        pending_invalid_batches = 0;
+                        pending_invalid_snapshots = 0;
+                    }
+                }
+                let buffered_source = position_collector.is_buffered();
+                let sample_count = batch.samples.len();
+                for sample in batch.samples {
+                    if sample.is_valid()
+                        && (buffered_source || sample.source_age_ms <= f64::EPSILON)
+                    {
+                        last_telemetry_success = Instant::now();
+                    }
+                    if last_telemetry_success.elapsed() >= Duration::from_millis(ACTIVE_WATCHDOG_MS)
+                    {
+                        tracing::warn!(
+                            silent_for = ?last_telemetry_success.elapsed(),
+                            source_age_ms = sample.source_age_ms,
+                            "active telemetry watchdog expired without source advancement"
+                        );
+                        datums.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
+                        break 'recording;
+                    }
+                    if sample.has_warning() {
+                        warning_count += 1;
+                        warning_max_gap_ms =
+                            warning_max_gap_ms.max(sample.sample_gap_ms.max(sample.source_age_ms));
+                        if warning_window_started.elapsed() >= Duration::from_secs(10) {
+                            tracing::warn!(
+                                warning_count,
+                                warning_max_gap_ms,
+                                "telemetry quality degraded during reporting window"
+                            );
+                            warning_count = 0;
+                            warning_max_gap_ms = 0.0;
+                            warning_window_started = Instant::now();
+                        }
+                    }
+                    let carrier = &sample.carrier;
+                    let plane = &sample.plane;
+                    let hook_state = if !params.carrier_info.is_vstol()
+                        && params.hook_sampling.mode == super::HookSamplingMode::LegacyInline
+                    {
+                        legacy_hook_client
+                            .as_mut()
+                            .expect("legacy hook client enabled")
+                            .get_draw_argument_value(params.plane_name, 25)
+                            .await
+                            .ok()
+                    } else {
+                        None
+                    };
+
+                    if params.record_acmi {
+                        if !ref_written {
+                            lat_ref = carrier.lat;
+                            lon_ref = carrier.lon;
+                            write_acmi!(GlobalProperty::ReferenceLatitude(lat_ref));
+                            write_acmi!(GlobalProperty::ReferenceLongitude(lon_ref));
+                            ref_written = true;
+                        }
+
+                        let carrier_update = Update {
+                            id: 1,
+                            props: vec![Property::T(remove_unchanged(
+                                Coords::default()
+                                    .position(
+                                        carrier.lat - lat_ref,
+                                        carrier.lon - lon_ref,
+                                        carrier.alt,
+                                    )
+                                    .uv(carrier.position.x, carrier.position.z)
+                                    .orientation(carrier.yaw, carrier.pitch, carrier.roll)
+                                    .heading(carrier.heading),
+                                &mut known_carrier_coords,
+                            ))],
+                        };
+                        let plane_update = Update {
+                            id: 2,
+                            props: vec![
+                                Property::T(remove_unchanged(
+                                    Coords::default()
+                                        .position(
+                                            plane.lat - lat_ref,
+                                            plane.lon - lon_ref,
+                                            plane.alt,
+                                        )
+                                        .uv(plane.position.x, plane.position.z)
+                                        .orientation(plane.yaw, plane.pitch, plane.roll)
+                                        .heading(plane.heading),
+                                    &mut known_plane_coords,
+                                )),
+                                Property::AOA(plane.aoa),
+                            ],
+                        };
+
+                        if (carrier.time - plane.time).abs() < 0.01 {
+                            write_acmi!(Record::Frame(carrier.time));
+                            write_acmi!(carrier_update);
+                            write_acmi!(plane_update);
+                        } else if carrier.time < plane.time {
+                            write_acmi!(Record::Frame(carrier.time));
+                            write_acmi!(carrier_update);
+                            write_acmi!(Record::Frame(plane.time));
+                            write_acmi!(plane_update);
+                        } else {
+                            write_acmi!(Record::Frame(plane.time));
+                            write_acmi!(plane_update);
+                            write_acmi!(Record::Frame(carrier.time));
+                            write_acmi!(carrier_update);
+                        }
+                    }
+
+                    last_carrier_lat = carrier.lat;
+                    last_carrier_lon = carrier.lon;
+                    last_carrier_alt = carrier.alt;
+
+                    lowest_altitude = lowest_altitude.min(plane.alt);
+
+                    let keep_tracking = datums.next_sample(&sample, hook_state);
+                    if let Some(hook_rx) = hook_rx.as_mut() {
+                        drain_hook_samples(
+                            hook_rx,
+                            &mut datums,
+                            plane.time,
+                            params.hook_sampling.frequency_hz,
+                        );
+                    }
+                    if !keep_tracking {
+                        break 'recording;
+                    }
+
+                    if let Some(track_stopped) = track_stopped {
+                        if track_stopped.elapsed() > Duration::from_secs(10) {
+                            break 'recording;
+                        }
+                    }
+                }
+                if sample_count == 0
+                    && last_telemetry_success.elapsed() >= Duration::from_millis(ACTIVE_WATCHDOG_MS)
+                {
                     tracing::warn!(
                         silent_for = ?last_telemetry_success.elapsed(),
-                        source_age_ms = sample.source_age_ms,
-                        "active telemetry watchdog expired without source advancement"
+                        "active telemetry watchdog expired without buffered snapshots"
                     );
                     datums.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
-                    break;
-                }
-                if sample.has_warning() {
-                    warning_count += 1;
-                    warning_max_gap_ms =
-                        warning_max_gap_ms.max(sample.sample_gap_ms.max(sample.source_age_ms));
-                    if warning_window_started.elapsed() >= Duration::from_secs(10) {
-                        tracing::warn!(
-                            warning_count,
-                            warning_max_gap_ms,
-                            "telemetry quality degraded during reporting window"
-                        );
-                        warning_count = 0;
-                        warning_max_gap_ms = 0.0;
-                        warning_window_started = Instant::now();
-                    }
-                }
-                let carrier = &sample.carrier;
-                let plane = &sample.plane;
-                let hook_state = if !params.carrier_info.is_vstol()
-                    && params.hook_sampling.mode == super::HookSamplingMode::LegacyInline
-                {
-                    legacy_hook_client
-                        .as_mut()
-                        .expect("legacy hook client enabled")
-                        .get_draw_argument_value(params.plane_name, 25)
-                        .await
-                        .ok()
-                } else {
-                    None
-                };
-
-                if params.record_acmi {
-                    if !ref_written {
-                        lat_ref = carrier.lat;
-                        lon_ref = carrier.lon;
-                        write_acmi!(GlobalProperty::ReferenceLatitude(lat_ref));
-                        write_acmi!(GlobalProperty::ReferenceLongitude(lon_ref));
-                        ref_written = true;
-                    }
-
-                    let carrier_update = Update {
-                        id: 1,
-                        props: vec![Property::T(remove_unchanged(
-                            Coords::default()
-                                .position(carrier.lat - lat_ref, carrier.lon - lon_ref, carrier.alt)
-                                .uv(carrier.position.x, carrier.position.z)
-                                .orientation(carrier.yaw, carrier.pitch, carrier.roll)
-                                .heading(carrier.heading),
-                            &mut known_carrier_coords,
-                        ))],
-                    };
-                    let plane_update = Update {
-                        id: 2,
-                        props: vec![
-                            Property::T(remove_unchanged(
-                                Coords::default()
-                                    .position(plane.lat - lat_ref, plane.lon - lon_ref, plane.alt)
-                                    .uv(plane.position.x, plane.position.z)
-                                    .orientation(plane.yaw, plane.pitch, plane.roll)
-                                    .heading(plane.heading),
-                                &mut known_plane_coords,
-                            )),
-                            Property::AOA(plane.aoa),
-                        ],
-                    };
-
-                    if (carrier.time - plane.time).abs() < 0.01 {
-                        write_acmi!(Record::Frame(carrier.time));
-                        write_acmi!(carrier_update);
-                        write_acmi!(plane_update);
-                    } else if carrier.time < plane.time {
-                        write_acmi!(Record::Frame(carrier.time));
-                        write_acmi!(carrier_update);
-                        write_acmi!(Record::Frame(plane.time));
-                        write_acmi!(plane_update);
-                    } else {
-                        write_acmi!(Record::Frame(plane.time));
-                        write_acmi!(plane_update);
-                        write_acmi!(Record::Frame(carrier.time));
-                        write_acmi!(carrier_update);
-                    }
-                }
-
-                last_carrier_lat = carrier.lat;
-                last_carrier_lon = carrier.lon;
-                last_carrier_alt = carrier.alt;
-
-                lowest_altitude = lowest_altitude.min(plane.alt);
-
-                let keep_tracking = datums.next_sample(&sample, hook_state);
-                if let Some(hook_rx) = hook_rx.as_mut() {
-                    drain_hook_samples(
-                        hook_rx,
-                        &mut datums,
-                        plane.time,
-                        params.hook_sampling.frequency_hz,
-                    );
-                }
-                if !keep_tracking {
-                    break;
-                }
-
-                if let Some(track_stopped) = track_stopped {
-                    if track_stopped.elapsed() > Duration::from_secs(10) {
-                        break;
-                    }
+                    break 'recording;
                 }
             }
 
@@ -841,12 +906,19 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     }),
                 ) if event_correlator.is_tracked_unit(unit.id) => {
                     tracing::info!("stop (either carrier or plane despawned)");
-                    return Ok(());
+                    break 'recording;
                 }
 
                 _ => {}
             },
         }
+    }
+
+    if let Err(status) = position_collector.stop().await {
+        tracing::warn!(
+            ?status,
+            "failed to stop source-buffered recovery telemetry cleanly"
+        );
     }
 
     // If the plane was never below 100 m MSL, discard as a non-attempt.
@@ -873,6 +945,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     } else {
         Vec::new()
     };
+    let acquisition_source = position_collector.acquisition_source();
+    let buffered_diagnostics = position_collector.buffered_diagnostics().cloned();
     datums.set_position_collector_metrics(position_collector.metrics());
     let track = std::sync::Arc::new(datums.finish());
     let event_correlation = event_correlator.summary(&track.grading);
@@ -1052,15 +1126,20 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         lso_commit: option_env!("GIT_COMMIT_HASH").unwrap_or("unknown"),
         lso_dirty: option_env!("GIT_DIRTY") == Some("true"),
         dcs_grpc_version: params.dcs_grpc_version,
-        dcs_grpc_client_stubs: "0.9.0",
+        dcs_grpc_client_stubs: "0.10.0",
         dcs_grpc_compatibility: params.dcs_grpc_compatibility,
-        acquisition_source: "paired_unary_polling_v1",
+        acquisition_source,
+        recovery_telemetry: buffered_diagnostics.as_ref(),
         collection_profile: if params.positions_only {
             "positions_only"
         } else {
             "normal"
         },
-        target_frequency_hz: 10,
+        target_frequency_hz: if params.position_source == super::PositionSource::Buffered {
+            20
+        } else {
+            10
+        },
         missed_tick_behavior: "skip",
         detectors_suspended: params.suspend_detectors_during_recovery,
         detector_suspension_scope: if params.suspend_detectors_during_recovery {

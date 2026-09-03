@@ -2,8 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use tonic::transport::Channel;
-
+use crate::client::GrpcChannel;
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::db::SharedDb;
 use crate::grading::{PassGrade, SpotGrade};
@@ -20,6 +19,22 @@ pub mod report_pipeline;
 pub enum PilotKind {
     Human,
     Ai,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum PositionSource {
+    #[default]
+    Buffered,
+    Unary,
+}
+
+impl PositionSource {
+    pub const fn acquisition_source(self) -> &'static str {
+        match self {
+            Self::Buffered => "source_buffered_batch_v1",
+            Self::Unary => "paired_unary_polling_v1",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +173,7 @@ pub struct TaskParams<'a> {
     pub record_acmi: bool,
     pub hook_sampling: HookSamplingConfig,
     pub users: Arc<HashMap<String, u64>>,
-    pub ch: Channel,
+    pub ch: GrpcChannel,
     pub carrier_id: u32,
     pub carrier_name: &'a str,
     pub carrier_type: &'a str,
@@ -183,6 +198,7 @@ pub struct TaskParams<'a> {
     pub dcs_grpc_version: &'a str,
     pub dcs_grpc_compatibility: &'a str,
     pub positions_only: bool,
+    pub position_source: PositionSource,
     pub suspend_detectors_during_recovery: bool,
     pub active_priority_planes: Arc<ActivePriorityPlanes>,
     pub baseline_manifest: Arc<BaselineManifest>,
