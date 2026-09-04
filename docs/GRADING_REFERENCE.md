@@ -23,6 +23,28 @@ completeness, grading version, cable estimate and DCS cable evidence.
 An incomplete observation has grade `NC` and `points = null`. `WO?` means a go-around/waveoff was
 observed but its initiator was not proven. The module never invents OWO, WOP or a pilot waveoff.
 
+### What `NC` actually means
+
+`NC` is a single project display symbol, but it is never a single internal reason. The JSON
+`cause`/`causes` fields (`docs/DATA_CONTRACTS.md`) already separate "telemetry too degraded to
+measure" from every other kind of unavailability, so a diagnostic consumer never has to guess which
+applies:
+
+| `cause` value | Meaning | Category |
+|---|---|---|
+| `telemetry_gap` | A gap in the scored segment exceeded the sample-gap/extrapolation limits | Telemetry too degraded to measure |
+| `invalid_telemetry` | A scored sample failed validation (skew, non-monotonic time, etc.) | Telemetry too degraded to measure |
+| `position_buffer_limit` | The position buffer overflowed or lost samples in the scored segment | Telemetry too degraded to measure |
+| `insufficient_gates` | Telemetry was fine, but fewer than three valid, ordered gates were captured | Structural — nothing to grade |
+| `unconfirmed_arrest` | Contact was observed but no DCS/LQM wire confirms an arrest | Proof, not measurement, is missing |
+| `unknown` (grading only, `Grading::Unknown`) | The aircraft was tracked but never became a scored approach | Not a telemetry problem at all |
+
+A pass can report more than one of these at once: `cause` is the highest-priority one (see
+`Completeness::priority` in `src/track.rs`) and `causes.secondary` lists the rest. Because this
+differentiation already exists in the persisted JSON, no additional internal status or field was
+introduced: `NC` itself never needs to distinguish these cases, since anything that needs to is
+already reading `cause`/`causes`, not the display grade.
+
 ## Gates
 
 `PROJECT-DERIVED`, `project-derived-v2`:
