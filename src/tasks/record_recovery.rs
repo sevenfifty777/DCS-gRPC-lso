@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use crate::client::{HookClient, MissionClient, UnitClient};
 use crate::grading::{PassGrade, SpotGrade};
 use crate::telemetry::{TelemetryInvalidReason, ACTIVE_WATCHDOG_MS};
-use crate::track::{Datum, GateDeviations, Grading, HookSampleStatus, Track};
+use crate::track::{Datum, GateDeviations, Grading, HookSampleStatus, Track, TrajectoryDeviation};
 use crate::transform::Transform;
 
 use super::{CompletedPass, TaskParams};
@@ -66,6 +66,9 @@ struct RecoveryReport<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     dcs_grading: Option<&'a str>,
     gate_deviations: &'a GateDeviations,
+    /// Continuous groove-to-touchdown GS/lineup series (see `TrajectoryDeviation`), additive
+    /// to `gate_deviations`. Empty for a pass that never entered the groove.
+    trajectory_deviations: &'a [TrajectoryDeviation],
     datums: &'a [Datum],
     /// In-mission date/time from the DCS scenario clock (ISO-8601).
     #[serde(skip_serializing_if = "str::is_empty")]
@@ -115,7 +118,10 @@ struct ReportCauses<'a> {
     secondary: &'a [&'static str],
 }
 
-const GRADING_VERSION: &str = "project-derived-v1";
+// v2: CATOBAR amplitude now also considers the continuous groove-to-touchdown trajectory
+// (`trajectory_deviations`), not only the three point-in-time gates — see
+// docs/GRADING_REFERENCE.md, "Continuous trajectory (amplitude only)".
+const GRADING_VERSION: &str = "project-derived-v2";
 const GRADING_SOURCE: &str = "PROJECT-DERIVED";
 #[derive(Debug)]
 struct HookPoll {
@@ -1124,6 +1130,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         spot_bonus_points: track.spot_grade.map(|g| g.bonus_points()),
         dcs_grading: track.dcs_grading.as_deref(),
         gate_deviations: &track.gate_deviations,
+        trajectory_deviations: &track.trajectory_deviations,
         datums: &track.datums,
         mission_datetime: &mission_datetime,
         recording_started_at: &recovery_timestamp,

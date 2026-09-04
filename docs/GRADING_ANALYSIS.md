@@ -21,11 +21,11 @@ grade.
 
 ## Project-derived rules
 
-The three interpolated gate deviations, numerical thresholds, points mapping, `NC` representation,
-wire geometry and experimental AV-8B/Tarawa spot model are `PROJECT-DERIVED`, version
-`project-derived-v1`. Their formulas, assumptions and limitations are specified in
-[GRADING_REFERENCE.md](GRADING_REFERENCE.md). AoA, continuous trends and spot-zone occupancy are
-recorded only; they do not affect the score.
+The three interpolated gate deviations, the continuous groove-to-touchdown trajectory amplitude,
+numerical thresholds, points mapping, `NC` representation, wire geometry and experimental
+AV-8B/Tarawa spot model are `PROJECT-DERIVED`, version `project-derived-v2`. Their formulas,
+assumptions and limitations are specified in [GRADING_REFERENCE.md](GRADING_REFERENCE.md). AoA,
+deviation trend/duration and spot-zone occupancy are recorded only; they do not affect the score.
 
 For V/STOL phase 1, the intended spot is 7.5. The nearest actual spot and distance to 7.5 are
 reported separately. Spots 7 and 8 are not activated for scoring. Incomplete V/STOL data never

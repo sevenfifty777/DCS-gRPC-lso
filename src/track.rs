@@ -56,7 +56,7 @@ const GATE_THREE_QUARTER_NM: f64 = 1389.0;
 /// ½ nm gate — primary grading reference.
 const GATE_HALF_NM: f64 = 926.0;
 /// ¼ nm gate — ramp / "in close"; dangerously low here triggers a Cut pass.
-const GATE_QUARTER_NM: f64 = 463.0;
+pub(crate) const GATE_QUARTER_NM: f64 = 463.0;
 
 /// Exponential moving average (EMA) smoothing factor for the carrier position.
 ///
@@ -80,6 +80,10 @@ const MAX_TRACK_SAMPLES: usize = 72_000;
 /// pattern chart, waveoff diagnosis and telemetry-quality accounting, never
 /// for gate/grading evidence.
 const PATTERN_DATUM_STRIDE: u32 = 4;
+/// Upper bound on `trajectory_deviations`, the continuous groove-to-touchdown GS/lineup
+/// series. A groove is a few tens of seconds at 10-20 Hz, so this is a defensive cap, not
+/// an expected limit.
+const MAX_TRAJECTORY_SAMPLES: usize = 4_000;
 const MAX_EVENT_EVIDENCE: usize = 256;
 const MAX_HOOK_EVIDENCE: usize = 512;
 const GATE_BUFFER_WINDOW_S: f64 = 2.0;
@@ -234,6 +238,10 @@ pub struct Track {
     pattern_datum_counter: u32,
     pattern_datums: Vec<PatternDatum>,
     gate_deviations: GateDeviations,
+    /// Continuous GS/lineup series from groove entry to touchdown (see `TrajectoryDeviation`).
+    /// Cleared on each fresh groove entry, alongside `wire_crossings`, so an earlier bolter's
+    /// trajectory never leaks into the scored attempt.
+    trajectory_deviations: Vec<TrajectoryDeviation>,
     /// Set to `true` once the aircraft enters inside 3/4 nm and below 300 ft AGL.
     entered_groove: bool,
     /// DCS simulation time (seconds since scenario start) when groove entry was first detected.
@@ -353,6 +361,22 @@ impl GateDeviations {
             && self.half_quality.status == GateStatus::Valid
             && self.quarter_quality.status == GateStatus::Valid
     }
+}
+
+/// GS/lineup deviation computed at one aircraft position along the final approach, using the
+/// same geometry as a gate crossing (see `capture_gate`) but evaluated at the aircraft's own
+/// along-track distance instead of a fixed gate distance.
+///
+/// Populated once per accepted sample from groove entry to touchdown (see
+/// `Track::trajectory_deviations`), so grading can see the full approach instead of only the
+/// three point-in-time gates in `GateDeviations`. `PROJECT-DERIVED`, additive to the JSON
+/// contract; `gate_deviations` is unchanged and remains the primary chart/diagnostic evidence.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct TrajectoryDeviation {
+    pub timestamp_dcs: f64,
+    pub distance_m: f64,
+    pub gs_deviation_deg: f64,
+    pub lineup_deg: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -670,6 +694,7 @@ pub struct TrackResult {
     pub actual_nearest_spot: Option<&'static str>,
     pub dcs_grading: Option<String>,
     pub gate_deviations: GateDeviations,
+    pub trajectory_deviations: Vec<TrajectoryDeviation>,
     pub datums: Vec<Datum>,
     pub pattern_datums: Vec<PatternDatum>,
     pub plane_info: &'static AirplaneInfo,
@@ -703,6 +728,7 @@ impl Track {
             pattern_datum_counter: 0,
             pattern_datums: Default::default(),
             gate_deviations: GateDeviations::default(),
+            trajectory_deviations: Default::default(),
             entered_groove: false,
             groove_entry_time: None,
             landing_time: None,
@@ -1185,14 +1211,30 @@ impl Track {
             // aircraft is still performing a wide turn to final on the base leg.
             if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 && lineup_deg.abs() <= 10.0 {
                 if !self.entered_groove {
-                    self.groove_entry_time = Some(plane.time);
-                    // Start a new wire-evidence segment for the final inbound
-                    // branch. An earlier overhead/pattern deck crossing must not
-                    // reserve a wire number for the actual recovery.
-                    self.previous_wire_plane = [None; 4];
-                    self.wire_crossings.clear();
+                    self.mark_fresh_groove_entry(plane.time);
                 }
                 self.entered_groove = true;
+            }
+
+            // Continuous GS/lineup series, from groove entry to touchdown, using the same
+            // geometry as a gate crossing but evaluated at the aircraft's own distance `x`
+            // instead of a fixed gate. See `TrajectoryDeviation` for why this exists: it lets
+            // grading see excursions between the three point-in-time gates, not just at them.
+            if self.entered_groove
+                && sample.is_valid()
+                && is_inbound
+                && in_approach
+                && gate_lined_up
+                && self.trajectory_deviations.len() < MAX_TRAJECTORY_SAMPLES
+            {
+                let ideal_alt = ideal_base_alt + x * self.plane_info.glide_slope.to_radians().tan();
+                let gs_deviation_m = alt - ideal_alt;
+                self.trajectory_deviations.push(TrajectoryDeviation {
+                    timestamp_dcs: plane.time,
+                    distance_m: x,
+                    gs_deviation_deg: gs_deviation_m.atan2(x).to_degrees(),
+                    lineup_deg,
+                });
             }
         }
 
@@ -1371,6 +1413,17 @@ impl Track {
         true
     }
 
+    /// Reset the per-attempt evidence that must never leak from an earlier groove entry (e.g. a
+    /// bolter that re-attempts) into the one that ends up being scored: the wire-crossing plane
+    /// history and the continuous GS/lineup trajectory (see `TrajectoryDeviation`). Called only
+    /// on a `false -> true` transition of `entered_groove`.
+    fn mark_fresh_groove_entry(&mut self, entry_time: f64) {
+        self.groove_entry_time = Some(entry_time);
+        self.previous_wire_plane = [None; 4];
+        self.wire_crossings.clear();
+        self.trajectory_deviations.clear();
+    }
+
     pub fn finish(mut self) -> TrackResult {
         // If the plane entered the groove but never landed and no other grading was set,
         // it performed a waveoff.
@@ -1419,7 +1472,12 @@ impl Track {
         let (approach_grade, approach_points) = if self.carrier_info.is_vstol() {
             compute_vstol_approach_grade_points(&grading, &self.gate_deviations)
         } else {
-            let grade = compute_pass_grade(&grading, &self.gate_deviations, groove_time_secs);
+            let grade = compute_pass_grade(
+                &grading,
+                &self.gate_deviations,
+                &self.trajectory_deviations,
+                groove_time_secs,
+            );
             (grade, grade.points())
         };
         let spot_grade = self.spot_distance_m.map(SpotGrade::from_distance_m);
@@ -1486,6 +1544,7 @@ impl Track {
             actual_nearest_spot: self.actual_nearest_spot,
             dcs_grading: self.dcs_grading,
             gate_deviations: self.gate_deviations,
+            trajectory_deviations: self.trajectory_deviations,
             datums: self.datums,
             pattern_datums: self.pattern_datums,
             plane_info: self.plane_info,
@@ -2274,6 +2333,120 @@ mod tests {
         );
         assert_eq!(result.pass_grade, PassGrade::Incomplete);
         assert_eq!(result.grade_points, None);
+    }
+
+    #[test]
+    fn trajectory_deviation_recorded_between_gates_reaches_the_final_grade() {
+        // All three gates are clean, but a continuous-series spike between the 1/2-nm and
+        // 1/4-nm gates should still downgrade the final grade produced by `finish()` — the
+        // wiring from Track::trajectory_deviations through to compute_pass_grade, not just
+        // grade_from_gates in isolation (covered separately in grading.rs).
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(1.0)),
+            at_half_nm: Some(gate(2.0)),
+            at_quarter_nm: Some(gate(3.0)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
+        track.grading = Some(Grading::Recovered {
+            cable: Some(3),
+            cable_estimated: Some(3),
+        });
+        track.trajectory_deviations = vec![TrajectoryDeviation {
+            timestamp_dcs: 2.5,
+            distance_m: 700.0,
+            gs_deviation_deg: 1.5,
+            lineup_deg: 0.0,
+        }];
+
+        let result = track.finish();
+        assert_eq!(result.pass_grade, PassGrade::NoGrade);
+        assert_eq!(result.trajectory_deviations.len(), 1);
+    }
+
+    #[test]
+    fn groove_entry_populates_a_continuous_trajectory_series() {
+        // Driven through the real `Track::next` geometry pipeline (not constructed by hand), a
+        // noisy approach well above the OK margin must show up in the continuous series once
+        // the aircraft enters the groove.
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let carrier = Transform {
+            forward: DVec3::unit_z(),
+            ..Transform::default()
+        };
+        let landing = carrier_info.approach_reference_offset(plane_info);
+        let fb = DVec3::unit_z().rotated_by(DRotor3::from_rotation_xz(
+            carrier_info.deck_angle.to_radians(),
+        ));
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+
+        // `Track::next` derives the deck-relative altitude as
+        // `plane.alt - carrier_info.deck_altitude + hook.rotated_by(plane.rotation).y`; with the
+        // identity rotation from `Transform::default()`, an on-glideslope `plane.alt` must add
+        // that bias back so `alt_offset_m` below is a real, controlled deviation in metres.
+        let on_glideslope_bias = carrier_info.deck_altitude - plane_info.hook.y;
+        let fly = |track: &mut Track, time: f64, distance: f64, alt_offset_m: f64| {
+            let mut carrier_frame = carrier.clone();
+            carrier_frame.time = time;
+            let ideal_alt =
+                distance * plane_info.glide_slope.to_radians().tan() + on_glideslope_bias;
+            let plane = Transform {
+                time,
+                position: landing - fb * distance,
+                alt: ideal_alt + alt_offset_m,
+                ..Transform::default()
+            };
+            track.next(&carrier_frame, &plane, Some(1.0));
+        };
+
+        // 25 m stays under the 300 ft groove-entry altitude ceiling at 800 m while still
+        // producing a clearly significant (~1.8°) GS deviation.
+        fly(&mut track, 1.0, 1200.0, 25.0);
+        fly(&mut track, 1.1, 800.0, 25.0);
+        assert!(
+            track
+                .trajectory_deviations
+                .iter()
+                .any(|d| d.gs_deviation_deg >= 1.5),
+            "noisy approach should have recorded a significant deviation, found: {:?}",
+            track.trajectory_deviations
+        );
+    }
+
+    #[test]
+    fn mark_fresh_groove_entry_clears_stale_wire_and_trajectory_evidence() {
+        // A bolter re-attempt calls this only on the false -> true transition of
+        // entered_groove; its job is to make sure nothing from the discarded first attempt
+        // (wire-plane history, wire crossings, continuous trajectory) leaks into the one that
+        // ends up scored.
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane);
+        track.previous_wire_plane = [Some((1.0, 2.0)); 4];
+        track.wire_crossings.push(WireCrossingEvidence {
+            wire: 3,
+            timestamp_dcs: 5.0,
+            bracket_gap_ms: 50.0,
+            method: "test",
+        });
+        track.trajectory_deviations.push(TrajectoryDeviation {
+            timestamp_dcs: 5.0,
+            distance_m: 700.0,
+            gs_deviation_deg: 5.0,
+            lineup_deg: 0.0,
+        });
+
+        track.mark_fresh_groove_entry(12.0);
+
+        assert_eq!(track.groove_entry_time, Some(12.0));
+        assert_eq!(track.previous_wire_plane, [None; 4]);
+        assert!(track.wire_crossings.is_empty());
+        assert!(track.trajectory_deviations.is_empty());
     }
 
     #[test]

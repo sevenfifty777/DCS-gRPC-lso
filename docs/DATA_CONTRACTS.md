@@ -16,6 +16,9 @@ compatible meanings. Additive fields include:
 - intended/nearest spot, spot score and informational spot-zone observation;
 - estimated/DCS wire, divergence and primary display provenance;
 - gate quality plus raw/corrected telemetry diagnostics;
+- `trajectory_deviations`: continuous GS/lineup series from groove entry to touchdown, additive to
+  `gate_deviations`. Its worst amplitude feeds `PassGrade` alongside the three gates; empty for a
+  pass that never entered the groove;
 - ordered event evidence, raw hook observation and first-contact horizontal speed.
 - `event_correlation`, with stream status (`available`, `unavailable` or intentionally `disabled`),
   detailed end/failure information, whether outcome evidence preceded the outage, and an independent

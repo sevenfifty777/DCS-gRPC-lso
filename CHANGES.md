@@ -7,6 +7,10 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Added
 
+- `trajectory_deviations`: a continuous GS/lineup series computed from groove entry to touchdown
+  (additive JSON field alongside `gate_deviations`), and used as a second, continuous source of
+  amplitude for `PassGrade` next to the three point-in-time gates (`PROJECT-DERIVED`; see
+  `docs/GRADING_REFERENCE.md`).
 - Source-buffered `RecoveryTelemetry` acquisition with idempotent start/read/stop lifecycle,
   exclusive sequence cursors, full-batch processing, epoch/identity validation, explicit
   retention/capacity loss and invalid-unit diagnostics, plus unary rollback through
@@ -87,6 +91,11 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Changed
 
+- CATOBAR grading now takes the worst GS/lineup amplitude across the continuous trajectory as well
+  as the three gates, not the three gates alone; a significant excursion strictly between two gates
+  (previously invisible to grading) can now downgrade the pass, and a dip below the Cut threshold
+  anywhere at or inside the quarter-NM distance is caught, not only exactly at the gate crossing.
+  This can only make the reported amplitude equal or worse than before, never better.
 - Pilot-facing surfaces (Discord embed, PNG chart, SQLite/greenie-board log) now always show the
   DCS/LQM wire alone when it is available, instead of ever displaying it next to a diverging Rust
   geometric estimate (`Grading::pilot_facing_outcome`); the full JSON `outcome` field still records

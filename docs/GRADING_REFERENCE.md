@@ -25,7 +25,7 @@ observed but its initiator was not proven. The module never invents OWO, WOP or 
 
 ## Gates
 
-`PROJECT-DERIVED`, `project-derived-v1`:
+`PROJECT-DERIVED`, `project-derived-v2`:
 
 | Gate | Distance | Acceptance |
 |---|---:|---|
@@ -48,14 +48,15 @@ does not manufacture a historical observation. The three valid gate times must b
 ## CATOBAR score
 
 All numerical boundaries and point mappings in this table are `PROJECT-DERIVED`, retained from the
-historical module/MOOSE-inspired model pending validation:
+historical module/MOOSE-inspired model pending validation. `abs(GS)`/`abs(LU)` are the worst values
+found across the three gates **and** the continuous trajectory (see below):
 
 | Result | Rule | Points |
 |---|---|---:|
 | `OK` | all three gates valid; `abs(GS) < 0.5 deg`, `abs(LU) < 1.0 deg` | 4.0 |
 | `(OK)` | no significant deviation; `abs(GS) >= 0.5 deg` or `abs(LU) >= 1.0 deg` | 3.0 |
 | `--` | `abs(GS) >= 1.0 deg` or `abs(LU) >= 2.0 deg` | 2.0 |
-| `C` | quarter-NM GS strictly below `-2.5 deg` | 0.0 |
+| `C` | GS strictly below `-2.5 deg` at the quarter-NM gate, or anywhere in the continuous trajectory at or inside 463 m | 0.0 |
 | `B` | confirmed bolter and all three gates valid | 2.5 |
 | `WO?` | neutral waveoff/go-around, initiator unknown | none |
 | `NC` | insufficient/invalid telemetry or unconfirmed trap | none |
@@ -65,9 +66,24 @@ historical module/MOOSE-inspired model pending validation:
 automatic rule emits it. The former local "wire 3 plus 15-18.99 seconds" Unicorn rule is disabled.
 Groove time and estimated wire cannot produce `_OK_`. A touch-and-go cannot receive `_OK_` or points.
 
-AoA is chart information only. No AoA table changes the grade. Trends, duration of deviations,
-continuous excursions, power, sink rate, wind, weight and LSO calls are not scored because no
-validated per-aircraft rule has been adopted.
+### Continuous trajectory (amplitude only)
+
+`PROJECT-DERIVED`. Historically only the three point-in-time gates fed the grade, so a deviation
+spike strictly between two gates (e.g. between 1/2 NM and 1/4 NM) could go completely unscored even
+though the full trajectory was already being recorded. `trajectory_deviations` (additive JSON field)
+now samples the same GS/lineup geometry as a gate crossing, but continuously, at the aircraft's own
+distance, from groove entry to touchdown. Its worst GS-high, GS-low and lineup values are combined
+with the three gates' (the maximum of both), and any of its samples at or inside the quarter-NM
+distance is checked against the Cut threshold exactly like the quarter-NM gate itself. This can only
+ever make the amplitude reading equal or worse than the three-gate-only computation, never better,
+and availability is still governed exclusively by `gates.all_valid()` — an incomplete pass is never
+made gradable by trajectory data alone.
+
+This scores amplitude more completely, not yet trend: whether a deviation was being corrected or
+was worsening in the final seconds is not evaluated (a spike that appears once and immediately
+self-corrects is judged identically to one that persists). AoA is chart information only and no AoA
+table changes the grade. Duration/trend of deviations, power, sink rate, wind, weight and LSO calls
+are still not scored because no validated per-aircraft rule has been adopted.
 
 ## Wire evidence
 
