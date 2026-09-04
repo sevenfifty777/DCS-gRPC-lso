@@ -47,7 +47,7 @@ already reading `cause`/`causes`, not the display grade.
 
 ## Gates
 
-`PROJECT-DERIVED`, `project-derived-v2`:
+`PROJECT-DERIVED`, `project-derived-v3`:
 
 | Gate | Distance | Acceptance |
 |---|---:|---|
@@ -101,11 +101,33 @@ ever make the amplitude reading equal or worse than the three-gate-only computat
 and availability is still governed exclusively by `gates.all_valid()` — an incomplete pass is never
 made gradable by trajectory data alone.
 
-This scores amplitude more completely, not yet trend: whether a deviation was being corrected or
-was worsening in the final seconds is not evaluated (a spike that appears once and immediately
-self-corrects is judged identically to one that persists). AoA is chart information only and no AoA
-table changes the grade. Duration/trend of deviations, power, sink rate, wind, weight and LSO calls
-are still not scored because no validated per-aircraft rule has been adopted.
+AoA is chart information only and no AoA table changes the grade. Power, sink rate, wind, weight
+and LSO calls are still not scored because no validated per-aircraft rule has been adopted.
+
+### Correction trend (Ok vs (OK) only)
+
+`PROJECT-DERIVED`. NATOPS 00-80T-104 section 11.4.1 distinguishes `OK` ("reasonable deviations
+**with good corrections**") from `(OK)` ("fair — reasonable deviations") on whether corrections
+were good, not on amplitude alone — a distinction the amplitude-only rules above cannot express:
+two passes with identical worst deviations, one that arrived high and corrected to clean, one that
+arrived clean and drifted to the same worst value, would otherwise be graded identically.
+
+Once amplitude alone would already grade a pass `Ok` (every trajectory sample and gate under the
+`GS_SLIGHT_HIGH`/`GS_SLIGHT_LOW`/`LU_SLIGHT` thresholds), a simple two-point slope of `abs(GS)` and
+`abs(lineup)` is computed over the final 4 seconds of the recorded trajectory (`TREND_WINDOW_S`,
+chosen because a correction takes roughly 1-2 s to fly, so 4 s gives room to see a real trend
+without reaching into an unrelated earlier part of the approach — deliberately no more
+sophisticated filtering than that, per the design brief for this item). If either slope reaches
+`TREND_WORSENING_DEG_PER_S` (0.075 deg/s — chosen so the check is reachable at all within the Ok
+amplitude ceiling over that window, while staying clearly above ordinary aim-point noise; not a
+NAVAIR value), the pass is capped at `(OK)` instead of `Ok`.
+
+Trend is asymmetric by design: it can only ever **hold back** an `Ok` that amplitude alone would
+have granted, never **raise** a grade amplitude alone placed below `Ok`, and it is never checked at
+all once a pass is already below `Ok` — matching the same "never invent leniency" rule already
+applied to the continuous trajectory itself. Whether a deviation was corrected within the window,
+rather than only whether it grew, is not evaluated; nor is duration of a given deviation. Both would
+require more than the two-point derivative this item's design brief called for.
 
 ### Wind
 

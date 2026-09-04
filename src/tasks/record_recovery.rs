@@ -126,9 +126,10 @@ struct ReportCauses<'a> {
 }
 
 // v2: CATOBAR amplitude now also considers the continuous groove-to-touchdown trajectory
-// (`trajectory_deviations`), not only the three point-in-time gates — see
-// docs/GRADING_REFERENCE.md, "Continuous trajectory (amplitude only)".
-const GRADING_VERSION: &str = "project-derived-v2";
+// (`trajectory_deviations`), not only the three point-in-time gates.
+// v3: a worsening correction trend in the final seconds can cap an otherwise-Ok pass at (OK) —
+// see docs/GRADING_REFERENCE.md, "Continuous trajectory" and "Correction trend".
+const GRADING_VERSION: &str = "project-derived-v3";
 const GRADING_SOURCE: &str = "PROJECT-DERIVED";
 #[derive(Debug)]
 struct HookPoll {

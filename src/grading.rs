@@ -20,6 +20,20 @@ const LU_SLIGHT: f64 = 1.0;
 const LU_MEDIUM: f64 = 2.0;
 // const LU_SIGNIFICANT: f64 = 3.0;  // LUL / LUR     — "lined up left/right" (large) — NoGrade already triggered at LU_MEDIUM
 
+/// How far back from the last recorded trajectory sample the trend check looks.
+/// PROJECT-DERIVED: a correction takes roughly 1-2 s to fly (per the project's own analysis of
+/// realistic approach dynamics), so 4 s gives enough samples to see a real trend rather than
+/// single-sample noise, without reaching back into an earlier, unrelated part of the approach.
+const TREND_WINDOW_S: f64 = 4.0;
+/// PROJECT-DERIVED. The trend check only ever runs once amplitude alone already places the
+/// pass at Ok (every sample under `GS_SLIGHT_HIGH`/`GS_SLIGHT_LOW`/`LU_SLIGHT`), so the largest
+/// physically reachable slope within the window is bounded by that ceiling divided by
+/// `TREND_WINDOW_S` (about 0.125 deg/s here). This threshold sits well inside that reachable
+/// range — a sustained drift of roughly a third of the OK margin over the window — while staying
+/// clearly above ordinary aim-point noise. Not a NAVAIR value: no published doctrine quantifies
+/// "worsening" numerically.
+const TREND_WORSENING_DEG_PER_S: f64 = 0.075;
+
 // ---------------------------------------------------------------------------
 // PassGrade — project score using selected official display symbols
 // ---------------------------------------------------------------------------
@@ -350,9 +364,43 @@ fn grade_from_gates(gates: &GateDeviations, trajectory: &[TrajectoryDeviation]) 
         || worst_lu >= LU_SLIGHT
     {
         PassGrade::OkParentheses
+    } else if trend_worsening(trajectory) {
+        // NATOPS distinguishes OK ("reasonable deviations with good corrections") from (OK)
+        // ("fair — reasonable deviations") precisely on whether corrections were good, not on
+        // amplitude alone (see docs/GRADING_REFERENCE.md, "Continuous trajectory"). Deviations
+        // are already within OK margins at this point; a trajectory that is still measurably
+        // worsening this close to touchdown cannot claim "good corrections", so it is capped at
+        // (OK) instead. Trend is deliberately never used to raise a grade the amplitude rules
+        // already placed below Ok — only to hold Ok back when it would otherwise be granted.
+        PassGrade::OkParentheses
     } else {
         PassGrade::Ok
     }
+}
+
+/// Whether GS or lineup deviation was clearly getting worse, not better, in the final
+/// `TREND_WINDOW_S` seconds of the recorded trajectory. A simple two-point slope of the
+/// deviation's absolute value over that window, as prescribed by A.2 of the notation work: "no
+/// sophisticated filtering at this stage". Returns `false` (no penalty) whenever there is not
+/// enough data to judge a trend, which errs toward not penalizing rather than inventing a signal.
+fn trend_worsening(trajectory: &[TrajectoryDeviation]) -> bool {
+    let Some(reference_time) = trajectory.last().map(|d| d.timestamp_dcs) else {
+        return false;
+    };
+    let window: Vec<&TrajectoryDeviation> = trajectory
+        .iter()
+        .filter(|d| d.timestamp_dcs >= reference_time - TREND_WINDOW_S)
+        .collect();
+    let (Some(first), Some(last)) = (window.first(), window.last()) else {
+        return false;
+    };
+    let dt = last.timestamp_dcs - first.timestamp_dcs;
+    if dt <= 0.0 {
+        return false;
+    }
+    let gs_slope = (last.gs_deviation_deg.abs() - first.gs_deviation_deg.abs()) / dt;
+    let lu_slope = (last.lineup_deg.abs() - first.lineup_deg.abs()) / dt;
+    gs_slope >= TREND_WORSENING_DEG_PER_S || lu_slope >= TREND_WORSENING_DEG_PER_S
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +554,22 @@ mod tests {
         }
     }
 
+    /// Same as `trajectory_point`, but with an explicit timestamp, for trend tests where the
+    /// order and spacing of samples in time is what's being exercised.
+    fn trajectory_point_at(
+        timestamp_dcs: f64,
+        distance_m: f64,
+        gs_deviation_deg: f64,
+        lineup_deg: f64,
+    ) -> TrajectoryDeviation {
+        TrajectoryDeviation {
+            timestamp_dcs,
+            distance_m,
+            gs_deviation_deg,
+            lineup_deg,
+        }
+    }
+
     #[test]
     fn continuous_excursion_between_two_gates_is_not_missed() {
         // All three gates are clean (well within OK), but the trajectory records a
@@ -552,6 +616,82 @@ mod tests {
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let trajectory = [trajectory_point(700.0, -2.6, 0.0)];
         assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::NoGrade);
+    }
+
+    #[test]
+    fn worsening_trend_caps_an_otherwise_ok_pass_at_ok_parentheses() {
+        // Pass B from the design discussion: nickel at the start, drifting to worse (but still
+        // within OK amplitude margins) by the end. NATOPS reserves OK for "reasonable deviations
+        // WITH GOOD CORRECTIONS" -- a trajectory that is still getting worse this close to
+        // touchdown cannot make that claim, even though the raw amplitude alone stayed under the
+        // OK threshold throughout.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 900.0, 0.05, 0.0),
+            trajectory_point_at(4.0, 500.0, 0.45, 0.0),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
+    }
+
+    #[test]
+    fn improving_trend_keeps_an_ok_pass_at_ok() {
+        // Pass A from the design discussion: high at the start, corrected to nickel by the end.
+        // Trend must never be used to raise a grade, only to hold one back -- so this case,
+        // unlike the worsening one, stays a plain Ok.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 900.0, 0.45, 0.0),
+            trajectory_point_at(4.0, 500.0, 0.05, 0.0),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Ok);
+    }
+
+    #[test]
+    fn small_oscillation_is_not_a_worsening_trend() {
+        // Ordinary aim-point noise (a few hundredths of a degree) must not be mistaken for a
+        // sustained worsening trend.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 900.0, 0.10, 0.0),
+            trajectory_point_at(4.0, 500.0, 0.15, 0.0),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Ok);
+    }
+
+    #[test]
+    fn windowing_prevents_a_long_clean_history_from_masking_a_recent_worsening_trend() {
+        // Clean from groove entry (t=0) through t=17, then a real worsening drift in the final
+        // 4 s (t=17 -> t=21). Comparing only the true first and last samples of the whole
+        // approach would dilute this recent drift into an unremarkable 0.35/21 =~ 0.017 deg/s
+        // and miss it entirely; restricting the slope to TREND_WINDOW_S correctly surfaces it.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 1300.0, 0.05, 0.0),
+            trajectory_point_at(17.0, 700.0, 0.05, 0.0),
+            trajectory_point_at(21.0, 500.0, 0.40, 0.0),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
+    }
+
+    #[test]
+    fn worsening_trend_never_downgrades_a_pass_already_below_ok() {
+        // Trend is only ever checked at the Ok/(OK) boundary; a pass already at (OK) or worse
+        // from amplitude alone is not pushed down an additional tier by a worsening trend.
+        let g = gates_deg(0.6, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 900.0, 0.05, 0.0),
+            trajectory_point_at(4.0, 500.0, 0.45, 0.0),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
+    }
+
+    #[test]
+    fn single_trajectory_sample_has_no_trend() {
+        // A single sample cannot express a slope; trend must gracefully report "no signal"
+        // rather than panic or divide by zero.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [trajectory_point_at(0.0, 700.0, 0.05, 0.0)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Ok);
     }
 
     #[test]

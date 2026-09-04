@@ -11,6 +11,12 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   (additive JSON field alongside `gate_deviations`), and used as a second, continuous source of
   amplitude for `PassGrade` next to the three point-in-time gates (`PROJECT-DERIVED`; see
   `docs/GRADING_REFERENCE.md`).
+- A correction-trend check on that same trajectory: a pass whose GS/lineup deviation is still
+  measurably worsening in the final 4 seconds before touchdown is capped at `(OK)` instead of
+  `Ok`, matching NATOPS' own OK ("reasonable deviations with good corrections") vs (OK) ("fair —
+  reasonable deviations") distinction. Never used to raise a grade amplitude placed lower, and
+  never checked once a pass is already below `Ok` (`PROJECT-DERIVED`; see
+  `docs/GRADING_REFERENCE.md`, "Correction trend").
 - `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, in the JSON
   report for every recovery (previously queried only for the Discord embed, and not persisted).
   Never affects `pass_grade`/`grade_points`; absent in `--positions-only`.
