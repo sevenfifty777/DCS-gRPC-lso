@@ -69,6 +69,13 @@ struct RecoveryReport<'a> {
     /// Continuous groove-to-touchdown GS/lineup series (see `TrajectoryDeviation`), additive
     /// to `gate_deviations`. Empty for a pass that never entered the groove.
     trajectory_deviations: &'a [TrajectoryDeviation],
+    /// Wind at the carrier's position, queried once at report time. Contextual only: it never
+    /// changes `pass_grade`/`grade_points` (see docs/GRADING_REFERENCE.md, "Wind"). Absent when
+    /// the query failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wind_heading_deg: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wind_speed_mps: Option<f32>,
     datums: &'a [Datum],
     /// In-mission date/time from the DCS scenario clock (ISO-8601).
     #[serde(skip_serializing_if = "str::is_empty")]
@@ -1098,6 +1105,27 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         return Ok(());
     };
     let json_path = pipeline.json_path();
+
+    // Query wind at the carrier's last known position, once per recovery. Purely contextual:
+    // see docs/GRADING_REFERENCE.md, "Wind" — it never affects pass_grade/grade_points. A query
+    // failure is non-fatal and just omits the field from the report. Skipped in
+    // `--positions-only`, which documents that it never queries output-only DCS metadata.
+    let wind_mps: Option<(u16, f32)> = if params.positions_only {
+        None
+    } else {
+        let mut atmo = crate::client::AtmosphereClient::new(params.ch.clone());
+        match atmo
+            .get_wind(last_carrier_lat, last_carrier_lon, last_carrier_alt)
+            .await
+        {
+            Ok(w) => Some(w),
+            Err(err) => {
+                tracing::warn!(?err, "failed to query wind at carrier position");
+                None
+            }
+        }
+    };
+
     // `spot` is retained as the legacy phase-1 alias. New consumers must use the
     // independent intended/nearest fields below.
     let spot_label = track.intended_spot;
@@ -1131,6 +1159,8 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         dcs_grading: track.dcs_grading.as_deref(),
         gate_deviations: &track.gate_deviations,
         trajectory_deviations: &track.trajectory_deviations,
+        wind_heading_deg: wind_mps.map(|(heading, _)| heading),
+        wind_speed_mps: wind_mps.map(|(_, speed)| speed),
         datums: &track.datums,
         mission_datetime: &mission_datetime,
         recording_started_at: &recovery_timestamp,
@@ -1366,21 +1396,6 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
             let http = Http::new("token");
             let webhook = http.get_webhook_from_url(discord_webhook).await?;
 
-            // Query wind at carrier position (non-fatal — a failure must not abort the post).
-            let wind: Option<(u16, f32)> = {
-                let mut atmo = crate::client::AtmosphereClient::new(params.ch.clone());
-                match atmo
-                    .get_wind(last_carrier_lat, last_carrier_lon, last_carrier_alt)
-                    .await
-                {
-                    Ok(w) => Some(w),
-                    Err(err) => {
-                        tracing::warn!(?err, "failed to query wind at carrier position");
-                        None
-                    }
-                }
-            };
-
             let mut embed = CreateEmbed::new()
                 .field("Aircraft", params.plane_info.name, false)
                 .field(
@@ -1474,9 +1489,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                 }
             }
 
-            // Wind and groove time — Discord-only fields.
-            if let Some((dir, spd)) = wind {
-                embed = embed.field("Wind", format!("{}° at {:.0} kts", dir, spd), true);
+            // Wind and groove time — Discord-only fields. The JSON report already carries the
+            // same wind reading in raw m/s (`wind_heading_deg`/`wind_speed_mps`); knots here are
+            // purely a display convenience for this embed.
+            if let Some((dir, speed_mps)) = wind_mps {
+                const MPS_TO_KNOTS: f32 = 1.944;
+                embed = embed.field(
+                    "Wind",
+                    format!("{}° at {:.0} kts", dir, speed_mps * MPS_TO_KNOTS),
+                    true,
+                );
             }
             if let Some(secs) = track.groove_time_secs {
                 embed = embed.field("Groove Time", format!("{:.1} s", secs), true);

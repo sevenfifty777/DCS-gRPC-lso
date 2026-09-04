@@ -11,6 +11,9 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   (additive JSON field alongside `gate_deviations`), and used as a second, continuous source of
   amplitude for `PassGrade` next to the three point-in-time gates (`PROJECT-DERIVED`; see
   `docs/GRADING_REFERENCE.md`).
+- `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, in the JSON
+  report for every recovery (previously queried only for the Discord embed, and not persisted).
+  Never affects `pass_grade`/`grade_points`; absent in `--positions-only`.
 - Source-buffered `RecoveryTelemetry` acquisition with idempotent start/read/stop lifecycle,
   exclusive sequence cursors, full-batch processing, epoch/identity validation, explicit
   retention/capacity loss and invalid-unit diagnostics, plus unary rollback through

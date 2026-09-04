@@ -19,6 +19,9 @@ compatible meanings. Additive fields include:
 - `trajectory_deviations`: continuous GS/lineup series from groove entry to touchdown, additive to
   `gate_deviations`. Its worst amplitude feeds `PassGrade` alongside the three gates; empty for a
   pass that never entered the groove;
+- optional `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, queried
+  once per recovery. Absent when the query fails or in `--positions-only`. Never affects
+  `pass_grade`/`grade_points`;
 - ordered event evidence, raw hook observation and first-contact horizontal speed.
 - `event_correlation`, with stream status (`available`, `unavailable` or intentionally `disabled`),
   detailed end/failure information, whether outcome evidence preceded the outage, and an independent

@@ -107,6 +107,16 @@ self-corrects is judged identically to one that persists). AoA is chart informat
 table changes the grade. Duration/trend of deviations, power, sink rate, wind, weight and LSO calls
 are still not scored because no validated per-aircraft rule has been adopted.
 
+### Wind
+
+`PROJECT-DERIVED`, contextual only. `wind_heading_deg`/`wind_speed_mps` (additive JSON fields) are
+queried once per recovery from `AtmosphereService.GetWind` at the carrier's last known position, so
+a report can show that a deviation happened in a stiff crosswind rather than calm air. Both fields
+are absent when the query fails or in `--positions-only` (which never queries output-only DCS
+metadata). **Wind never changes `pass_grade` or `grade_points`**: the project has no validated
+doctrine for how much correction credit a given wind condition should earn, so inventing one here
+would be exactly the kind of unverified rule this module otherwise avoids.
+
 ## Wire evidence
 
 `PROJECT-DERIVED` geometry estimates the closest cable midpoint to the transformed hook/contact
