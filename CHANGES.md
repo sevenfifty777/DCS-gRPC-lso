@@ -16,6 +16,11 @@ Unreleased section lists the changes made after the `0.2.0` tag.
 
 ### Added
 
+- Discord embed: arrested recoveries get a `Wire` field showing the DCS wire and the independent
+  estimate side by side with an agreement marker (`✓` or `⚠ mismatch`) and the proof of the
+  arrest (`DCS wire`, `hook transient`, `deck kinematics` with the hold time, `unconfirmed`), so a
+  human-LSO trap without a DCS `WIRE#` and an estimator disagreement are both readable in the
+  channel. The `Outcome` field keeps the primary wire as before.
 - `lso.db` is opened with `PRAGMA journal_mode=WAL` and a 2 s `busy_timeout`, so an external
   read-only consumer (the DCS Web Dashboard LSO page, which reads the file directly) can query the
   board while a pass is being inserted without blocking the writer. SQLite keeps `lso.db-wal` and

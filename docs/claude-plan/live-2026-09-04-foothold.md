@@ -69,8 +69,15 @@ IPC failures 0 to 7 per minute). Conclusion: the push-mode `StreamRecoverySnapsh
 - no bolter/T&G confirmed kinematically: 0 false positives in 4.
 - groove gap ≤ 300 ms: 4/5; pass 5 had one 338 ms scoring gap (single timeout).
 
+## Also done on the branch
+
+- Discord `Wire` field (backlog item 5): DCS and estimated wire with agreement marker, arrest proof.
+- `docs/DCS_gRPC_analyse/` deleted; its documents live in `docs/claude-plan/codex-sessions/`.
+
 ## Still open
 
+- Plan 1.8 carrier filter (offline study first), V/STOL fixtures (needs a Tarawa session),
+  `graphify-out/` rebuild after merge.
 - Fork tag `v0.9.2` and the CI `RUST_SERVER_REF` switch (user action).
 - (Fixed on the same branch) clippy `-D warnings` failed on `webpage-rm` since commit `1ced127`:
   `StoredPass` in `src/db.rs` kept fields only the removed web page read. The test-only struct now

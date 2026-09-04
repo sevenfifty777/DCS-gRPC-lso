@@ -259,6 +259,51 @@ fn finish_recording_on_despawn(touchdown_accepted: bool) -> bool {
     touchdown_accepted
 }
 
+/// Discord "Wire" field for an arrested recovery: the DCS wire next to the
+/// independent estimate with an agreement marker, then the proof of the arrest.
+/// `None` for every other outcome (bolter, T&G, waveoff, V/STOL), which carry
+/// no wire evidence worth a field.
+fn wire_evidence_field(
+    grading: &Grading,
+    is_vstol: bool,
+    arrest_evidence: &str,
+    arrest_held_s: Option<f64>,
+) -> Option<String> {
+    let Grading::Recovered {
+        cable,
+        cable_estimated,
+    } = grading
+    else {
+        return None;
+    };
+    if is_vstol {
+        return None;
+    }
+    let wire = |wire: Option<u8>| wire.map_or_else(|| "-".to_string(), |wire| wire.to_string());
+    let marker = match (cable, cable_estimated) {
+        (Some(dcs), Some(estimated)) if dcs == estimated => " ✓",
+        (Some(_), Some(_)) => " ⚠ mismatch",
+        _ => "",
+    };
+    let arrest = match arrest_evidence {
+        "dcs_wire" => "DCS wire".to_string(),
+        "hook_transient" => "hook transient (estimated wire)".to_string(),
+        "kinematic" => match arrest_held_s {
+            Some(held) => format!("deck kinematics (stopped {held:.1} s)"),
+            None => "deck kinematics".to_string(),
+        },
+        "unconfirmed" => "unconfirmed".to_string(),
+        other => other.to_string(),
+    };
+    Some(format!(
+        "DCS: {}
+Estimated: {}{marker}
+Arrest: {arrest}",
+        wire(*cable),
+        wire(*cable_estimated),
+    ))
+}
+
 pub(crate) fn recovery_outcome(grading: &Grading, is_vstol: bool, arrest_evidence: &str) -> String {
     match (is_vstol, grading) {
         (_, Grading::Unknown) => "unknown".to_string(),
@@ -1395,7 +1440,16 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     },
                     true,
                 )
-                .field("Outcome", completed.outcome.clone(), true)
+                .field("Outcome", completed.outcome.clone(), true);
+            if let Some(wire_field) = wire_evidence_field(
+                &track.grading,
+                track.carrier_info.is_vstol(),
+                track.arrest_evidence,
+                track.arrest_kinematics.held_s,
+            ) {
+                embed = embed.field("Wire", wire_field, true);
+            }
+            embed = embed
                 .field(
                     "Gates (GS / LU)",
                     {
@@ -1645,7 +1699,7 @@ mod tests {
     use super::{
         drain_hook_samples, finish_recording_on_despawn, hook_evidence_source,
         may_fallback_to_legacy, recovery_id, recovery_outcome, transform_from_event_unit,
-        write_atomic_if_absent, HookObservationReport, HookPoll,
+        wire_evidence_field, write_atomic_if_absent, HookObservationReport, HookPoll,
     };
     use crate::data::{AirplaneInfo, CarrierInfo};
     use crate::track::{Grading, HookSampleStatus, Track};
@@ -1678,6 +1732,80 @@ mod tests {
         // the evidence already recorded (2026-09-04 T-45 trap, WIRE# 2, pilot
         // left the unit 7.5 s after the land event).
         assert!(finish_recording_on_despawn(true));
+    }
+
+    #[test]
+    fn discord_wire_field_marks_agreement_and_names_the_proof() {
+        let recovered = |cable, cable_estimated| Grading::Recovered {
+            cable,
+            cable_estimated,
+        };
+        assert_eq!(
+            wire_evidence_field(&recovered(Some(1), Some(1)), false, "dcs_wire", Some(2.0)),
+            Some(
+                "DCS: 1
+Estimated: 1 ✓
+Arrest: DCS wire"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            wire_evidence_field(&recovered(Some(2), Some(3)), false, "dcs_wire", Some(2.0)),
+            Some(
+                "DCS: 2
+Estimated: 3 ⚠ mismatch
+Arrest: DCS wire"
+                    .to_string()
+            )
+        );
+        // Human LSO, no DCS comment: the estimate stands alone and the proof is named.
+        assert_eq!(
+            wire_evidence_field(&recovered(None, Some(3)), false, "hook_transient", None),
+            Some(
+                "DCS: -
+Estimated: 3
+Arrest: hook transient (estimated wire)"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            wire_evidence_field(&recovered(None, None), false, "kinematic", Some(2.3)),
+            Some(
+                "DCS: -
+Estimated: -
+Arrest: deck kinematics (stopped 2.3 s)"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            wire_evidence_field(&recovered(None, None), false, "unconfirmed", None),
+            Some(
+                "DCS: -
+Estimated: -
+Arrest: unconfirmed"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn discord_wire_field_is_absent_without_an_arrest() {
+        for grading in [
+            Grading::Bolter,
+            Grading::TouchAndGo {
+                cable_estimated: Some(2),
+            },
+            Grading::WaveoffDcs,
+            Grading::WaveoffUnknown,
+            Grading::Unknown,
+        ] {
+            assert_eq!(wire_evidence_field(&grading, false, "none", None), None);
+        }
+        let vstol = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+        assert_eq!(wire_evidence_field(&vstol, true, "none", None), None);
     }
 
     #[test]

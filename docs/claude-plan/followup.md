@@ -128,9 +128,9 @@ Threshold tuning rules if a gate fails:
    distance error and the sawtooth both improve; bump `grading_version` to `project-derived-v2`.
 4. V/STOL (AV-8B on Tarawa) has zero live fixtures; request a Tarawa session before touching it.
 5. Discord embed: show `DCS: n / Estimated: n` with an agreement marker and `arrest_evidence`
-   (proposed in the wire-estimation analysis, not implemented).
-6. Housekeeping: `graphify-out/` is stale (2026-08-28); `docs/DCS_gRPC_analyse/` (15 GB, git
-   ignored) can be deleted locally.
+   (done 2026-09-04, `Wire` field on arrested recoveries).
+6. Housekeeping: `graphify-out/` is stale (2026-08-28); `docs/DCS_gRPC_analyse/` was deleted on
+   2026-09-04, its six Codex documents moved to `docs/claude-plan/codex-sessions/`.
 
 ## 7. Verification commands
 
