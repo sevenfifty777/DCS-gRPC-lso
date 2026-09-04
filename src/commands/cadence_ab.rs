@@ -44,6 +44,8 @@ struct DatumInput {
     telemetry_valid: bool,
     #[serde(default)]
     skew_ms: f64,
+    #[serde(default)]
+    roll_deg: f64,
 }
 
 fn default_true() -> bool {
@@ -199,6 +201,7 @@ fn replay(
             alt: d.alt,
             valid: d.telemetry_valid,
             skew_ms: d.skew_ms,
+            roll_deg: d.roll_deg,
         })
     });
 
@@ -371,6 +374,7 @@ mod tests {
             alt: 400.0,
             telemetry_valid: true,
             skew_ms: 0.0,
+            roll_deg: 0.0,
         }
     }
 
@@ -384,6 +388,7 @@ mod tests {
             alt: x * 3.5_f64.to_radians().tan(),
             telemetry_valid: true,
             skew_ms: 0.0,
+            roll_deg: 0.0,
         }
     }
 

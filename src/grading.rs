@@ -49,6 +49,30 @@ const LATE_WINDOW_DISTANCE_M: f64 = 150.0;
 const LATE_WINDOW_GS_DEG: f64 = 0.8;
 const LATE_WINDOW_LU_DEG: f64 = 1.5;
 
+/// A.1 robustness guard: how many consecutive continuous-trajectory samples must cross
+/// `GS_SLIGHT_*`/`LU_SLIGHT` (in the same direction) before that excursion counts toward the
+/// worst-deviation search below. PROJECT-DERIVED, deliberately the smallest value that rules out
+/// a single aberrant telemetry frame: 1 would accept a lone spike, 2 requires the excursion to
+/// still be present on the very next sample (well under a second at scoring cadence), so a real,
+/// if brief, correction-worthy excursion is still caught immediately. Never applied to the
+/// `GS_CUT_LOW_DEG` safety check or the late-window check — both stay maximally sensitive to a
+/// single dangerous sample, on purpose.
+const PERSISTENCE_MIN_CONSECUTIVE_SAMPLES: usize = 2;
+
+/// A.4 (NATOPS `OC` — overcontrolled): how many trailing seconds of the continuous trajectory to
+/// scan for alternating corrections. Reuses `TREND_WINDOW_S`'s own rationale (a correction takes
+/// roughly 1-2 s to fly) rather than introducing an unrelated window length.
+const OSCILLATION_WINDOW_S: f64 = TREND_WINDOW_S;
+/// PROJECT-DERIVED. A direction reversal only counts once consecutive samples swing by at least
+/// this much — comfortably above ordinary aim-point/telemetry noise, well under `GS_SLIGHT_HIGH`/
+/// `GS_SLIGHT_LOW`/`LU_SLIGHT` so a real correction reversal is still caught before amplitude
+/// alone would already have downgraded the pass.
+const OSCILLATION_MIN_SWING_DEG: f64 = 0.3;
+/// PROJECT-DERIVED. Two reversals (three legs: out, back, out again) is the minimum shape that
+/// distinguishes a genuine oscillation from a single correction overshoot — one reversal is just
+/// "corrected, then held", which `trend_worsening` and the amplitude tiers already grade fairly.
+const OSCILLATION_MIN_REVERSALS: usize = 2;
+
 // ---------------------------------------------------------------------------
 // PassGrade — project score using selected official display symbols
 // ---------------------------------------------------------------------------
@@ -337,7 +361,10 @@ pub(crate) fn grade_from_gates(
     // Worst positive (high) and negative (low) GS deviation, and worst lineup, across the
     // three gates *and* the continuous trajectory. Combining both means a spike between two
     // gates can no longer be graded better than if a gate had happened to land on it — see
-    // `docs/GRADING_REFERENCE.md`, CATOBAR score.
+    // `docs/GRADING_REFERENCE.md`, CATOBAR score. The trajectory side is filtered through
+    // `persistent_trajectory_values` first (A.1 robustness guard): an isolated single-frame
+    // spike above the gates' own bracket/skew-validated evidence never counts on its own.
+    let (persistent_gs, persistent_lu) = persistent_trajectory_values(trajectory);
     let all_gs: Vec<f64> = [
         gates
             .at_three_quarter_nm
@@ -348,7 +375,7 @@ pub(crate) fn grade_from_gates(
     ]
     .into_iter()
     .flatten()
-    .chain(trajectory.iter().map(|d| d.gs_deviation_deg))
+    .chain(persistent_gs)
     .collect();
 
     let worst_gs_high = all_gs
@@ -373,7 +400,7 @@ pub(crate) fn grade_from_gates(
     ]
     .into_iter()
     .flatten()
-    .chain(trajectory.iter().map(|d| d.lineup_deg.abs()))
+    .chain(persistent_lu)
     .fold(0.0_f64, f64::max);
 
     // Apply the PROJECT-DERIVED grade tiers.
@@ -397,6 +424,14 @@ pub(crate) fn grade_from_gates(
         // worsening this close to touchdown cannot claim "good corrections", so it is capped at
         // (OK) instead. Trend is deliberately never used to raise a grade the amplitude rules
         // already placed below Ok — only to hold Ok back when it would otherwise be granted.
+        PassGrade::OkParentheses
+    } else if oscillating(trajectory) {
+        // A.4 (NATOPS `OC` — overcontrolled): `trend_worsening` only sees the *net* slope
+        // between the start and end of the window, so a pilot correcting back and forth
+        // (+0.5°/-0.5°/+0.5°...) can show a near-zero net slope while still exhibiting exactly
+        // the alternating, over-controlled piloting NATOPS penalizes. Counting direction
+        // reversals instead catches that shape. Same downgrade-only contract as the trend
+        // check: never raises a grade, only holds Ok back.
         PassGrade::OkParentheses
     } else {
         PassGrade::Ok
@@ -450,6 +485,109 @@ fn trend_worsening(trajectory: &[TrajectoryDeviation]) -> bool {
     let gs_slope = (last.gs_deviation_deg.abs() - first.gs_deviation_deg.abs()) / dt;
     let lu_slope = (last.lineup_deg.abs() - first.lineup_deg.abs()) / dt;
     gs_slope >= TREND_WORSENING_DEG_PER_S || lu_slope >= TREND_WORSENING_DEG_PER_S
+}
+
+/// A.1 robustness guard (see `PERSISTENCE_MIN_CONSECUTIVE_SAMPLES`): splits the continuous
+/// trajectory into its GS and (signed) lineup deviation series, and drops any sample whose
+/// exceedance of its own `*_SLIGHT` threshold is not confirmed by
+/// `PERSISTENCE_MIN_CONSECUTIVE_SAMPLES` consecutive samples in the same direction. Samples
+/// already inside tolerance are always kept (there is nothing to confirm). Returns the two
+/// filtered series ready to fold into `worst_gs_high`/`worst_gs_low`/`worst_lu` alongside the
+/// three gates.
+fn persistent_trajectory_values(trajectory: &[TrajectoryDeviation]) -> (Vec<f64>, Vec<f64>) {
+    let gs_elevated: Vec<bool> = trajectory
+        .iter()
+        .map(|d| d.gs_deviation_deg >= GS_SLIGHT_HIGH || d.gs_deviation_deg <= -GS_SLIGHT_LOW)
+        .collect();
+    let lu_elevated: Vec<bool> = trajectory
+        .iter()
+        .map(|d| d.lineup_deg.abs() >= LU_SLIGHT)
+        .collect();
+    let gs_keep = persistent_mask(&gs_elevated);
+    let lu_keep = persistent_mask(&lu_elevated);
+
+    let gs = trajectory
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !gs_elevated[*i] || gs_keep[*i])
+        .map(|(_, d)| d.gs_deviation_deg)
+        .collect();
+    let lu = trajectory
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !lu_elevated[*i] || lu_keep[*i])
+        .map(|(_, d)| d.lineup_deg.abs())
+        .collect();
+    (gs, lu)
+}
+
+/// For each run of consecutive `true` values in `elevated`, marks the whole run `true` in the
+/// result only if the run is at least `PERSISTENCE_MIN_CONSECUTIVE_SAMPLES` long; shorter runs
+/// (a lone spike) come back `false`.
+fn persistent_mask(elevated: &[bool]) -> Vec<bool> {
+    let mut keep = vec![false; elevated.len()];
+    let mut i = 0;
+    while i < elevated.len() {
+        if elevated[i] {
+            let start = i;
+            while i < elevated.len() && elevated[i] {
+                i += 1;
+            }
+            if i - start >= PERSISTENCE_MIN_CONSECUTIVE_SAMPLES {
+                keep[start..i].fill(true);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    keep
+}
+
+/// A.4 (NATOPS `OC` — overcontrolled): whether GS or (signed) lineup deviation reversed
+/// direction at least `OSCILLATION_MIN_REVERSALS` times, by at least `OSCILLATION_MIN_SWING_DEG`
+/// each time, within the final `OSCILLATION_WINDOW_S` seconds of the trajectory. Unlike
+/// `trend_worsening` (a net two-point slope), this looks at every consecutive pair in the
+/// window, so a pilot correcting back and forth around the aim point is caught even when the
+/// net slope over the window is near zero.
+fn oscillating(trajectory: &[TrajectoryDeviation]) -> bool {
+    let Some(reference_time) = trajectory.last().map(|d| d.timestamp_dcs) else {
+        return false;
+    };
+    let window: Vec<&TrajectoryDeviation> = trajectory
+        .iter()
+        .filter(|d| d.timestamp_dcs >= reference_time - OSCILLATION_WINDOW_S)
+        .collect();
+    count_reversals(window.iter().map(|d| d.gs_deviation_deg)) >= OSCILLATION_MIN_REVERSALS
+        || count_reversals(window.iter().map(|d| d.lineup_deg)) >= OSCILLATION_MIN_REVERSALS
+}
+
+/// Counts direction reversals in a signed series, ignoring any step smaller than
+/// `OSCILLATION_MIN_SWING_DEG` (telemetry/aim-point noise never counts as a leg). The reference
+/// point only advances on a significant move, so a run of sub-threshold jitter around the same
+/// spot cannot mask a real swing by repeatedly resetting the baseline.
+fn count_reversals(values: impl Iterator<Item = f64>) -> usize {
+    let mut reference: Option<f64> = None;
+    let mut last_sign: Option<f64> = None;
+    let mut reversals = 0;
+    for value in values {
+        let Some(previous) = reference else {
+            reference = Some(value);
+            continue;
+        };
+        let delta = value - previous;
+        if delta.abs() < OSCILLATION_MIN_SWING_DEG {
+            continue;
+        }
+        let sign = delta.signum();
+        if let Some(previous_sign) = last_sign {
+            if sign != previous_sign {
+                reversals += 1;
+            }
+        }
+        last_sign = Some(sign);
+        reference = Some(value);
+    }
+    reversals
 }
 
 // ---------------------------------------------------------------------------
@@ -600,6 +738,9 @@ mod tests {
             distance_m,
             gs_deviation_deg,
             lineup_deg,
+            alt_m: 0.0,
+            bank_deg: 0.0,
+            sink_rate_mps: 0.0,
         }
     }
 
@@ -616,26 +757,48 @@ mod tests {
             distance_m,
             gs_deviation_deg,
             lineup_deg,
+            alt_m: 0.0,
+            bank_deg: 0.0,
+            sink_rate_mps: 0.0,
         }
     }
 
     #[test]
     fn continuous_excursion_between_two_gates_is_not_missed() {
         // All three gates are clean (well within OK), but the trajectory records a
-        // significant 1.2° high excursion at 700 m, strictly between the 1/2-nm (926 m) and
-        // 1/4-nm (463 m) gates, which the three-gate-only computation could never see. The
-        // continuous series must still catch it and downgrade the pass, exactly as if a gate
-        // had landed on the spike.
+        // significant 1.2° high excursion spanning two consecutive samples around 700 m,
+        // strictly between the 1/2-nm (926 m) and 1/4-nm (463 m) gates, which the three-gate-only
+        // computation could never see. The continuous series must still catch it and downgrade
+        // the pass, exactly as if a gate had landed on the spike. Two samples (not one) so the
+        // A.1 persistence guard (see `continuous_single_frame_spike_is_not_a_false_positive`)
+        // confirms this is a real excursion, not an aberrant single frame.
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
-        let trajectory = [trajectory_point(700.0, 1.2, 0.0)];
+        let trajectory = [
+            trajectory_point(710.0, 1.2, 0.0),
+            trajectory_point(700.0, 1.2, 0.0),
+        ];
         assert_eq!(grade_from_gates(&g, &[]), PassGrade::Ok);
         assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::NoGrade);
     }
 
     #[test]
+    fn continuous_single_frame_spike_is_not_a_false_positive() {
+        // A.1 robustness guard (piste 6 of the notation work): the exact excursion from
+        // `continuous_excursion_between_two_gates_is_not_missed`, but recorded on a single
+        // sample only. A lone aberrant telemetry frame must not by itself cap an otherwise
+        // clean approach — see `PERSISTENCE_MIN_CONSECUTIVE_SAMPLES`.
+        let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
+        let trajectory = [trajectory_point(700.0, 1.2, 0.0)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Ok);
+    }
+
+    #[test]
     fn continuous_slight_lineup_excursion_is_not_missed() {
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
-        let trajectory = [trajectory_point(700.0, 0.0, 1.5)];
+        let trajectory = [
+            trajectory_point(710.0, 0.0, 1.5),
+            trajectory_point(700.0, 0.0, 1.5),
+        ];
         assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
     }
 
@@ -661,9 +824,14 @@ mod tests {
     #[test]
     fn low_trajectory_sample_outside_quarter_nm_is_not_cut() {
         // Same dangerously-low value, but at 700 m (outside the 1/4-nm gate distance): the
-        // Cut rule only ever applied "at the ramp", never earlier in the groove.
+        // Cut rule only ever applied "at the ramp", never earlier in the groove. Two consecutive
+        // samples so the A.1 persistence guard confirms the excursion before the general
+        // amplitude tier downgrades to NoGrade.
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let trajectory = [trajectory_point(700.0, -2.6, 0.0)];
+        let trajectory = [
+            trajectory_point(710.0, -2.6, 0.0),
+            trajectory_point(700.0, -2.6, 0.0),
+        ];
         assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::NoGrade);
     }
 
@@ -744,6 +912,50 @@ mod tests {
     }
 
     #[test]
+    fn alternating_corrections_cap_an_otherwise_ok_pass_at_ok_parentheses() {
+        // A.4 (NATOPS `OC` -- overcontrolled): the pilot corrects back and forth around the aim
+        // point (+0.4/-0.4/+0.4/-0.4 deg), each swing well inside the OK amplitude margin and
+        // the net slope across the window near zero -- `trend_worsening` alone would miss this
+        // entirely. Two direction reversals within `OSCILLATION_WINDOW_S` is enough to flag it.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 900.0, 0.4, 0.0),
+            trajectory_point_at(1.0, 800.0, -0.4, 0.0),
+            trajectory_point_at(2.0, 700.0, 0.4, 0.0),
+            trajectory_point_at(3.0, 600.0, -0.4, 0.0),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
+    }
+
+    #[test]
+    fn a_single_correction_and_return_is_not_yet_an_oscillation() {
+        // One reversal (correct, then hold) is just an ordinary correction -- already graded
+        // fairly by the amplitude tiers and `trend_worsening`. `OSCILLATION_MIN_REVERSALS`
+        // requires at least two reversals before calling it a genuine back-and-forth pattern.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 900.0, 0.1, 0.0),
+            trajectory_point_at(1.0, 800.0, 0.4, 0.0),
+            trajectory_point_at(2.0, 700.0, 0.1, 0.0),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Ok);
+    }
+
+    #[test]
+    fn small_lineup_oscillation_below_the_swing_threshold_is_noise() {
+        // Alternating but tiny (0.1 deg) swings never reach `OSCILLATION_MIN_SWING_DEG`, so they
+        // never register as a leg at all -- ordinary aim-point jitter is not overcontrol.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point_at(0.0, 900.0, 0.0, 0.1),
+            trajectory_point_at(1.0, 800.0, 0.0, -0.1),
+            trajectory_point_at(2.0, 700.0, 0.0, 0.1),
+            trajectory_point_at(3.0, 600.0, 0.0, -0.1),
+        ];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Ok);
+    }
+
+    #[test]
     fn late_window_gs_deviation_downgrades_an_otherwise_ok_grade_to_no_grade() {
         // 0.9 deg is above LATE_WINDOW_GS_DEG (0.8) but below GS_SIGNIFICANT (1.0), so amplitude
         // alone would only ever grant (OK) here. Happening at 100 m -- inside
@@ -767,9 +979,13 @@ mod tests {
         // Identical 0.9 deg GS deviation to the case above, but at 700 m -- well outside
         // LATE_WINDOW_DISTANCE_M. This is exactly the "last moments matter more" effect A.3
         // adds: the same magnitude of error is graded differently depending on how much
-        // distance is left to correct it.
+        // distance is left to correct it. Two consecutive samples to satisfy the A.1
+        // persistence guard.
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let trajectory = [trajectory_point(700.0, 0.9, 0.0)];
+        let trajectory = [
+            trajectory_point(710.0, 0.9, 0.0),
+            trajectory_point(700.0, 0.9, 0.0),
+        ];
         assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
     }
 
@@ -777,9 +993,13 @@ mod tests {
     fn late_window_below_its_own_threshold_does_not_downgrade() {
         // 0.6 deg at 100 m crosses the general GS_SLIGHT_HIGH tier ((OK)) but not the stricter
         // LATE_WINDOW_GS_DEG (0.8) -- the late-window check must not fire on every deviation
-        // found close to the ramp, only ones that cross its own, stricter threshold.
+        // found close to the ramp, only ones that cross its own, stricter threshold. Two
+        // consecutive samples to satisfy the A.1 persistence guard.
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-        let trajectory = [trajectory_point(100.0, 0.6, 0.0)];
+        let trajectory = [
+            trajectory_point(110.0, 0.6, 0.0),
+            trajectory_point(100.0, 0.6, 0.0),
+        ];
         assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
     }
 

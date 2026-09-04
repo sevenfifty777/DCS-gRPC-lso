@@ -17,8 +17,14 @@ compatible meanings. Additive fields include:
 - estimated/DCS wire, divergence and primary display provenance;
 - gate quality plus raw/corrected telemetry diagnostics;
 - `trajectory_deviations`: continuous GS/lineup series from groove entry to touchdown, additive to
-  `gate_deviations`. Its worst amplitude feeds `PassGrade` alongside the three gates; empty for a
-  pass that never entered the groove;
+  `gate_deviations`. Its worst amplitude feeds `PassGrade` alongside the three gates (subject to the
+  persistence guard against a single aberrant frame, and the overcontrol/oscillation check — see
+  `docs/GRADING_REFERENCE.md`); empty for a pass that never entered the groove. Each sample also
+  carries `alt_m`, `bank_deg` and `sink_rate_mps` — context only, never scored (see
+  `docs/GRADING_REFERENCE.md`, "Sink rate and bank");
+- `datums[].roll_deg`: raw telemetry roll, context only. Carried on `datums` (not just
+  `trajectory_deviations`) so the `cadence-ab` replay path can reconstruct `bank_deg` identically
+  from a persisted report;
 - optional `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, queried
   once per recovery. Absent when the query fails or in `--positions-only`. Never affects
   `pass_grade`/`grade_points`;

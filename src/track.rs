@@ -58,6 +58,14 @@ const GATE_HALF_NM: f64 = 926.0;
 /// ¼ nm gate — ramp / "in close"; dangerously low here triggers a Cut pass.
 pub(crate) const GATE_QUARTER_NM: f64 = 463.0;
 
+/// Altitude cap (relative to deck level, hook offset included) below which an x=0 threshold
+/// crossing is treated as a real deck crossing (bolter/touch-and-go candidate) rather than a
+/// high fly-over during a go-around. Confirmed live: a genuine waveoff crossed x=0 at ~140 m
+/// (~460 ft), well above any plausible deck contact, and was misclassified as `Bolter`. Deck
+/// heave/pitch and hook geometry can put a real touch a few feet off exact zero, so this stays
+/// tighter than the 300 ft groove-entry guard rather than reusing it.
+const DECK_CROSSING_ALT_CAP_FT: f64 = 50.0;
+
 /// Exponential moving average (EMA) smoothing factor for the carrier position.
 ///
 /// DCS updates the carrier's world position in discrete steps (~every 1.4 s at
@@ -101,6 +109,11 @@ pub struct Datum {
     pub y: f64,
     pub aoa: f64,
     pub alt: f64,
+    /// Aircraft roll/bank in degrees, copied from the raw telemetry sample. Informational only —
+    /// carried here (not just on `TrajectoryDeviation`) so the `cadence-ab` replay path can
+    /// reconstruct `TrajectoryDeviation::bank_deg` from a persisted report exactly as `Track::next`
+    /// computed it live.
+    pub roll_deg: f64,
     pub carrier_time: f64,
     pub plane_time: f64,
     pub carrier_received_unix_ms: u64,
@@ -437,6 +450,18 @@ pub struct TrajectoryDeviation {
     pub distance_m: f64,
     pub gs_deviation_deg: f64,
     pub lineup_deg: f64,
+    /// Deck-relative altitude (metres) at this sample. Additive; lets a consumer reconstruct
+    /// `sink_rate_mps` or overlay a vertical profile without needing `gs_deviation_deg` and the
+    /// ideal glidepath to back it out.
+    pub alt_m: f64,
+    /// Aircraft roll/bank in degrees, copied from the raw telemetry sample. Informational only —
+    /// a proxy for the NATOPS "attitude/wing" call, never scored. See
+    /// `docs/GRADING_REFERENCE.md`, "Continuous trajectory".
+    pub bank_deg: f64,
+    /// Rate of altitude loss (m/s, positive = descending) since the previous continuous-trajectory
+    /// sample; `0.0` for the first sample of a run. NATOPS `TMRD` proxy, informational only — see
+    /// `AGENTS.md`, "Gates, outcomes et câble" (sink rate is never notated).
+    pub sink_rate_mps: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -1201,7 +1226,11 @@ impl Track {
         // the threshold (x > 0).  When x ≤ 0 the aircraft is ahead of the touchdown point
         // (e.g., still in the break or flying the overhead pattern), and atan2 with a negative x
         // would produce a bogus ~177° deviation reading.
-        if sample.is_valid() && self.previous_x > 0.0 && x <= 0.0 {
+        if sample.is_valid()
+            && self.previous_x > 0.0
+            && x <= 0.0
+            && m_to_ft(alt) <= DECK_CROSSING_ALT_CAP_FT
+        {
             self.crossed_deck_threshold = true;
         }
 
@@ -1328,11 +1357,16 @@ impl Track {
             {
                 let ideal_alt = ideal_base_alt + x * self.plane_info.glide_slope.to_radians().tan();
                 let gs_deviation_m = alt - ideal_alt;
+                let sink_rate_mps =
+                    sink_rate_since(self.trajectory_deviations.last(), alt, plane.time);
                 self.trajectory_deviations.push(TrajectoryDeviation {
                     timestamp_dcs: plane.time,
                     distance_m: x,
                     gs_deviation_deg: gs_deviation_m.atan2(x).to_degrees(),
                     lineup_deg,
+                    alt_m: alt,
+                    bank_deg: plane.roll,
+                    sink_rate_mps,
                 });
             }
         }
@@ -1360,6 +1394,7 @@ impl Track {
                 y,
                 aoa: self.effective_aoa(plane),
                 alt: alt.max(0.0),
+                roll_deg: plane.roll,
                 carrier_time: sample.carrier_raw.time,
                 plane_time: sample.plane_raw.time,
                 carrier_received_unix_ms: sample.carrier_received_unix_ms,
@@ -1476,6 +1511,7 @@ impl Track {
                     y,
                     aoa: self.effective_aoa(plane),
                     alt: plane.alt.max(0.0),
+                    roll_deg: plane.roll,
                     carrier_time: carrier.time,
                     plane_time: plane.time,
                     carrier_received_unix_ms: 0,
@@ -2062,6 +2098,18 @@ fn mark_started_inside(x: f64, gate: f64, quality: &mut GateQuality) {
     }
 }
 
+/// Rate of altitude loss (m/s, positive = descending) between `previous` (the last recorded
+/// continuous-trajectory sample, if any) and the current `alt_m`/`time`. Shared by `Track::next`
+/// and `replay_gate_and_trajectory` so a persisted report's `sink_rate_mps` can always be
+/// reconstructed identically from either path. Returns `0.0` for the first sample of a run, or
+/// whenever time did not advance (never divides by a non-positive interval).
+fn sink_rate_since(previous: Option<&TrajectoryDeviation>, alt_m: f64, time: f64) -> f64 {
+    previous
+        .filter(|prev| time > prev.timestamp_dcs)
+        .map(|prev| (prev.alt_m - alt_m) / (time - prev.timestamp_dcs))
+        .unwrap_or(0.0)
+}
+
 fn capture_gate_from_window(
     samples: &VecDeque<ApproachSample>,
     current: &ApproachSample,
@@ -2185,7 +2233,7 @@ fn capture_gate(
 }
 
 /// One sample's worth of input for `replay_gate_and_trajectory`: an already-converted
-/// approach-frame position, matching a persisted `Datum`'s `time`/`x`/`y`/`alt`/
+/// approach-frame position, matching a persisted `Datum`'s `time`/`x`/`y`/`alt`/`roll_deg`/
 /// `telemetry_valid`/`skew_ms` fields exactly.
 pub(crate) struct ReplaySample {
     pub time: f64,
@@ -2194,6 +2242,7 @@ pub(crate) struct ReplaySample {
     pub alt: f64,
     pub valid: bool,
     pub skew_ms: f64,
+    pub roll_deg: f64,
 }
 
 /// Replay a sequence of already-converted approach-frame samples through the same gate-capture
@@ -2225,6 +2274,7 @@ pub(crate) fn replay_gate_and_trajectory(
         alt,
         valid,
         skew_ms,
+        roll_deg,
     } in samples
     {
         if x <= 0.0 {
@@ -2323,11 +2373,15 @@ pub(crate) fn replay_gate_and_trajectory(
         {
             let ideal_alt = ideal_base_alt + x * glide_slope_deg.to_radians().tan();
             let gs_deviation_m = alt - ideal_alt;
+            let sink_rate_mps = sink_rate_since(trajectory_deviations.last(), alt, time);
             trajectory_deviations.push(TrajectoryDeviation {
                 timestamp_dcs: time,
                 distance_m: x,
                 gs_deviation_deg: gs_deviation_m.atan2(x).to_degrees(),
                 lineup_deg,
+                alt_m: alt,
+                bank_deg: roll_deg,
+                sink_rate_mps,
             });
         }
 
@@ -2733,16 +2787,34 @@ mod tests {
             cable: Some(3),
             cable_estimated: Some(3),
         });
-        track.trajectory_deviations = vec![TrajectoryDeviation {
-            timestamp_dcs: 2.5,
-            distance_m: 700.0,
-            gs_deviation_deg: 1.5,
-            lineup_deg: 0.0,
-        }];
+        // Two consecutive elevated samples: satisfies the A.1 persistence guard
+        // (`PERSISTENCE_MIN_CONSECUTIVE_SAMPLES` in grading.rs) that now requires a spike to
+        // repeat on at least one neighboring sample before it counts, ruling out a single
+        // aberrant telemetry frame.
+        track.trajectory_deviations = vec![
+            TrajectoryDeviation {
+                timestamp_dcs: 2.5,
+                distance_m: 700.0,
+                gs_deviation_deg: 1.5,
+                lineup_deg: 0.0,
+                alt_m: 0.0,
+                bank_deg: 0.0,
+                sink_rate_mps: 0.0,
+            },
+            TrajectoryDeviation {
+                timestamp_dcs: 2.6,
+                distance_m: 690.0,
+                gs_deviation_deg: 1.5,
+                lineup_deg: 0.0,
+                alt_m: 0.0,
+                bank_deg: 0.0,
+                sink_rate_mps: 0.0,
+            },
+        ];
 
         let result = track.finish();
         assert_eq!(result.pass_grade, PassGrade::NoGrade);
-        assert_eq!(result.trajectory_deviations.len(), 1);
+        assert_eq!(result.trajectory_deviations.len(), 2);
     }
 
     #[test]
@@ -2796,6 +2868,67 @@ mod tests {
     }
 
     #[test]
+    fn continuous_trajectory_carries_sink_rate_and_bank_informationally() {
+        // Piste 3 (sink rate / NATOPS TMRD) and piste 5 (bank angle) of the notation work:
+        // both are surfaced on `TrajectoryDeviation` for context, never used by
+        // `compute_pass_grade` (see AGENTS.md: sink rate is never notated).
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let carrier = Transform {
+            forward: DVec3::unit_z(),
+            ..Transform::default()
+        };
+        let landing = carrier_info.approach_reference_offset(plane_info);
+        let fb = DVec3::unit_z().rotated_by(DRotor3::from_rotation_xz(
+            carrier_info.deck_angle.to_radians(),
+        ));
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+
+        let on_glideslope_bias = carrier_info.deck_altitude - plane_info.hook.y;
+        let fly = |track: &mut Track, time: f64, distance: f64, roll: f64| {
+            let mut carrier_frame = carrier.clone();
+            carrier_frame.time = time;
+            let ideal_alt =
+                distance * plane_info.glide_slope.to_radians().tan() + on_glideslope_bias;
+            let plane = Transform {
+                time,
+                position: landing - fb * distance,
+                alt: ideal_alt,
+                roll,
+                ..Transform::default()
+            };
+            track.next(&carrier_frame, &plane, Some(1.0));
+        };
+
+        fly(&mut track, 1.0, 800.0, 3.0);
+        fly(&mut track, 1.1, 700.0, -12.5);
+
+        assert_eq!(
+            track.trajectory_deviations.len(),
+            2,
+            "found: {:?}",
+            track.trajectory_deviations
+        );
+        let first = &track.trajectory_deviations[0];
+        let second = &track.trajectory_deviations[1];
+
+        // First sample of a run has nothing to compare against.
+        assert_eq!(first.sink_rate_mps, 0.0);
+        // On-glideslope descent between two closer samples: altitude must have decreased, so the
+        // sink rate is positive and matches the raw alt/time delta exactly (same formula used by
+        // both `Track::next` and `replay_gate_and_trajectory`, see `sink_rate_since`).
+        assert!(second.alt_m < first.alt_m);
+        let expected_sink_rate =
+            (first.alt_m - second.alt_m) / (second.timestamp_dcs - first.timestamp_dcs);
+        assert!((second.sink_rate_mps - expected_sink_rate).abs() < 1.0e-9);
+        assert!(second.sink_rate_mps > 0.0);
+
+        // Bank is a direct, per-sample passthrough of the raw telemetry roll.
+        assert_eq!(first.bank_deg, 3.0);
+        assert_eq!(second.bank_deg, -12.5);
+    }
+
+    #[test]
     fn mark_fresh_groove_entry_clears_stale_wire_and_trajectory_evidence() {
         // A bolter re-attempt calls this only on the false -> true transition of
         // entered_groove; its job is to make sure nothing from the discarded first attempt
@@ -2816,6 +2949,9 @@ mod tests {
             distance_m: 700.0,
             gs_deviation_deg: 5.0,
             lineup_deg: 0.0,
+            alt_m: 0.0,
+            bank_deg: 0.0,
+            sink_rate_mps: 0.0,
         });
 
         track.mark_fresh_groove_entry(12.0);
@@ -3396,6 +3532,7 @@ mod tests {
                 alt: d.alt,
                 valid: d.telemetry_valid,
                 skew_ms: d.skew_ms,
+                roll_deg: d.roll_deg,
             }),
             0.0,
             plane_info.glide_slope,
@@ -3403,6 +3540,122 @@ mod tests {
         );
         assert_eq!(replayed_gates, live.gate_deviations);
         assert_eq!(replayed_trajectory, live.trajectory_deviations);
+    }
+
+    #[test]
+    fn high_altitude_flyover_is_a_waveoff_not_a_bolter() {
+        // Regression for a confirmed live bug: a go-around that overflies the deck without
+        // touching it (crossing x=0 at ~140 m / ~460 ft, well above any plausible deck contact)
+        // was misclassified as `Bolter` because the threshold crossing ignored altitude.
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let carrier = Transform {
+            forward: DVec3::unit_z(),
+            ..Transform::default()
+        };
+        let landing = carrier_info.approach_reference_offset(plane_info);
+        let fb = DVec3::unit_z().rotated_by(DRotor3::from_rotation_xz(
+            carrier_info.deck_angle.to_radians(),
+        ));
+        let hook_offset_y = plane_info.hook.y;
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+
+        // Groove entry: descending inbound on glideslope. Carrier time is kept in step with the
+        // plane's so skew stays within the telemetry-valid window.
+        for (index, distance) in [700.0, 300.0, 100.0].into_iter().enumerate() {
+            let time = 1.0 + index as f64 * 0.2;
+            let mut carrier_frame = carrier.clone();
+            carrier_frame.time = time;
+            let altitude = distance * plane_info.glide_slope.to_radians().tan()
+                + carrier_info.deck_altitude
+                - hook_offset_y;
+            let plane = Transform {
+                time,
+                position: landing - fb * distance,
+                alt: altitude,
+                ..Transform::default()
+            };
+            assert!(track.next(&carrier_frame, &plane, None));
+        }
+
+        // Crosses x=0 (deck threshold) at ~140 m relative altitude: a high fly-over, not a touch.
+        let crossing_alt = carrier_info.deck_altitude - hook_offset_y + 140.0;
+        let mut carrier_frame = carrier.clone();
+        carrier_frame.time = 1.6;
+        let crossing = Transform {
+            time: 1.6,
+            position: landing - fb * -5.0,
+            alt: crossing_alt,
+            ..Transform::default()
+        };
+        assert!(track.next(&carrier_frame, &crossing, None));
+
+        // Continues away, past the >150 m distance-growth threshold that finalizes an outcome.
+        carrier_frame.time = 1.8;
+        let departure = Transform {
+            time: 1.8,
+            position: landing - fb * -200.0,
+            alt: crossing_alt,
+            ..Transform::default()
+        };
+        assert!(!track.next(&carrier_frame, &departure, None));
+        assert_eq!(track.finish().grading, Grading::WaveoffUnknown);
+    }
+
+    #[test]
+    fn low_altitude_deck_crossing_is_still_a_bolter() {
+        // Companion to `high_altitude_flyover_is_a_waveoff_not_a_bolter`: a real deck crossing
+        // near hook height must still be graded `Bolter`, not swept up by the altitude guard.
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let carrier = Transform {
+            forward: DVec3::unit_z(),
+            ..Transform::default()
+        };
+        let landing = carrier_info.approach_reference_offset(plane_info);
+        let fb = DVec3::unit_z().rotated_by(DRotor3::from_rotation_xz(
+            carrier_info.deck_angle.to_radians(),
+        ));
+        let hook_offset_y = plane_info.hook.y;
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+
+        for (index, distance) in [700.0, 300.0, 100.0].into_iter().enumerate() {
+            let time = 1.0 + index as f64 * 0.2;
+            let mut carrier_frame = carrier.clone();
+            carrier_frame.time = time;
+            let altitude = distance * plane_info.glide_slope.to_radians().tan()
+                + carrier_info.deck_altitude
+                - hook_offset_y;
+            let plane = Transform {
+                time,
+                position: landing - fb * distance,
+                alt: altitude,
+                ..Transform::default()
+            };
+            assert!(track.next(&carrier_frame, &plane, None));
+        }
+
+        // Crosses x=0 essentially at deck level (relative alt ~= 0).
+        let crossing_alt = carrier_info.deck_altitude - hook_offset_y;
+        let mut carrier_frame = carrier.clone();
+        carrier_frame.time = 1.6;
+        let crossing = Transform {
+            time: 1.6,
+            position: landing - fb * -5.0,
+            alt: crossing_alt,
+            ..Transform::default()
+        };
+        assert!(track.next(&carrier_frame, &crossing, None));
+
+        carrier_frame.time = 1.8;
+        let departure = Transform {
+            time: 1.8,
+            position: landing - fb * -200.0,
+            alt: crossing_alt,
+            ..Transform::default()
+        };
+        assert!(!track.next(&carrier_frame, &departure, None));
+        assert_eq!(track.finish().grading, Grading::Bolter);
     }
 
     #[test]

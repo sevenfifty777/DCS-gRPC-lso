@@ -104,6 +104,18 @@ made gradable by trajectory data alone.
 AoA is chart information only and no AoA table changes the grade. Power, sink rate, wind, weight
 and LSO calls are still not scored because no validated per-aircraft rule has been adopted.
 
+#### Persistence guard against a single aberrant frame
+
+`PROJECT-DERIVED`. The continuous trajectory samples telemetry every frame in the groove, which
+makes it more exposed than a gate crossing (already bracket/skew-validated) to a single noisy
+frame. A GS or lineup value from the continuous series only counts toward `worst_gs_high`/
+`worst_gs_low`/`worst_lu` once it crosses its own `*_SLIGHT` threshold on
+`PERSISTENCE_MIN_CONSECUTIVE_SAMPLES` (2) consecutive samples in the same direction; a lone spike
+that never repeats on an adjacent sample is dropped. This guard applies only to the general
+amplitude tiers above — never to the Cut safety check (any single sample at or inside 463 m below
+`GS_CUT_LOW_DEG` still triggers `C` immediately) or to the late-approach weighting below, both of
+which stay maximally sensitive to a single dangerous sample by design.
+
 ### Correction trend (Ok vs (OK) only)
 
 `PROJECT-DERIVED`. NATOPS 00-80T-104 section 11.4.1 distinguishes `OK` ("reasonable deviations
@@ -128,6 +140,24 @@ all once a pass is already below `Ok` — matching the same "never invent lenien
 applied to the continuous trajectory itself. Whether a deviation was corrected within the window,
 rather than only whether it grew, is not evaluated; nor is duration of a given deviation. Both would
 require more than the two-point derivative this item's design brief called for.
+
+### Overcontrol / oscillation (Ok vs (OK) only)
+
+`PROJECT-DERIVED`. The correction-trend check above only ever looks at the *net* slope between the
+start and end of its window, so a pilot correcting back and forth around the aim point
+(`+0.4°/-0.4°/+0.4°/-0.4°`, for example) can show a near-zero net slope — and therefore pass the
+trend check — while still exhibiting exactly the alternating, over-controlled piloting NATOPS
+00-80T-104 penalizes under its `OC` (overcontrolled) call.
+
+Once amplitude and trend both would already grade a pass `Ok`, the same final `OSCILLATION_WINDOW_S`
+seconds of the trajectory (reusing `TREND_WINDOW_S`'s own rationale) are scanned for direction
+reversals in the signed GS and lineup series: a step smaller than `OSCILLATION_MIN_SWING_DEG`
+(0.3 deg) is treated as noise and never counted as a leg, and the reference point only advances on a
+significant step, so a run of sub-threshold jitter cannot mask a real swing. If either series shows
+at least `OSCILLATION_MIN_REVERSALS` (2) reversals — the minimum shape (out, back, out again) that
+distinguishes a genuine oscillation from a single correction overshoot — the pass is capped at
+`(OK)` instead of `Ok`. Same asymmetric contract as the trend check: only ever holds `Ok` back,
+never raises a grade, and is never checked once a pass is already below `Ok`.
 
 ### Late-approach weighting (Ok/(OK) vs NoGrade only)
 
@@ -159,6 +189,19 @@ are absent when the query fails or in `--positions-only` (which never queries ou
 metadata). **Wind never changes `pass_grade` or `grade_points`**: the project has no validated
 doctrine for how much correction credit a given wind condition should earn, so inventing one here
 would be exactly the kind of unverified rule this module otherwise avoids.
+
+### Sink rate and bank
+
+`PROJECT-DERIVED`, context only — **never scored**. NATOPS 00-80T-104 has dedicated calls for
+excessive rate of descent (`TMRD`) and attitude/wing that this module does not reproduce, but the
+raw data to at least surface them was already being recorded. `TrajectoryDeviation` (the continuous
+groove-to-touchdown series) now additionally carries `alt_m` (deck-relative altitude at the
+sample), `sink_rate_mps` (rate of altitude loss since the previous continuous-trajectory sample,
+positive = descending, `0.0` for the first sample of a run) and `bank_deg` (raw telemetry roll).
+`Datum` (the full recorded trajectory) carries the same raw roll as `roll_deg`, so the `cadence-ab`
+replay path (see `AGENTS.md`) can reconstruct `bank_deg` identically from a persisted report. None
+of the three ever influences `pass_grade`/`grade_points` — see AGENTS.md, "Produit et périmètre
+métier": sink rate is explicitly not notated.
 
 ### AoA
 
