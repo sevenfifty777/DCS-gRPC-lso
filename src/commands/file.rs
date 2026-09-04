@@ -442,7 +442,42 @@ impl CarrierPlanePair {
                 Track::new(&self.pilot_name, self.carrier_info, self.plane_info),
             )
             .finish();
-            crate::draw::draw_chart(&out_dir, &filename, &track)?;
+            let png = crate::draw::draw_chart(&out_dir, &filename, &track)?;
+            let (wire_estimated, wire_dcs) = match track.grading {
+                crate::track::Grading::Recovered {
+                    cable,
+                    cable_estimated,
+                } => (cable_estimated, cable),
+                crate::track::Grading::TouchAndGo { cable_estimated } => (cable_estimated, None),
+                _ => (None, None),
+            };
+            let wire_label = |wire: Option<u8>| {
+                wire.map(|wire| wire.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            };
+            // One line per pass so an offline regrade can be compared with the
+            // live JSON report without opening the PNG.
+            println!(
+                "{} {} outcome={} pass_grade={} points={} hook={} arrest_evidence={} wire_dcs={} wire_estimated={} completeness={:?} png={}",
+                track.pilot_name,
+                self.plane_info.name,
+                crate::tasks::record_recovery::recovery_outcome(
+                    &track.grading,
+                    self.carrier_info.is_vstol(),
+                    track.arrest_evidence,
+                ),
+                track.pass_grade.label(),
+                track
+                    .grade_points
+                    .map(|points| points.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                track.hook_state.as_str(),
+                track.arrest_evidence,
+                wire_label(wire_dcs),
+                wire_label(wire_estimated),
+                track.telemetry_quality.completeness,
+                png.display(),
+            );
             self.is_recovery_attempt = false;
             self.landed = false;
             self.landed_at = None;

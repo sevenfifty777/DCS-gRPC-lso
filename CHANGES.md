@@ -110,6 +110,16 @@ Unreleased section lists the changes made after the `0.2.0` tag.
 
 ### Fixed
 
+- A pass whose aircraft (or carrier) disappears inside the post-touchdown window is graded from
+  the evidence already recorded instead of being discarded. The recorder used to treat every
+  `Crash`/`Dead`/`PlayerLeaveUnit`/`UnitLost` event as "nothing to grade", so a pilot who left
+  the slot right after the trap lost the pass entirely (2026-09-04 Foothold session: T-45
+  `WIRE# 2` received, player left the unit 7.5 s after `Land`, no JSON, no DB row, no Discord
+  post). The despawn is recorded in `events[]` as `despawn_after_touchdown`. Before any accepted
+  deck contact the recording is still dropped.
+- `lso file` prints one summary line per replayed pass (outcome, grade, points, hook state,
+  arrest evidence, DCS and estimated wire, completeness, PNG path) so an offline regrade can be
+  compared with the live JSON report.
 - Telemetry outages are no longer hidden: an RPC failure keeps the last sample time, so the next
   sample's gap, `max_sample_gap_ms` and health reflect the outage (campaign A reports claimed
   `health: green` with 900-1080 ms gate brackets).

@@ -248,7 +248,18 @@ pub static GRADE_DATE_FORMAT: Lazy<Vec<time::format_description::FormatItem<'_>>
         time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").unwrap()
     });
 
-fn recovery_outcome(grading: &Grading, is_vstol: bool, arrest_evidence: &str) -> String {
+/// Whether a `Crash`/`Dead`/`PlayerLeaveUnit`/`UnitLost` event for the plane
+/// or the carrier ends the recording with a graded pass (`true`) or discards it
+/// (`false`). Before any accepted deck contact there is nothing to grade. After
+/// one, the pass is graded from the evidence recorded so far: a pilot who leaves
+/// the slot inside the post-touchdown window (7.5 s after `Land` in the
+/// 2026-09-04 Foothold session, DCS `WIRE# 2` already received) must not lose
+/// the trap.
+fn finish_recording_on_despawn(touchdown_accepted: bool) -> bool {
+    touchdown_accepted
+}
+
+pub(crate) fn recovery_outcome(grading: &Grading, is_vstol: bool, arrest_evidence: &str) -> String {
     match (is_vstol, grading) {
         (_, Grading::Unknown) => "unknown".to_string(),
         (_, Grading::Bolter) => "Bolter".to_string(),
@@ -917,7 +928,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
 
                 // Any event indicating that either the carrier or plane do not exist anymore
                 (
-                    _,
+                    time,
                     Event::Crash(CrashEvent {
                         initiator:
                             Some(Initiator {
@@ -943,6 +954,21 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                             }),
                     }),
                 ) if unit.id == params.plane_id || unit.id == params.carrier_id => {
+                    if finish_recording_on_despawn(track_stopped.is_some()) {
+                        // The deck contact is already in hand (and usually the
+                        // DCS `WIRE#` too): grade with the evidence recorded so
+                        // far instead of erasing a completed pass.
+                        tracing::info!(
+                            "plane or carrier despawned after touchdown; grading the recorded evidence"
+                        );
+                        datums.record_event(
+                            "despawn_after_touchdown",
+                            time,
+                            true,
+                            "recording_finalised_early",
+                        );
+                        break;
+                    }
                     tracing::info!("stop (either carrier or plane despawned)");
                     return Ok(());
                 }
@@ -1617,9 +1643,9 @@ fn changed_precision(a: Option<f64>, b: Option<f64>, theta: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        drain_hook_samples, hook_evidence_source, may_fallback_to_legacy, recovery_id,
-        recovery_outcome, transform_from_event_unit, write_atomic_if_absent, HookObservationReport,
-        HookPoll,
+        drain_hook_samples, finish_recording_on_despawn, hook_evidence_source,
+        may_fallback_to_legacy, recovery_id, recovery_outcome, transform_from_event_unit,
+        write_atomic_if_absent, HookObservationReport, HookPoll,
     };
     use crate::data::{AirplaneInfo, CarrierInfo};
     use crate::track::{Grading, HookSampleStatus, Track};
@@ -1641,6 +1667,17 @@ mod tests {
             RecoveryTelemetryMode::Auto,
             tonic::Code::Unavailable
         ));
+    }
+
+    #[test]
+    fn despawn_discards_only_before_deck_contact() {
+        // Pilot leaves the slot (or the unit is lost) while still in the pattern
+        // or in the groove: nothing to grade.
+        assert!(!finish_recording_on_despawn(false));
+        // Same event inside the post-touchdown window: the pass is graded from
+        // the evidence already recorded (2026-09-04 T-45 trap, WIRE# 2, pilot
+        // left the unit 7.5 s after the land event).
+        assert!(finish_recording_on_despawn(true));
     }
 
     #[test]

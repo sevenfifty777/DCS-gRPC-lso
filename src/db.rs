@@ -73,6 +73,10 @@ pub struct DbPass {
 /// tests read rows; the DCS Web Dashboard queries `lso.db` directly.
 #[cfg(test)]
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "mirrors every `passes` column for the migration tests; only some are asserted"
+)]
 pub struct StoredPass {
     pub id: i64,
     pub timestamp: String,
