@@ -73,6 +73,13 @@ const GATE_QUARTER_NM: f64 = 463.0;
 const CARRIER_POS_SMOOTH_ALPHA: f64 = 0.15;
 
 const MAX_TRACK_SAMPLES: usize = 72_000;
+/// Outside the scoring-relevant window (before groove entry and beyond the
+/// ¾ nm / 500 ft envelope), only one in this many samples is kept in `datums`.
+/// The scoring zone itself is always recorded at full rate; this only trims
+/// the pattern/break portion, which the JSON report keeps solely for the
+/// pattern chart, waveoff diagnosis and telemetry-quality accounting, never
+/// for gate/grading evidence.
+const PATTERN_DATUM_STRIDE: u32 = 4;
 const MAX_EVENT_EVIDENCE: usize = 256;
 const MAX_HOOK_EVIDENCE: usize = 512;
 const GATE_BUFFER_WINDOW_S: f64 = 2.0;
@@ -222,6 +229,9 @@ pub struct Track {
     previous_sample_time: Option<f64>,
     gate_samples: VecDeque<ApproachSample>,
     datums: Vec<Datum>,
+    /// Counts samples recorded outside the scoring-relevant window, used to
+    /// subsample `datums` there (see `PATTERN_DATUM_STRIDE`).
+    pattern_datum_counter: u32,
     pattern_datums: Vec<PatternDatum>,
     gate_deviations: GateDeviations,
     /// Set to `true` once the aircraft enters inside 3/4 nm and below 300 ft AGL.
@@ -654,6 +664,7 @@ impl Track {
             previous_sample_time: None,
             gate_samples: VecDeque::new(),
             datums: Default::default(),
+            pattern_datum_counter: 0,
             pattern_datums: Default::default(),
             gate_deviations: GateDeviations::default(),
             entered_groove: false,
@@ -1149,7 +1160,22 @@ impl Track {
             }
         }
 
-        if self.datums.len() < MAX_TRACK_SAMPLES {
+        // Subsample only the non-scoring pattern portion. The skip below is a
+        // deliberate report-size reduction, not data loss, so it must never
+        // touch the dropped/BufferLimit counters that describe real capacity
+        // loss (those still fire below if the scoring-relevant window itself
+        // ever exceeds MAX_TRACK_SAMPLES).
+        let record_this_datum = if scoring_relevant {
+            true
+        } else {
+            let keep = self
+                .pattern_datum_counter
+                .is_multiple_of(PATTERN_DATUM_STRIDE);
+            self.pattern_datum_counter = self.pattern_datum_counter.wrapping_add(1);
+            keep
+        };
+
+        if record_this_datum && self.datums.len() < MAX_TRACK_SAMPLES {
             self.datums.push(Datum {
                 time: plane.time,
                 corrected_time_dcs: plane.time.max(carrier.time),
@@ -1169,7 +1195,7 @@ impl Track {
                 corrected_carrier_position: vec3_array(sample.carrier.position),
                 filtered_carrier_position: vec3_array(smoothed_pos),
             });
-        } else {
+        } else if record_this_datum {
             self.telemetry_quality.dropped_samples += 1;
             self.telemetry_quality.dropped_position_samples += 1;
             self.telemetry_quality

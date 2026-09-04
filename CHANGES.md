@@ -87,6 +87,9 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Changed
 
+- Full-pattern JSON `datums` are now subsampled to one in four outside the scoring-relevant window
+  (before groove entry and beyond ¾ nm / 500 ft); the scoring zone itself, gate evidence and
+  grading are unaffected, only the pattern/break portion of the report shrinks.
 - DCS-gRPC client stubs are aligned with the sibling `0.10.0` server checkout while its commit is
   unpublished; release packaging must replace the local path with a reviewed immutable remote pin.
 - The former automatic wire-3/groove-time `_OK_` rule is disabled. `_OK_` is reserved for an
