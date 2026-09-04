@@ -52,7 +52,7 @@ use crate::utils::{m_to_ft, m_to_nm};
 // ---------------------------------------------------------------------------
 
 /// ¾ nm gate — first LSO grading sample (1 nm = 1 852 m → ¾ nm ≈ 1 389 m).
-const GATE_THREE_QUARTER_NM: f64 = 1389.0;
+pub(crate) const GATE_THREE_QUARTER_NM: f64 = 1389.0;
 /// ½ nm gate — primary grading reference.
 const GATE_HALF_NM: f64 = 926.0;
 /// ¼ nm gate — ramp / "in close"; dangerously low here triggers a Cut pass.
@@ -2084,6 +2084,159 @@ fn capture_gate(
     quality.bracket_gap_ms = Some(bracket_gap_ms);
 }
 
+/// One sample's worth of input for `replay_gate_and_trajectory`: an already-converted
+/// approach-frame position, matching a persisted `Datum`'s `time`/`x`/`y`/`alt`/
+/// `telemetry_valid`/`skew_ms` fields exactly.
+pub(crate) struct ReplaySample {
+    pub time: f64,
+    pub x: f64,
+    pub y: f64,
+    pub alt: f64,
+    pub valid: bool,
+    pub skew_ms: f64,
+}
+
+/// Replay a sequence of already-converted approach-frame samples through the same gate-capture
+/// and continuous-trajectory logic `Track::next` applies live, without needing full DCS
+/// Transform pairs or a live `Track`. Used by the `cadence-ab` diagnostic command to test an
+/// artificially reduced sampling cadence against a corpus of already-recorded runs (JSON
+/// `datums`) — see B.2 of the notation/cadence work plan.
+///
+/// This mirrors the gate/groove/trajectory section of `Track::next` line for line (as of this
+/// writing); keep the two in sync if that section changes. It intentionally does not replay
+/// telemetry-quality bookkeeping, wire estimation or touchdown detection — the diagnostic only
+/// ever needs gate/trajectory geometry, not a full recovery outcome.
+pub(crate) fn replay_gate_and_trajectory(
+    samples: impl IntoIterator<Item = ReplaySample>,
+    ideal_base_alt: f64,
+    glide_slope_deg: f64,
+    carrier_is_vstol: bool,
+) -> (GateDeviations, Vec<TrajectoryDeviation>) {
+    let mut gate_deviations = GateDeviations::default();
+    let mut trajectory_deviations = Vec::new();
+    let mut gate_samples: VecDeque<ApproachSample> = VecDeque::new();
+    let mut previous_x = f64::MAX;
+    let mut entered_groove = false;
+
+    for ReplaySample {
+        time,
+        x,
+        y,
+        alt,
+        valid,
+        skew_ms,
+    } in samples
+    {
+        if x <= 0.0 {
+            previous_x = x;
+            continue;
+        }
+
+        if x > GATE_THREE_QUARTER_NM {
+            gate_deviations.at_three_quarter_nm = None;
+            gate_deviations.three_quarter_quality = GateQuality::default();
+            entered_groove = false;
+        }
+        if x > GATE_HALF_NM {
+            gate_deviations.at_half_nm = None;
+            gate_deviations.half_quality = GateQuality::default();
+        }
+        if x > GATE_QUARTER_NM {
+            gate_deviations.at_quarter_nm = None;
+            gate_deviations.quarter_quality = GateQuality::default();
+        }
+
+        let is_inbound = x < previous_x;
+        let lineup_deg = y.atan2(x).to_degrees();
+        let in_approach = m_to_ft(alt) <= 500.0;
+        let gate_lined_up = !carrier_is_vstol || lineup_deg.abs() <= 10.0;
+        let current = ApproachSample {
+            time,
+            x,
+            y,
+            alt,
+            valid: valid && is_inbound,
+            in_approach,
+            lined_up: gate_lined_up,
+            skew_ms,
+        };
+
+        if gate_samples.is_empty() {
+            mark_started_inside(
+                x,
+                GATE_THREE_QUARTER_NM,
+                &mut gate_deviations.three_quarter_quality,
+            );
+            mark_started_inside(x, GATE_HALF_NM, &mut gate_deviations.half_quality);
+            mark_started_inside(x, GATE_QUARTER_NM, &mut gate_deviations.quarter_quality);
+        } else {
+            capture_gate_from_window(
+                &gate_samples,
+                &current,
+                GATE_THREE_QUARTER_NM,
+                ideal_base_alt,
+                glide_slope_deg,
+                &mut gate_deviations.at_three_quarter_nm,
+                &mut gate_deviations.three_quarter_quality,
+            );
+            capture_gate_from_window(
+                &gate_samples,
+                &current,
+                GATE_HALF_NM,
+                ideal_base_alt,
+                glide_slope_deg,
+                &mut gate_deviations.at_half_nm,
+                &mut gate_deviations.half_quality,
+            );
+            capture_gate_from_window(
+                &gate_samples,
+                &current,
+                GATE_QUARTER_NM,
+                ideal_base_alt,
+                glide_slope_deg,
+                &mut gate_deviations.at_quarter_nm,
+                &mut gate_deviations.quarter_quality,
+            );
+        }
+
+        gate_samples.push_back(current);
+        while gate_samples
+            .front()
+            .is_some_and(|s| time - s.time > GATE_BUFFER_WINDOW_S)
+        {
+            gate_samples.pop_front();
+        }
+
+        if x <= GATE_THREE_QUARTER_NM && m_to_ft(alt) <= 300.0 && lineup_deg.abs() <= 10.0 {
+            if !entered_groove {
+                trajectory_deviations.clear();
+            }
+            entered_groove = true;
+        }
+
+        if entered_groove
+            && valid
+            && is_inbound
+            && in_approach
+            && gate_lined_up
+            && trajectory_deviations.len() < MAX_TRAJECTORY_SAMPLES
+        {
+            let ideal_alt = ideal_base_alt + x * glide_slope_deg.to_radians().tan();
+            let gs_deviation_m = alt - ideal_alt;
+            trajectory_deviations.push(TrajectoryDeviation {
+                timestamp_dcs: time,
+                distance_m: x,
+                gs_deviation_deg: gs_deviation_m.atan2(x).to_degrees(),
+                lineup_deg,
+            });
+        }
+
+        previous_x = x;
+    }
+
+    (gate_deviations, trajectory_deviations)
+}
+
 fn parse_dcs_wire(comment: &str) -> Option<u8> {
     let (_, suffix) = comment.split_once("WIRE#")?;
     let suffix = suffix.trim_start();
@@ -3005,6 +3158,27 @@ mod tests {
             assert!((replay.y - live.y).abs() < 1.0e-9);
             assert!((replay.alt - live.alt).abs() < 1.0e-9);
         }
+
+        // The cadence-ab diagnostic command (B.2) rebuilds gate/trajectory geometry from a
+        // persisted run's `datums` using `replay_gate_and_trajectory` instead of a live `Track`.
+        // It must reproduce the exact same gate_deviations/trajectory_deviations Track::next
+        // itself produced for those datums, or a "no cadence change" run would show a false
+        // diff before any artificial subsampling is even applied.
+        let (replayed_gates, replayed_trajectory) = replay_gate_and_trajectory(
+            live.datums.iter().map(|d| ReplaySample {
+                time: d.time,
+                x: d.x,
+                y: d.y,
+                alt: d.alt,
+                valid: d.telemetry_valid,
+                skew_ms: d.skew_ms,
+            }),
+            0.0,
+            plane_info.glide_slope,
+            carrier_info.is_vstol(),
+        );
+        assert_eq!(replayed_gates, live.gate_deviations);
+        assert_eq!(replayed_trajectory, live.trajectory_deviations);
     }
 
     #[test]

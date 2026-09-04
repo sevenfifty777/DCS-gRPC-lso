@@ -26,6 +26,12 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 - `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, in the JSON
   report for every recovery (previously queried only for the Discord embed, and not persisted).
   Never affects `pass_grade`/`grade_points`; absent in `--positions-only`.
+- `lso.exe cadence-ab`: an offline diagnostic that replays already-recorded JSON reports'
+  `datums` with an artificially reduced pre-groove sampling cadence and compares the resulting
+  gates/trajectory/grade to the full cadence actually recorded, over a file or a directory
+  searched recursively. Purely a measurement tool for the still-open adaptive-cadence question
+  (B.2 of the notation/cadence work); it never changes live recording, the fork, or the input
+  files.
 - Source-buffered `RecoveryTelemetry` acquisition with idempotent start/read/stop lifecycle,
   exclusive sequence cursors, full-batch processing, epoch/identity validation, explicit
   retention/capacity loss and invalid-unit diagnostics, plus unary rollback through

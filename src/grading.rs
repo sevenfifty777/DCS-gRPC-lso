@@ -310,7 +310,14 @@ fn grade_single_gate(gate: &crate::track::GateDatum, quarter_nm: bool) -> PassGr
 /// `TrajectoryDeviation`); passing `&[]` reproduces the historical
 /// three-gates-only behaviour exactly (all folds below start from the same
 /// gate-only values and an empty slice contributes nothing).
-fn grade_from_gates(gates: &GateDeviations, trajectory: &[TrajectoryDeviation]) -> PassGrade {
+///
+/// `pub(crate)` (rather than only reachable through `compute_pass_grade`) so the `cadence-ab`
+/// diagnostic command (B.2 of the notation/cadence work) can grade a replayed gate/trajectory
+/// pair directly, without needing to fabricate a `Grading` outcome the replay never computes.
+pub(crate) fn grade_from_gates(
+    gates: &GateDeviations,
+    trajectory: &[TrajectoryDeviation],
+) -> PassGrade {
     // Dangerously low at the 1/4-nm gate → Cut pass. GS_CUT_LOW_DEG is negative, so this
     // triggers when the hook is well below the ideal glide path at close range. Also checked
     // at every continuous sample inside the 1/4-nm gate distance, not only at the exact gate

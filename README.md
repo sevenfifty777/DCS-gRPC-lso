@@ -87,6 +87,10 @@ Common examples:
 
 # Regenerate an approach PNG from an LSO-created ACMI file
 .\lso.exe file C:\LSO\recordings\LSO-20260825-031018-Pilot.zip.acmi
+
+# Offline diagnostic: test an artificially reduced pre-groove sampling cadence against
+# already-recorded JSON reports (a file or a directory searched recursively)
+.\lso.exe cadence-ab C:\LSO\recordings --stride 2 --stride 4
 ```
 
 Use `lso.exe --help` and `lso.exe run --help` for the complete generated CLI reference.
