@@ -126,6 +126,13 @@ impl RecoveryDb {
     /// Open (or create) the LSO database at `path` and apply the schema migration.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // Write-ahead logging lets an external read-only consumer (the DCS Web
+        // Dashboard LSO page reading this file directly) query the board while
+        // a pass is being inserted, without either side waiting on the other's
+        // lock. `busy_timeout` covers the brief checkpoint windows where WAL
+        // still serialises access. Both pragmas are no-ops for `:memory:`.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", 2000)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS passes (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -437,6 +444,40 @@ mod tests {
         assert_eq!(passes[0].intended_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].actual_nearest_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].distance_to_intended_spot_m, Some(1.25));
+    }
+
+    #[test]
+    fn database_uses_write_ahead_logging_for_external_readers() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dcs-grpc-lso-wal-{}-{unique}.db",
+            std::process::id()
+        ));
+
+        let db = RecoveryDb::open(&path).expect("open database");
+        {
+            let conn = db.conn.lock().expect("db mutex poisoned");
+            let mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("read journal_mode");
+            assert_eq!(mode.to_lowercase(), "wal");
+            let timeout: i64 = conn
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .expect("read busy_timeout");
+            assert_eq!(timeout, 2000);
+        }
+        // The schema migration already wrote to the file, so the WAL sidecars
+        // an external reader relies on must exist while we hold the connection.
+        assert!(path.with_extension("db-wal").exists());
+        assert!(path.with_extension("db-shm").exists());
+
+        drop(db);
+        for extension in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(extension));
+        }
     }
 
     #[test]

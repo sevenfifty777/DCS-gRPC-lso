@@ -7,6 +7,10 @@ Unreleased section lists the changes made after the `0.2.0` tag.
 
 ### Added
 
+- `lso.db` is opened with `PRAGMA journal_mode=WAL` and a 2 s `busy_timeout`, so an external
+  read-only consumer (the DCS Web Dashboard LSO page, which reads the file directly) can query the
+  board while a pass is being inserted without blocking the writer. SQLite keeps `lso.db-wal` and
+  `lso.db-shm` next to the database while LSO runs.
 - Commanded hook state for every validated module (F/A-18C and T-45 argument `25`, all F-14
   variants argument `1305`), latched from the stable pre-contact baseline so the arrestment
   excursion of the animated hook cannot flip it. Hook-up deck contacts on the F-14 and T-45 are now
