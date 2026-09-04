@@ -37,13 +37,12 @@ Useful options:
 | `--hook-sampling-hz` | legacy acquisition only: independent hook draw-argument sampler rate, default 4, range 2-4 |
 | `--hook-timeout-ms` | legacy acquisition only: timeout for one hook draw-argument RPC, default 300 ms, range 250-300 ms |
 | `--legacy-inline-hook-sampling` | legacy acquisition only: A/B diagnostic that restores the old blocking hook read on every position tick |
-| `--web-port` | private dashboard on `127.0.0.1:<port>` |
-| `--web-expose-ucid` | Include pilot UCIDs in `/api/passes` (stripped by default). |
 | `--ownship-hook-diagnostics` | Opt-in `HookService.GetOwnshipHookState` sampling; only meaningful on a client DCS instance with a local cockpit, always unavailable on a dedicated server. |
 | `--discord-webhook` | optional secondary publication |
 
-The dashboard has no OAuth2/TLS in phase 1 and cannot be opened remotely because it binds loopback.
-Do not add a public bind as an operational workaround.
+The greenie board is the LSO page of the DCS Web Dashboard: set the dashboard's `LSO_DIR` to
+`--out-dir`. LSO opens no listening port of its own; the 0.3 `--web-port` and `--web-expose-ucid`
+flags are refused since 0.4.0.
 
 ## Supported matrix
 

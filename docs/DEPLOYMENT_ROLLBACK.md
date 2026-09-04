@@ -48,7 +48,7 @@ Do not restart or reconfigure DCS/DCS-gRPC for this module-only release.
 3. If compatibility testing required it, move the failed-run database aside and restore the
    pre-change backup; never overwrite it without retaining the failed copy for diagnosis.
 4. Start the previous LSO binary.
-5. Confirm gRPC connection, session ID, output directory and loopback dashboard.
+5. Confirm gRPC connection, session ID and output directory.
 6. Record UTC times, binary hashes and reason.
 
 Rollback success means the previous process records locally again. Discord and PNG failures are

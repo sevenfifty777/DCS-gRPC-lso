@@ -69,8 +69,10 @@ pub struct DbPass {
     pub hook_state: String,
 }
 
-/// Pass record as returned from a database query (JSON-serialisable for the web API).
-#[derive(Debug, serde::Serialize)]
+/// Pass record as read back from the database. Since 0.4.0 only the migration
+/// tests read rows; the DCS Web Dashboard queries `lso.db` directly.
+#[cfg(test)]
+#[derive(Debug)]
 pub struct StoredPass {
     pub id: i64,
     pub timestamp: String,
@@ -282,7 +284,9 @@ impl RecoveryDb {
         Ok(inserted == 1)
     }
 
-    /// Return all passes ordered newest-first.
+    /// Return all passes ordered newest-first (test-only since the web board
+    /// moved to the DCS Web Dashboard).
+    #[cfg(test)]
     pub fn all_passes(&self) -> rusqlite::Result<Vec<StoredPass>> {
         let conn = crate::utils::lock_unpoisoned(&self.conn);
         let mut stmt = conn.prepare(
@@ -349,15 +353,6 @@ impl RecoveryDb {
             })
         })?;
         rows.collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_query_failure_for_test(&self) {
-        self.conn
-            .lock()
-            .expect("db mutex poisoned")
-            .execute_batch("DROP TABLE passes;")
-            .expect("invalidate test database");
     }
 }
 

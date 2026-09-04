@@ -23,7 +23,9 @@ or through Discord.
   300 ms timeout. Stale or unknown hook data is never reused as certainty.
 - Separate outcome, grade, points, cause, confidence, completeness, rule version and wire provenance.
 - JSON reports, optional compressed Tacview ACMI recordings, and persistent SQLite history.
-- Optional Discord reports, terminal session summary, and HTTP greenie board.
+- Optional Discord reports, terminal session summary, and a greenie board served by the
+  [DCS Web Dashboard](https://github.com/sevenfifty777/DCS-Web-Dashboard), which reads `lso.db`
+  directly.
 - Offline regeneration of the approach chart from ACMI files created by LSO.
 
 The pass grade is a `PROJECT-DERIVED` training score, never an official USN/USMC certification. It
@@ -59,9 +61,6 @@ exponential backoff. Use `--uri` when DCS-gRPC is on another host or port.
 Common examples:
 
 ```powershell
-# Include the persistent web board at http://localhost:8080
-.\lso.exe run -o C:\LSO\recordings --web-port 8080
-
 # Save charts and JSON, but not ACMI
 .\lso.exe run -o C:\LSO\recordings --no-acmi
 
@@ -76,9 +75,8 @@ Common examples:
 .\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode atomic --recovery-snapshot-timeout-ms 250
 .\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode legacy
 
-# Opt-in diagnostics and private data
+# Opt-in diagnostics
 .\lso.exe run -o C:\LSO\recordings --ownship-hook-diagnostics   # client DCS with a local cockpit only
-.\lso.exe run -o C:\LSO\recordings --web-port 8080 --web-expose-ucid
 
 # Enable debug or trace logging; global flags go before the subcommand
 .\lso.exe -v run -o C:\LSO\recordings
@@ -127,10 +125,16 @@ SQLite, Discord, or the pattern chart.
 
 Unsupported types are ignored. `Stennis` is DCS's type name for CVN-74.
 
-## Web and Discord
+## Greenie board and Discord
 
-`--web-port <PORT>` serves `/` and `/api/passes` on `127.0.0.1` and refreshes the browser board every
-10 seconds. Phase 1 intentionally has no remote bind, OAuth2 or TLS.
+The greenie board is the **LSO** page of the
+[DCS Web Dashboard](https://github.com/sevenfifty777/DCS-Web-Dashboard). Point the dashboard's
+`LSO_DIR` at this `--out-dir`: it opens `lso.db` read-only (WAL journaling lets both processes use
+the file at the same time), serves the trap-sheet PNGs, groups passes by pilot, and never exposes
+UCIDs. LSO itself opens no listening port.
+
+LSO 0.3 served a loopback board with `--web-port`; that server and `--web-expose-ucid` were removed
+in 0.4.0, and `lso run` refuses both flags with a message pointing here.
 
 Discord delivery is enabled with `--discord-webhook`. Keep webhook URLs out of source control,
 screenshots, logs, and shared command transcripts. `--discord-users` accepts a JSON map from DCS

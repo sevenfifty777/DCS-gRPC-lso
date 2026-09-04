@@ -15,7 +15,6 @@ mod tests;
 mod track;
 mod transform;
 mod utils;
-mod web;
 
 use clap::{ArgAction, Parser};
 use tracing_subscriber::layer::SubscriberExt;

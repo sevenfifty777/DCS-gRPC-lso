@@ -1,10 +1,9 @@
 [package]
 name = "lso"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 
 [dependencies]
-axum = "0.7"
 backoff = { version = "0.4", features = ["tokio"] }
 clap = { version = "4.0", features = ["derive"] }
 futures-util = "0.3"

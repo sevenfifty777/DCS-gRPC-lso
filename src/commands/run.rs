@@ -85,19 +85,35 @@ pub struct Opts {
     #[clap(long)]
     ownship_hook_diagnostics: bool,
 
-    /// Port to serve the web greenie board on (e.g. 8080). Disabled if not specified.
-    #[clap(long)]
+    /// Removed in 0.4.0: the greenie board is now the LSO page of the DCS Web
+    /// Dashboard, which reads `<out-dir>/lso.db` directly. The flag stays
+    /// hidden for one release so an old service definition fails with a clear
+    /// message instead of clap's "unexpected argument".
+    #[clap(long, hide = true)]
     web_port: Option<u16>,
 
-    /// Include pilot UCIDs in the loopback `/api/passes` JSON.
-    #[clap(long)]
+    /// Removed in 0.4.0 together with the web server.
+    #[clap(long, hide = true)]
     web_expose_ucid: bool,
+}
+
+/// The loopback web board was removed in 0.4.0. Refuse its flags loudly rather
+/// than silently running without the board the operator expected.
+fn reject_removed_web_flags(opts: &Opts) -> Result<(), crate::error::Error> {
+    if opts.web_port.is_some() || opts.web_expose_ucid {
+        return Err(crate::error::Error::RemovedOption(
+            "--web-port and --web-expose-ucid were removed in LSO 0.4.0: the greenie board is now \
+             the LSO page of the DCS Web Dashboard (set its LSO_DIR to this --out-dir)",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn execute(
     opts: Opts,
     shutdown_handle: ShutdownHandle,
 ) -> Result<(), crate::error::Error> {
+    reject_removed_web_flags(&opts)?;
     if opts.discord_webhook.is_some() {
         tracing::info!("Discord integration enabled.");
     }
@@ -122,23 +138,6 @@ pub async fn execute(
             crate::metrics::RUNTIME_METRICS.log_snapshot(metrics_started.elapsed().as_secs_f64());
         }
     });
-
-    // Optionally start the web greenie board dashboard. It is restarted with a
-    // bounded delay after an OS-level failure instead of silently dying.
-    if let Some(port) = opts.web_port {
-        let db = db.clone();
-        let expose_ucid = opts.web_expose_ucid;
-        tokio::spawn(async move {
-            let mut delay = Duration::from_secs(5);
-            loop {
-                if let Err(err) = crate::web::serve(db.clone(), port, expose_ucid).await {
-                    tracing::error!(%err, retry_in = ?delay, "web dashboard server error");
-                }
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(Duration::from_secs(60));
-            }
-        });
-    }
 
     loop {
         let backoff = ExponentialBackoff {
@@ -770,7 +769,20 @@ mod tests {
         assert_eq!(opts.recovery_telemetry_mode, RecoveryTelemetryMode::Auto);
         assert_eq!(opts.recovery_snapshot_timeout_ms, 250);
         assert!(!opts.ownship_hook_diagnostics);
-        assert!(!opts.web_expose_ucid);
+    }
+
+    #[test]
+    fn removed_web_flags_are_refused_with_guidance() {
+        let opts = Opts::try_parse_from(["lso-run", "--web-port", "8080"])
+            .expect("the hidden flag still parses so the refusal can explain itself");
+        let err = reject_removed_web_flags(&opts).expect_err("removed flag must be refused");
+        assert!(err.to_string().contains("DCS Web Dashboard"), "{err}");
+
+        let opts = Opts::try_parse_from(["lso-run", "--web-expose-ucid"]).expect("parses");
+        assert!(reject_removed_web_flags(&opts).is_err());
+
+        let opts = Opts::try_parse_from(["lso-run"]).expect("parses");
+        assert!(reject_removed_web_flags(&opts).is_ok());
     }
 
     #[test]

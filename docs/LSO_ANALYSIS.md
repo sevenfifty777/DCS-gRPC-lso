@@ -11,7 +11,7 @@ DCS-gRPC fork 0.9.1+ (RecoveryService.GetRecoverySnapshot, HookService.GetOwnshi
   -> time alignment and bounded Track state
   -> gates, evidence, outcome, completeness and project score
   -> idempotent SQLite + atomic local artifacts
-  -> blocking-worker PNG + optional Discord + loopback dashboard
+  -> blocking-worker PNG + optional Discord (the DCS Web Dashboard reads lso.db directly)
 ```
 
 | Module | Responsibility |
@@ -24,7 +24,6 @@ DCS-gRPC fork 0.9.1+ (RecoveryService.GetRecoverySnapshot, HookService.GetOwnshi
 | `grading.rs` | project score and experimental V/STOL model |
 | `db.rs` | additive migrations and idempotent private persistence |
 | `metrics.rs` | RPC/stream/queue/IO/render instrumentation |
-| `web.rs` | loopback-only private dashboard |
 
 Detailed current contracts:
 

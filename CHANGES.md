@@ -1,9 +1,18 @@
 # LSO Changelog
 
-This file records user-visible changes. The crate version is `0.3.0` (`Cargo.toml`); the
+This file records user-visible changes. The crate version is `0.4.0` (`Cargo.toml`); the
 Unreleased section lists the changes made after the `0.2.0` tag.
 
 ## Unreleased
+
+### Removed
+
+- The loopback HTTP greenie board (`--web-port`, `/`, `/api/passes`) and `--web-expose-ucid`. The
+  board is now the LSO page of the DCS Web Dashboard, which reads `<out-dir>/lso.db` directly,
+  serves the trap-sheet PNGs, groups passes by pilot and never exposes UCIDs. `lso run` refuses
+  the removed flags with a message pointing there, so an old service definition fails loudly
+  instead of silently running without a board. `axum` is no longer a direct dependency (it
+  remains in the tree only through `tonic`).
 
 ### Added
 
@@ -31,8 +40,7 @@ Unreleased section lists the changes made after the `0.2.0` tag.
   (`lso file`, test fixtures) that reproduces the hook classifier and wire estimator. Fourteen live
   T-45/F-14B(U) recordings are regression fixtures under `tests/recordings/live_2026-09/`.
 - `--ownship-hook-diagnostics` (opt-in `GetOwnshipHookState` sampling, off by default because it is
-  always unavailable on a dedicated server) and `--web-expose-ucid` (UCIDs are stripped from
-  `/api/passes` unless set).
+  always unavailable on a dedicated server).
 - JSON schema 8 (`hook_state`, `arrest_evidence`, `arrest_kinematics`, `dcs_lso`,
   `hook_observation.baseline_*`, `raw_carrier_velocity`) and SQLite migration 6 (`arrest_evidence`,
   `hook_state`).

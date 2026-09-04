@@ -49,8 +49,10 @@ deterministic recovery ID contains only session/generation/unit IDs and DCS time
 
 ## SQLite
 
-`lso.db` is private dynamic state. `/api/passes` strips `pilot_ucid` unless the operator starts LSO
-with `--web-expose-ucid`; the dashboard is a loopback-only private endpoint in phase 1.
+`lso.db` is private dynamic state. Its only external reader is the DCS Web Dashboard, which opens
+the file read-only (the database uses WAL journaling so reads never block inserts), tolerates
+columns it does not know, uses `pilot_ucid` solely to group passes by pilot, and never serialises
+it. LSO 0.4.0 no longer serves the database over HTTP.
 
 Migrations are additive and recorded in `schema_migrations`:
 
