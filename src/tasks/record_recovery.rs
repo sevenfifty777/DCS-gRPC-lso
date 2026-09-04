@@ -127,9 +127,11 @@ struct ReportCauses<'a> {
 
 // v2: CATOBAR amplitude now also considers the continuous groove-to-touchdown trajectory
 // (`trajectory_deviations`), not only the three point-in-time gates.
-// v3: a worsening correction trend in the final seconds can cap an otherwise-Ok pass at (OK) —
-// see docs/GRADING_REFERENCE.md, "Continuous trajectory" and "Correction trend".
-const GRADING_VERSION: &str = "project-derived-v3";
+// v3: a worsening correction trend in the final seconds can cap an otherwise-Ok pass at (OK).
+// v4: a moderate deviation inside the last 150 m before the ramp can cap an otherwise-Ok/(OK)
+// pass at NoGrade — see docs/GRADING_REFERENCE.md, "Continuous trajectory", "Correction trend"
+// and "Late-approach weighting".
+const GRADING_VERSION: &str = "project-derived-v4";
 const GRADING_SOURCE: &str = "PROJECT-DERIVED";
 #[derive(Debug)]
 struct HookPoll {

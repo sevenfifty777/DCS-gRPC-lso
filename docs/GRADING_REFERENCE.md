@@ -47,7 +47,7 @@ already reading `cause`/`causes`, not the display grade.
 
 ## Gates
 
-`PROJECT-DERIVED`, `project-derived-v3`:
+`PROJECT-DERIVED`, `project-derived-v4`:
 
 | Gate | Distance | Acceptance |
 |---|---:|---|
@@ -128,6 +128,27 @@ all once a pass is already below `Ok` — matching the same "never invent lenien
 applied to the continuous trajectory itself. Whether a deviation was corrected within the window,
 rather than only whether it grew, is not evaluated; nor is duration of a given deviation. Both would
 require more than the two-point derivative this item's design brief called for.
+
+### Late-approach weighting (Ok/(OK) vs NoGrade only)
+
+`PROJECT-DERIVED`. The same magnitude of GS/lineup error is more dangerous the closer it happens to
+the ramp, because there is less distance left to correct it before touchdown — the rationale the
+project's own design discussion gives for weighting the final moments of the approach more heavily.
+
+Rather than reweighting `worst_gs_high`/`worst_gs_low`/`worst_lu` above (which would also rescale
+the three named gates, whose `distance_m` values are exact, and complicate every existing
+threshold), this is implemented as a separate, narrower, downgrade-only check: if any continuous
+trajectory sample at or inside `LATE_WINDOW_DISTANCE_M` (150 m — deliberately narrower than the
+463 m quarter-NM Cut gate, so this only ever tightens the very end of the approach the Cut rule
+already treats specially) crosses `LATE_WINDOW_GS_DEG` (0.8 deg) or `LATE_WINDOW_LU_DEG` (1.5 deg) —
+values deliberately set between the general `*_SLIGHT` and `*_SIGNIFICANT` thresholds — a pass that
+amplitude and trend would otherwise grade `Ok` or `(OK)` is capped at `--` instead. It never raises a
+grade, never affects an already-`NoGrade`-or-`Cut` result, and never touches Cut itself, which
+already returns before this check runs.
+
+Two passes with the *identical* deviation amplitude are therefore not necessarily graded the same:
+one earns `(OK)` if it happened at 700 m with room left to correct, the other is capped at `--` if
+the same reading happened inside the last 150 m before the ramp.
 
 ### Wind
 

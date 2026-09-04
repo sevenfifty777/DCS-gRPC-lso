@@ -34,6 +34,21 @@ const TREND_WINDOW_S: f64 = 4.0;
 /// "worsening" numerically.
 const TREND_WORSENING_DEG_PER_S: f64 = 0.075;
 
+/// How close to touchdown (metres) a deviation counts as "the last moments before the ramp",
+/// where the same magnitude of error carries more risk because there is no distance left to
+/// correct it. PROJECT-DERIVED: deliberately narrower than the 463 m quarter-NM Cut gate, so
+/// this only ever tightens the very end of the approach the Cut rule already treats specially,
+/// never the whole final segment. At a typical ~70-75 m/s approach speed this is roughly the
+/// last 2 seconds.
+const LATE_WINDOW_DISTANCE_M: f64 = 150.0;
+/// PROJECT-DERIVED thresholds for the late-window check, deliberately set between
+/// `*_SLIGHT`/`*_SIGNIFICANT`: a deviation in this range would only ever earn `(OK)` if it
+/// happened earlier in the approach, but this close to the ramp there is no time left to
+/// correct it, so it is treated as if it had crossed the stricter NoGrade threshold. Not NAVAIR
+/// values — no published doctrine quantifies this numerically.
+const LATE_WINDOW_GS_DEG: f64 = 0.8;
+const LATE_WINDOW_LU_DEG: f64 = 1.5;
+
 // ---------------------------------------------------------------------------
 // PassGrade — project score using selected official display symbols
 // ---------------------------------------------------------------------------
@@ -357,7 +372,10 @@ fn grade_from_gates(gates: &GateDeviations, trajectory: &[TrajectoryDeviation]) 
     // Apply the PROJECT-DERIVED grade tiers.
     // GS uses the CATOBAR-derived tiers retained for both paths: slight at 0.5°, significant at 1.0°.
     // Lineup has three tiers: slight (1.0°) → (OK), medium (2.0°) → --, large (3.0°) → --
-    if worst_gs_high >= GS_SIGNIFICANT || worst_gs_low >= GS_SIGNIFICANT || worst_lu >= LU_MEDIUM {
+    let tier = if worst_gs_high >= GS_SIGNIFICANT
+        || worst_gs_low >= GS_SIGNIFICANT
+        || worst_lu >= LU_MEDIUM
+    {
         PassGrade::NoGrade
     } else if worst_gs_high >= GS_SLIGHT_HIGH
         || worst_gs_low >= GS_SLIGHT_LOW
@@ -375,7 +393,31 @@ fn grade_from_gates(gates: &GateDeviations, trajectory: &[TrajectoryDeviation]) 
         PassGrade::OkParentheses
     } else {
         PassGrade::Ok
+    };
+
+    // A.3: weight the last moments before the ramp more heavily. Rather than reweighting
+    // worst_gs_high/worst_gs_low/worst_lu above (which would also rescale the three named
+    // gates and complicate every existing threshold), this is a separate, narrower,
+    // downgrade-only check: a deviation that would only ever earn (OK) elsewhere in the
+    // approach is treated as NoGrade if it happens inside LATE_WINDOW_DISTANCE_M, where there
+    // is no distance left to correct it. It never raises a grade, and never touches Cut or an
+    // already-NoGrade result. See docs/GRADING_REFERENCE.md, "Late-approach weighting".
+    if matches!(tier, PassGrade::Ok | PassGrade::OkParentheses) && late_window_severe(trajectory) {
+        PassGrade::NoGrade
+    } else {
+        tier
     }
+}
+
+/// Whether any continuous trajectory sample inside `LATE_WINDOW_DISTANCE_M` of touchdown
+/// crossed the (stricter) late-window GS/lineup thresholds. See `LATE_WINDOW_GS_DEG`/
+/// `LATE_WINDOW_LU_DEG` for why this is intentionally tighter than the general amplitude tiers.
+fn late_window_severe(trajectory: &[TrajectoryDeviation]) -> bool {
+    trajectory.iter().any(|d| {
+        d.distance_m <= LATE_WINDOW_DISTANCE_M
+            && (d.gs_deviation_deg.abs() >= LATE_WINDOW_GS_DEG
+                || d.lineup_deg.abs() >= LATE_WINDOW_LU_DEG)
+    })
 }
 
 /// Whether GS or lineup deviation was clearly getting worse, not better, in the final
@@ -692,6 +734,65 @@ mod tests {
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let trajectory = [trajectory_point_at(0.0, 700.0, 0.05, 0.0)];
         assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Ok);
+    }
+
+    #[test]
+    fn late_window_gs_deviation_downgrades_an_otherwise_ok_grade_to_no_grade() {
+        // 0.9 deg is above LATE_WINDOW_GS_DEG (0.8) but below GS_SIGNIFICANT (1.0), so amplitude
+        // alone would only ever grant (OK) here. Happening at 100 m -- inside
+        // LATE_WINDOW_DISTANCE_M, with no room left to correct -- caps it at NoGrade instead.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [trajectory_point(100.0, 0.9, 0.0)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::NoGrade);
+    }
+
+    #[test]
+    fn late_window_lineup_deviation_downgrades_to_no_grade() {
+        // Same logic, lineup axis: 1.6 deg is above LATE_WINDOW_LU_DEG (1.5) but below
+        // LU_MEDIUM (2.0).
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [trajectory_point(100.0, 0.0, 1.6)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::NoGrade);
+    }
+
+    #[test]
+    fn the_same_deviation_earlier_in_the_approach_is_only_ok_parentheses() {
+        // Identical 0.9 deg GS deviation to the case above, but at 700 m -- well outside
+        // LATE_WINDOW_DISTANCE_M. This is exactly the "last moments matter more" effect A.3
+        // adds: the same magnitude of error is graded differently depending on how much
+        // distance is left to correct it.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [trajectory_point(700.0, 0.9, 0.0)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
+    }
+
+    #[test]
+    fn late_window_below_its_own_threshold_does_not_downgrade() {
+        // 0.6 deg at 100 m crosses the general GS_SLIGHT_HIGH tier ((OK)) but not the stricter
+        // LATE_WINDOW_GS_DEG (0.8) -- the late-window check must not fire on every deviation
+        // found close to the ramp, only ones that cross its own, stricter threshold.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [trajectory_point(100.0, 0.6, 0.0)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::OkParentheses);
+    }
+
+    #[test]
+    fn late_window_never_downgrades_a_pass_already_at_no_grade_or_worse() {
+        // A pass already at NoGrade from amplitude alone is not further affected; the
+        // late-window check only ever holds back Ok/(OK), like trend does for Ok alone.
+        let g = gates_deg(1.2, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [trajectory_point(100.0, 0.9, 0.0)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::NoGrade);
+    }
+
+    #[test]
+    fn late_window_never_overrides_cut() {
+        // A genuine Cut (dangerously low inside the quarter-NM gate) returns before the
+        // late-window check is ever reached; a coexisting late-window-severe sample elsewhere
+        // must not somehow soften that to NoGrade.
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, -2.6, 0.0);
+        let trajectory = [trajectory_point(100.0, 0.9, 0.0)];
+        assert_eq!(grade_from_gates(&g, &trajectory), PassGrade::Cut);
     }
 
     #[test]

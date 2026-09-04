@@ -17,6 +17,12 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
   reasonable deviations") distinction. Never used to raise a grade amplitude placed lower, and
   never checked once a pass is already below `Ok` (`PROJECT-DERIVED`; see
   `docs/GRADING_REFERENCE.md`, "Correction trend").
+- A late-approach severity check: a moderate GS/lineup deviation (above `LATE_WINDOW_GS_DEG`/
+  `LATE_WINDOW_LU_DEG`, between the general slight/significant thresholds) found inside the last
+  150 m before the ramp caps an otherwise-`Ok`/`(OK)` pass at `--` instead, since there is no
+  distance left to correct it there. The identical deviation earlier in the approach is graded
+  normally. Never raises a grade, never affects an already-`NoGrade`/`Cut` result, never touches
+  Cut itself (`PROJECT-DERIVED`; see `docs/GRADING_REFERENCE.md`, "Late-approach weighting").
 - `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, in the JSON
   report for every recovery (previously queried only for the Discord embed, and not persisted).
   Never affects `pass_grade`/`grade_points`; absent in `--positions-only`.
