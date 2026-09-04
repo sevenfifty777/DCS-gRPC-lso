@@ -26,6 +26,14 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 - `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, in the JSON
   report for every recovery (previously queried only for the Discord embed, and not persisted).
   Never affects `pass_grade`/`grade_points`; absent in `--positions-only`.
+- `aoa` in `datums`/`pattern_datums` is now wind-corrected once a wind reference is established
+  (two `AtmosphereService.GetWind` calls at groove entry, interpolated by altitude for the rest of
+  the recovery — DCS wind is deterministic and altitude-dependent, not time-varying) instead of
+  the raw nose-vs-ground-velocity angle, which was systematically biased by wind (always present
+  during carrier ops) and mixed sideslip/crab into a single always-positive value. New additive
+  `wind_reference_established` field records whether the correction applied; falls back to the raw
+  approximation, never a fabricated value, when it did not (`PROJECT-DERIVED`; see
+  `docs/GRADING_REFERENCE.md`, "AoA"). Still chart/report context only, never scored.
 - `lso.exe cadence-ab`: an offline diagnostic that replays already-recorded JSON reports'
   `datums` with an artificially reduced pre-groove sampling cadence and compares the resulting
   gates/trajectory/grade to the full cadence actually recorded, over a file or a directory

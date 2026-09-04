@@ -160,6 +160,52 @@ metadata). **Wind never changes `pass_grade` or `grade_points`**: the project ha
 doctrine for how much correction credit a given wind condition should earn, so inventing one here
 would be exactly the kind of unverified rule this module otherwise avoids.
 
+### AoA
+
+`PROJECT-DERIVED`, chart/report context only — **never scored**, and this section does not change
+that. Real LSO doctrine does weigh AoA/airspeed as one of several judgment factors (NATOPS lists it
+among the glideslope techniques and the trend-form categories), so the module aims for a value that
+is at least directionally honest, even though it does not attempt to reproduce a cockpit gauge's
+exact calibration.
+
+The `aoa` value in `datums`/`pattern_datums` was originally the angle between the aircraft's nose
+and its raw **ground-relative** velocity vector — a proxy that is systematically wrong whenever
+there is wind (i.e. on every carrier recovery, since wind-over-deck is standard procedure: 20-25 kts
+against a ~130-140 kt approach speed is not a rounding error), and that mixes true vertical AoA with
+lateral sideslip/crab into one combined, always-positive angle.
+
+Once a wind reference is available for the recovery (see below), `aoa` instead:
+
+1. subtracts the interpolated wind vector from ground velocity to approximate true airspeed;
+2. transforms that vector into the aircraft's own body frame;
+3. keeps only the vertical (pitch-plane) component, discarding the lateral one — the same
+   decomposition a real vane-type indicator performs by construction, and signed (unlike the old
+   value) so a nose-below-flight-path moment reads as a small/negative angle instead of an
+   unsigned magnitude.
+
+**Wind reference.** DCS wind is deterministic and does not vary over time once a mission is
+running — only with altitude, per the two-layer profile (ground level / 2000 m) exposed in the
+mission editor. So instead of polling continuously, two `AtmosphereService.GetWind` calls are made
+once, at groove entry: one at the aircraft's current altitude, one near the deck. Every subsequent
+sample's wind is linearly interpolated between these two by its own altitude
+(`WindReference::at_altitude`), assuming DCS itself interpolates linearly between its two
+configured layers — a reasonable but unverified assumption, since the engine's own interpolation
+curve was not inspected. `wind_reference_established` (additive JSON field) records whether this
+succeeded; when it is `false` (query failure, or the aircraft never entered the groove), every
+`aoa` value for that recovery is still the raw, uncorrected geometric approximation — a value is
+never fabricated in its place.
+
+**What this still is not**: a reconstruction of any aircraft's actual calibrated AoA curve (which
+depends on real aerodynamic data — weight, flap/slat configuration — that DCS does not expose via
+gRPC). The existing `aoa_rating` threshold tables per aircraft (`src/data.rs`, sourced from public
+documentation — VRS's Hornet indexer bracket, Heatblur's F-14 manual, a decompiled VNAO T-45 DEU
+reference) were already being applied to the old, wind-biased value; correcting the wind bias makes
+the number those tables classify more honest, but does not itself validate the tables. A real
+cockpit-read AoA (via a DCS draw argument) was investigated and shelved: the argument does not
+exist in the 3D model for at least the T-45C (confirmed via ModelViewer 2.0 against the client
+installation), and no verifiable, primary-source draw-argument number could be found for the other
+three aircraft either.
+
 ## Wire evidence
 
 `PROJECT-DERIVED` geometry estimates the closest cable midpoint to the transformed hook/contact

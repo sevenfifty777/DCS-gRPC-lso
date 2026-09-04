@@ -22,6 +22,9 @@ compatible meanings. Additive fields include:
 - optional `wind_heading_deg`/`wind_speed_mps`: contextual wind at the carrier's position, queried
   once per recovery. Absent when the query fails or in `--positions-only`. Never affects
   `pass_grade`/`grade_points`;
+- `wind_reference_established`: whether a wind reference was captured to correct the `aoa` field in
+  `datums`/`pattern_datums` (see `docs/GRADING_REFERENCE.md`, "AoA"). `false` means every `aoa`
+  value in this report is the raw, wind-uncorrected geometric approximation;
 - ordered event evidence, raw hook observation and first-contact horizontal speed.
 - `event_correlation`, with stream status (`available`, `unavailable` or intentionally `disabled`),
   detailed end/failure information, whether outcome evidence preceded the outage, and an independent

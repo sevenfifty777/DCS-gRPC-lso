@@ -226,6 +226,62 @@ pub struct HookObservation {
     pub polarity: &'static str,
 }
 
+/// Two altitude/wind samples used to correct the geometric AoA approximation for DCS's wind
+/// model. DCS wind is deterministic and does not vary over time once a mission is running (it
+/// only varies with altitude, per the two-layer profile configured in the mission editor), so a
+/// single pair of readings taken once at groove entry — one at the aircraft's own altitude, one
+/// near the deck — is enough to interpolate the wind at any altitude for the rest of the
+/// approach. See `docs/GRADING_REFERENCE.md`, "AoA", for the full rationale.
+#[derive(Debug, Clone, Copy)]
+struct WindReference {
+    alt_a_m: f64,
+    wind_a: DVec3,
+    alt_b_m: f64,
+    wind_b: DVec3,
+}
+
+impl WindReference {
+    /// Linearly interpolate (or extrapolate, clamped to the two samples) the wind vector at the
+    /// given altitude. Assumes DCS interpolates linearly between its two configured wind layers,
+    /// which matches the two-point (ground level / 2000 m) profile exposed in the mission editor;
+    /// not verified against the engine's own interpolation curve.
+    fn at_altitude(&self, alt_m: f64) -> DVec3 {
+        let span = self.alt_b_m - self.alt_a_m;
+        if span.abs() < f64::EPSILON {
+            return self.wind_a;
+        }
+        let t = ((alt_m - self.alt_a_m) / span).clamp(0.0, 1.0);
+        self.wind_a + (self.wind_b - self.wind_a) * t
+    }
+}
+
+/// Convert a "heading the wind is coming from" + speed (as returned by
+/// `AtmosphereClient::get_wind`) into a world-frame wind velocity vector (the direction and rate
+/// the air itself is moving), using the same yaw convention as `Transform`'s `forward` vector
+/// (yaw 0 = +z, yaw 90 = +x).
+pub(crate) fn wind_velocity_vector(direction_from_deg: u16, speed_mps: f32) -> DVec3 {
+    let direction_to_rad = ((f64::from(direction_from_deg) + 180.0) % 360.0).to_radians();
+    DVec3::new(direction_to_rad.sin(), 0.0, direction_to_rad.cos()) * f64::from(speed_mps)
+}
+
+/// Wind-corrected, pitch-plane-only AoA approximation (`PROJECT-DERIVED`; see
+/// `docs/GRADING_REFERENCE.md`, "AoA"). The plain geometric angle this replaces (nose vs. ground
+/// velocity) is biased by wind — always present during carrier ops, since deck wind is standard
+/// procedure — and mixes sideslip/crab into what should be a purely vertical measurement.
+///
+/// Subtracts the wind vector from ground velocity to approximate true airspeed, transforms it
+/// into the aircraft's own body frame, and keeps only the vertical component, discarding the
+/// lateral (crab) one — the same decomposition a real vane-based indicator performs by only
+/// sensing airflow in the aircraft's vertical plane of symmetry.
+fn corrected_aoa_deg(velocity: DVec3, wind: DVec3, rotation: DRotor3) -> f64 {
+    let true_airspeed = velocity - wind;
+    if true_airspeed.mag_sq() <= f64::EPSILON {
+        return f64::NAN;
+    }
+    let body = true_airspeed.rotated_by(rotation.reversed());
+    (-body.y).atan2(body.z).to_degrees()
+}
+
 pub struct Track {
     pilot_name: String,
     previous_distance: f64,
@@ -277,6 +333,10 @@ pub struct Track {
     telemetry_gap_stats: OnlineMetricStats,
     first_sample_time: Option<f64>,
     last_sample_time: Option<f64>,
+    /// Set once at groove entry (see `set_wind_reference`); `None` until then, or for the whole
+    /// recovery if the wind query failed. `aoa` falls back to the raw geometric approximation
+    /// whenever this is `None`.
+    wind_reference: Option<WindReference>,
 }
 
 /// GS and lineup deviation recorded at a key gate distance.
@@ -710,6 +770,11 @@ pub struct TrackResult {
     pub touchdown_horizontal_speed_mps: Option<f64>,
     pub hook_observation: HookObservation,
     pub wire_estimation: WireEstimateEvidence,
+    /// Whether a wind reference (see `WindReference`) was established for this recovery, i.e.
+    /// whether `datums[].aoa`/`pattern_datums[].aoa` are wind-corrected or fell back to the raw
+    /// geometric approximation for the whole recovery (query failure, or the aircraft never
+    /// entered the groove).
+    pub wind_reference_established: bool,
 }
 
 impl Track {
@@ -761,6 +826,40 @@ impl Track {
             telemetry_gap_stats: OnlineMetricStats::default(),
             first_sample_time: None,
             last_sample_time: None,
+            wind_reference: None,
+        }
+    }
+
+    /// Whether the aircraft has entered the groove (inside 3/4 nm, below 300 ft AGL, lined up).
+    /// Used by the caller to know when to query and supply a wind reference (see
+    /// `set_wind_reference`) for the AoA correction.
+    pub fn entered_groove(&self) -> bool {
+        self.entered_groove
+    }
+
+    /// Supply the two altitude/wind samples used to correct the AoA approximation from now on
+    /// (see `WindReference`). Call once, as soon as `entered_groove()` becomes `true`; a second
+    /// call is a no-op only in the sense that it simply replaces the reference — in practice the
+    /// caller should only ever call this once per recovery.
+    pub fn set_wind_reference(&mut self, alt_a_m: f64, wind_a: DVec3, alt_b_m: f64, wind_b: DVec3) {
+        self.wind_reference = Some(WindReference {
+            alt_a_m,
+            wind_a,
+            alt_b_m,
+            wind_b,
+        });
+    }
+
+    /// The AoA to record for this sample: wind-corrected if a reference is available, otherwise
+    /// the raw geometric approximation already computed on `plane.aoa` (see `Transform::from`).
+    fn effective_aoa(&self, plane: &Transform) -> f64 {
+        match &self.wind_reference {
+            Some(reference) => corrected_aoa_deg(
+                plane.velocity,
+                reference.at_altitude(plane.alt),
+                plane.rotation,
+            ),
+            None => plane.aoa,
         }
     }
 
@@ -886,7 +985,7 @@ impl Track {
                     astern_m,
                     port_m,
                     alt_ft: m_to_ft(plane.alt),
-                    aoa: plane.aoa,
+                    aoa: self.effective_aoa(plane),
                 });
             } else {
                 self.telemetry_quality.dropped_samples += 1;
@@ -1259,7 +1358,7 @@ impl Track {
                 corrected_time_dcs: plane.time.max(carrier.time),
                 x,
                 y,
-                aoa: plane.aoa,
+                aoa: self.effective_aoa(plane),
                 alt: alt.max(0.0),
                 carrier_time: sample.carrier_raw.time,
                 plane_time: sample.plane_raw.time,
@@ -1375,7 +1474,7 @@ impl Track {
                     corrected_time_dcs: plane.time.max(carrier.time),
                     x,
                     y,
-                    aoa: plane.aoa,
+                    aoa: self.effective_aoa(plane),
                     alt: plane.alt.max(0.0),
                     carrier_time: carrier.time,
                     plane_time: plane.time,
@@ -1557,6 +1656,7 @@ impl Track {
             touchdown_horizontal_speed_mps: self.touchdown_horizontal_speed_mps,
             hook_observation: self.hook_observation,
             wire_estimation,
+            wind_reference_established: self.wind_reference.is_some(),
         }
     }
 
@@ -2271,6 +2371,130 @@ fn normalize_grading_for_recovery(grading: Grading, recovery: &CarrierRecovery) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wind_velocity_vector_matches_expected_world_frame_direction() {
+        // Wind FROM north (0 deg) blows TOWARD south: -z, matching the `forward` convention
+        // (yaw 0 = +z) used throughout this file.
+        let from_north = wind_velocity_vector(0, 10.0);
+        assert!((from_north.x).abs() < 1.0e-9);
+        assert!((from_north.z + 10.0).abs() < 1.0e-9);
+
+        // Wind FROM east (90 deg) blows TOWARD west: -x.
+        let from_east = wind_velocity_vector(90, 5.0);
+        assert!((from_east.x + 5.0).abs() < 1.0e-9);
+        assert!((from_east.z).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn wind_reference_interpolates_linearly_between_two_altitudes() {
+        let reference = WindReference {
+            alt_a_m: 100.0,
+            wind_a: DVec3::new(1.0, 0.0, 0.0),
+            alt_b_m: 0.0,
+            wind_b: DVec3::new(0.0, 0.0, 0.0),
+        };
+
+        let midpoint = reference.at_altitude(50.0);
+        assert!((midpoint.x - 0.5).abs() < 1.0e-9);
+
+        // Above the higher sample and below the lower one: clamp to the nearest known reading
+        // rather than extrapolating past what was actually measured.
+        assert!((reference.at_altitude(150.0).x - 1.0).abs() < 1.0e-9);
+        assert!((reference.at_altitude(-50.0).x).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn wind_reference_handles_two_samples_at_the_same_altitude() {
+        let reference = WindReference {
+            alt_a_m: 50.0,
+            wind_a: DVec3::new(2.0, 0.0, 0.0),
+            alt_b_m: 50.0,
+            wind_b: DVec3::new(4.0, 0.0, 0.0),
+        };
+        // Degenerate span: must not divide by zero or panic, and must return a defined value.
+        assert!((reference.at_altitude(50.0).x - 2.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn corrected_aoa_is_zero_for_level_flight_with_no_wind() {
+        let aoa = corrected_aoa_deg(
+            DVec3::new(0.0, 0.0, 50.0),
+            DVec3::zero(),
+            DRotor3::identity(),
+        );
+        assert!(aoa.abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn corrected_aoa_is_positive_when_sinking_relative_to_the_nose() {
+        // Classic high-AoA case: nose level (forward = body z), but the aircraft is actually
+        // moving somewhat downward relative to it (body y < 0).
+        let aoa = corrected_aoa_deg(
+            DVec3::new(0.0, -10.0, 50.0),
+            DVec3::zero(),
+            DRotor3::identity(),
+        );
+        assert!(aoa > 0.0, "expected a positive AoA, got {aoa}");
+        assert!((aoa - 10.0_f64.atan2(50.0).to_degrees()).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn headwind_correction_lowers_the_computed_aoa_for_the_same_sink_rate() {
+        // Same sink rate (velocity.y = -5) in both cases; only the headwind differs. A headwind
+        // raises true airspeed above ground speed, so the same sink rate corresponds to a
+        // shallower (smaller) angle once corrected -- this is the whole point of subtracting
+        // wind instead of using raw ground velocity.
+        let velocity = DVec3::new(0.0, -5.0, 40.0);
+        let raw = corrected_aoa_deg(velocity, DVec3::zero(), DRotor3::identity());
+        let headwind = DVec3::new(0.0, 0.0, -20.0); // blowing against the aircraft's travel
+        let corrected = corrected_aoa_deg(velocity, headwind, DRotor3::identity());
+        assert!(
+            corrected < raw,
+            "expected headwind-corrected AoA ({corrected}) < raw ({raw})"
+        );
+    }
+
+    #[test]
+    fn corrected_aoa_is_nan_when_true_airspeed_is_zero() {
+        let velocity = DVec3::new(0.0, 0.0, 20.0);
+        let wind = DVec3::new(0.0, 0.0, 20.0); // exactly matches ground velocity
+        assert!(corrected_aoa_deg(velocity, wind, DRotor3::identity()).is_nan());
+    }
+
+    #[test]
+    fn effective_aoa_falls_back_to_the_raw_geometric_value_without_a_wind_reference() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let track = Track::new("pilot", carrier, plane_info);
+        let plane = Transform {
+            aoa: 7.5,
+            velocity: DVec3::new(0.0, -5.0, 40.0),
+            rotation: DRotor3::identity(),
+            ..Transform::default()
+        };
+        assert_eq!(track.effective_aoa(&plane), 7.5);
+    }
+
+    #[test]
+    fn effective_aoa_uses_the_corrected_value_once_a_wind_reference_is_set() {
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, plane_info);
+        track.set_wind_reference(300.0, DVec3::zero(), 0.0, DVec3::new(0.0, 0.0, -20.0));
+
+        let plane = Transform {
+            aoa: 999.0, // must be ignored once a wind reference is set
+            alt: 0.0,   // interpolates to the wind_b reading exactly
+            velocity: DVec3::new(0.0, -5.0, 40.0),
+            rotation: DRotor3::identity(),
+            ..Transform::default()
+        };
+        let expected =
+            corrected_aoa_deg(plane.velocity, DVec3::new(0.0, 0.0, -20.0), plane.rotation);
+        assert_eq!(track.effective_aoa(&plane), expected);
+        assert_ne!(track.effective_aoa(&plane), 999.0);
+    }
 
     fn approach_sample(time: f64, x: f64) -> ApproachSample {
         ApproachSample {

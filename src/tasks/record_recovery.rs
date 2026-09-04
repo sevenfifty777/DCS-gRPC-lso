@@ -76,6 +76,10 @@ struct RecoveryReport<'a> {
     wind_heading_deg: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wind_speed_mps: Option<f32>,
+    /// Whether a wind reference was established for the AoA correction in `datums`/
+    /// `pattern_datums` (see docs/GRADING_REFERENCE.md, "AoA"). `false` means every recorded
+    /// `aoa` value is the raw, wind-uncorrected geometric approximation for this recovery.
+    wind_reference_established: bool,
     datums: &'a [Datum],
     /// In-mission date/time from the DCS scenario clock (ISO-8601).
     #[serde(skip_serializing_if = "str::is_empty")]
@@ -500,6 +504,9 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     let mut last_invalid_source_warning: Option<Instant> = None;
     let mut pending_invalid_batches = 0_u64;
     let mut pending_invalid_snapshots = 0_u64;
+    // Set once the wind reference query has been attempted (successfully or not), so it is
+    // never repeated for the rest of the recovery. See docs/GRADING_REFERENCE.md, "AoA".
+    let mut wind_reference_queried = false;
 
     let mut stream = select(interval.map(Either::Left), events.map(Either::Right));
 
@@ -675,6 +682,40 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
                     lowest_altitude = lowest_altitude.min(plane.alt);
 
                     let keep_tracking = datums.next_sample(&sample, hook_state);
+
+                    // Establish the wind reference for AoA correction exactly once, as soon as
+                    // the aircraft enters the groove (see docs/GRADING_REFERENCE.md, "AoA").
+                    // DCS wind is deterministic and altitude-dependent, not time-varying, so two
+                    // readings taken now -- at the aircraft's current altitude and near the deck
+                    // -- are enough for the rest of the recovery; skipped in --positions-only,
+                    // which never queries output-only DCS metadata.
+                    if !wind_reference_queried && !params.positions_only && datums.entered_groove()
+                    {
+                        wind_reference_queried = true;
+                        let mut atmo = crate::client::AtmosphereClient::new(params.ch.clone());
+                        match (
+                            atmo.get_wind(plane.lat, plane.lon, plane.alt).await,
+                            atmo.get_wind(plane.lat, plane.lon, carrier.alt).await,
+                        ) {
+                            (Ok((high_dir, high_speed)), Ok((low_dir, low_speed))) => {
+                                datums.set_wind_reference(
+                                    plane.alt,
+                                    crate::track::wind_velocity_vector(high_dir, high_speed),
+                                    carrier.alt,
+                                    crate::track::wind_velocity_vector(low_dir, low_speed),
+                                );
+                            }
+                            (high, low) => {
+                                tracing::warn!(
+                                    ?high,
+                                    ?low,
+                                    "failed to establish a wind reference for AoA correction; \
+                                     the raw geometric approximation will be used for this recovery"
+                                );
+                            }
+                        }
+                    }
+
                     if let Some(hook_rx) = hook_rx.as_mut() {
                         drain_hook_samples(
                             hook_rx,
@@ -1164,6 +1205,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         trajectory_deviations: &track.trajectory_deviations,
         wind_heading_deg: wind_mps.map(|(heading, _)| heading),
         wind_speed_mps: wind_mps.map(|(_, speed)| speed),
+        wind_reference_established: track.wind_reference_established,
         datums: &track.datums,
         mission_datetime: &mission_datetime,
         recording_started_at: &recovery_timestamp,
