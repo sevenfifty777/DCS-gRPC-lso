@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::ops::{Neg, Range};
 use std::path::PathBuf;
 
@@ -14,7 +13,7 @@ use plotters_bitmap::bitmap_pixel::RGBPixel;
 use plotters_bitmap::BitMapBackend;
 
 use crate::data::{AirplaneInfo, Aoa, CarrierRecovery};
-use crate::track::{Datum, GateDatum, GateQuality, GateStatus, Grading, PatternDatum, TrackResult};
+use crate::track::{Datum, GateDatum, GateQuality, GateStatus, PatternDatum, TrackResult};
 use crate::utils::{ft_to_nm, m_to_ft, m_to_nm, nm_to_ft, nm_to_m};
 
 const THEME_BG: RGBColor = RGBColor(31, 41, 55); // 1F2937
@@ -436,39 +435,13 @@ pub fn draw_chart(
         (16, 80),
     )?;
 
+    // Same pilot-facing headline as the Discord embed and SQLite log: DCS/LQM wire evidence is
+    // shown alone whenever available, never next to a diverging Rust estimate.
+    // See Grading::pilot_facing_outcome for the rationale.
     root_drawing_area.draw_text(
-        &match track.grading {
-            Grading::Unknown => Cow::Borrowed(""),
-            Grading::Bolter => Cow::Borrowed("Bolter"),
-            Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
-            Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
-            Grading::Recovered {
-                cable,
-                cable_estimated,
-            } => {
-                if track.carrier_info.is_vstol() {
-                    Cow::Borrowed("V/STOL recovery")
-                } else {
-                    match (cable, cable_estimated) {
-                        (Some(dcs), Some(estimated)) if dcs == estimated => {
-                            Cow::Owned(format!("Arrested — wire {} (DCS/LQM + Rust)", dcs))
-                        }
-                        (Some(dcs), Some(estimated)) => Cow::Owned(format!(
-                            "Arrested — DCS/LQM wire {}; Rust estimate {}",
-                            dcs, estimated
-                        )),
-                        (Some(dcs), None) => Cow::Owned(format!(
-                            "Arrested — DCS/LQM wire {}; Rust estimate unavailable",
-                            dcs
-                        )),
-                        (None, Some(estimated)) => {
-                            Cow::Owned(format!("Wire {} (Rust estimate)", estimated))
-                        }
-                        (None, None) => Cow::Borrowed("Wire evidence unavailable"),
-                    }
-                }
-            }
-        },
+        &track
+            .grading
+            .pilot_facing_outcome(track.carrier_info.is_vstol()),
         &text_style,
         (16, 112),
     )?;

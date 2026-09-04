@@ -616,6 +616,42 @@ pub enum Grading {
     },
 }
 
+impl Grading {
+    /// Human-readable outcome summary for pilot-facing surfaces (Discord embed, PNG chart,
+    /// SQLite/greenie-board log).
+    ///
+    /// Unlike the full JSON `outcome` field (built separately, alongside the raw
+    /// `wire_estimated`/`wire_dcs`/`wire_divergent` fields, for anyone deliberately inspecting the
+    /// report), this never places a Rust-estimated wire number next to a DCS/LQM one: DCS
+    /// evidence is shown alone whenever available. A pilot who saw wire 3 called out in DCS
+    /// should never read a contradicting "Rust estimate 4" in the same headline they glance at
+    /// right after landing — DCS is always the authority for anything the pilot sees at a glance,
+    /// exactly as it already is for grading (see `Completeness::UnconfirmedArrest`).
+    pub fn pilot_facing_outcome(&self, is_vstol: bool) -> String {
+        match (is_vstol, self) {
+            (_, Self::Unknown) => String::new(),
+            (_, Self::Bolter) => "Bolter".to_string(),
+            // Intentional bolters are valid only for arrested recoveries. Keep the
+            // V/STOL fallback defensive in case an invalid grading reaches this layer.
+            (true, Self::TouchAndGo { .. }) => "Waveoff/Go-around".to_string(),
+            (false, Self::TouchAndGo { .. }) => "T&G (CQ)".to_string(),
+            (_, Self::WaveoffUnknown) => "Waveoff/Go-around — initiator unknown".to_string(),
+            (true, Self::Recovered { .. }) => "Spot 7.5".to_string(),
+            (
+                false,
+                Self::Recovered {
+                    cable,
+                    cable_estimated,
+                },
+            ) => match (cable, cable_estimated) {
+                (Some(dcs), _) => format!("Arrested — wire {dcs}"),
+                (None, Some(estimated)) => format!("Wire #{estimated} (Rust estimate)"),
+                (None, None) => "Arrested — wire evidence unavailable".to_string(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct TrackResult {
     pub pilot_name: String,
@@ -2308,6 +2344,87 @@ mod tests {
         assert!(result.grade_points.is_some());
         let summary = correlator.summary(&result.grading);
         assert!(summary.outcome_confirmed);
+    }
+
+    #[test]
+    fn pilot_facing_outcome_never_mentions_a_diverging_rust_estimate() {
+        // DCS/LQM evidence disagrees with the Rust geometric estimate: the pilot-facing headline
+        // must show only the DCS wire, never a contradicting "estimate 4" next to "wire 3" — see
+        // Grading::pilot_facing_outcome. The full JSON `outcome` field (recovery_outcome in
+        // record_recovery.rs, not exercised here) is the only place allowed to show both.
+        let grading = Grading::Recovered {
+            cable: Some(3),
+            cable_estimated: Some(4),
+        };
+        assert_eq!(
+            grading.pilot_facing_outcome(false),
+            "Arrested — wire 3",
+            "must not mention the diverging Rust estimate"
+        );
+    }
+
+    #[test]
+    fn pilot_facing_outcome_shows_dcs_wire_alone_even_when_it_agrees_with_the_estimate() {
+        let grading = Grading::Recovered {
+            cable: Some(3),
+            cable_estimated: Some(3),
+        };
+        assert_eq!(grading.pilot_facing_outcome(false), "Arrested — wire 3");
+    }
+
+    #[test]
+    fn pilot_facing_outcome_falls_back_to_the_rust_estimate_only_when_dcs_said_nothing() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: Some(3),
+        };
+        assert_eq!(
+            grading.pilot_facing_outcome(false),
+            "Wire #3 (Rust estimate)"
+        );
+    }
+
+    #[test]
+    fn pilot_facing_outcome_reports_missing_wire_evidence() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+        assert_eq!(
+            grading.pilot_facing_outcome(false),
+            "Arrested — wire evidence unavailable"
+        );
+    }
+
+    #[test]
+    fn pilot_facing_outcome_other_grading_variants() {
+        assert_eq!(Grading::Bolter.pilot_facing_outcome(false), "Bolter");
+        assert_eq!(
+            Grading::WaveoffUnknown.pilot_facing_outcome(false),
+            "Waveoff/Go-around — initiator unknown"
+        );
+        assert_eq!(
+            Grading::TouchAndGo {
+                cable_estimated: None
+            }
+            .pilot_facing_outcome(false),
+            "T&G (CQ)"
+        );
+        assert_eq!(
+            Grading::TouchAndGo {
+                cable_estimated: None
+            }
+            .pilot_facing_outcome(true),
+            "Waveoff/Go-around"
+        );
+        assert_eq!(
+            Grading::Recovered {
+                cable: Some(1),
+                cable_estimated: Some(1)
+            }
+            .pilot_facing_outcome(true),
+            "Spot 7.5"
+        );
     }
 
     #[test]

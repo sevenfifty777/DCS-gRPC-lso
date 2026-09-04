@@ -87,6 +87,10 @@ This file records user-visible changes. The crate version remains `0.2.0`; chang
 
 ### Changed
 
+- Pilot-facing surfaces (Discord embed, PNG chart, SQLite/greenie-board log) now always show the
+  DCS/LQM wire alone when it is available, instead of ever displaying it next to a diverging Rust
+  geometric estimate (`Grading::pilot_facing_outcome`); the full JSON `outcome` field still records
+  both wire values side by side for diagnostics.
 - Full-pattern JSON `datums` are now subsampled to one in four outside the scoring-relevant window
   (before groove entry and beyond ¾ nm / 500 ft); the scoring zone itself, gate evidence and
   grading are unaffected, only the pattern/break portion of the report shrinks.

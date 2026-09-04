@@ -999,6 +999,13 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
     };
 
     let outcome = recovery_outcome(&track.grading, track.carrier_info.is_vstol());
+    // Pilot-facing surfaces (Discord, PNG chart, SQLite/greenie-board log) use a simplified
+    // headline that never contradicts what the pilot saw in DCS: see
+    // Grading::pilot_facing_outcome for the rationale. The full `outcome` string above (which can
+    // show a diverging Rust estimate) is reserved for the JSON report.
+    let outcome_headline = track
+        .grading
+        .pilot_facing_outcome(track.carrier_info.is_vstol());
     let (wire_estimated, wire_dcs) = match track.grading {
         Grading::Recovered {
             cable,
@@ -1225,7 +1232,7 @@ pub async fn record_recovery(params: TaskParams<'_>) -> Result<(), crate::error:
         aircraft_type: display_type.to_string(),
         aircraft_id,
         map_name: map_name.clone(),
-        outcome: outcome.clone(),
+        outcome: outcome_headline,
         pilot_kind: params.pilot_kind,
         carrier_name: params.carrier_name.to_string(),
         carrier_type: params.carrier_type.to_string(),
