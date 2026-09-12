@@ -35,9 +35,9 @@ uses glideslope and lineup deviations at three gates; AoA colours the charts but
 ## Requirements
 
 - Windows or another platform supported by the Rust dependency stack.
-- DCS World with the matching local DCS-gRPC `0.10.0` fork build. Until that server commit is
-  published, this checkout resolves `dcs-grpc-stubs` from the sibling `../DCS-gRPC/stubs` crate so
-  the live client and deployed server use exactly the same protobuf contract.
+- DCS World running the matching DCS-gRPC fork build. This checkout resolves `dcs-grpc-stubs` from
+  the fork release tag `v0.9.2` (`sevenfifty777/rust-server`) so the live client and deployed server
+  use exactly the same protobuf contract.
 - A Rust stable toolchain only when building from source.
 
 The DCS-gRPC server and this client must use compatible protobuf APIs. Upstream DCS-gRPC 0.8.1 is

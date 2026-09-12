@@ -260,8 +260,9 @@ corpus puis en mission selon sa portée.
 
 ## Préparation release et exploitation
 
-- Remplacer la dépendance locale `../DCS-gRPC/stubs` par un pin Git immuable revu avant packaging,
-  puis valider live la ligne serveur réellement déployée selon le runbook d’AGENTS.md.
+- ~~Remplacer la dépendance locale `../DCS-gRPC/stubs` par un pin Git immuable~~ — fait : pin sur le
+  tag `v0.9.2` du fork `sevenfifty777/rust-server`. Reste à valider live la ligne serveur réellement
+  déployée selon le runbook d’AGENTS.md.
 - Exécuter `cargo audit` localement dès que l’outil est disponible ; la CI le fait déjà.
 - Chronométrer en staging la bascule et le rollback avec le vrai wrapper de service, les vraies
   permissions et une copie de la base. L’objectif de cinq minutes n’est pas encore prouvé.

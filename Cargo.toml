@@ -36,7 +36,9 @@ zip = "2.2"
 
 [dependencies.stubs]
 package = "dcs-grpc-stubs"
-path = "../DCS-gRPC/stubs"
+# Pinned to the fork release tag that publishes GetOwnshipHookState.
+git = "https://github.com/sevenfifty777/rust-server.git"
+tag = "v0.9.2"
 features = ["client"]
 
 [dev-dependencies]

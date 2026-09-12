@@ -8,9 +8,9 @@ and describe the expected and observed wire.
 ## Development setup
 
 Install a stable Rust toolchain, clone the repository, and run from the repository root. Cargo
-resolves the DCS-gRPC stubs from a local path dependency (`../DCS-gRPC/stubs`) — the sibling
-`DCS-gRPC` repository checkout must exist next to this one for the build to succeed; see
-[AGENTS.md](AGENTS.md), "DCS-gRPC et dépendances", for the exact commit it must reflect.
+resolves the DCS-gRPC stubs from the fork release tag `v0.9.2`
+(`git = "https://github.com/sevenfifty777/rust-server.git"`), so no sibling checkout is required;
+see [AGENTS.md](AGENTS.md), "DCS-gRPC et dépendances", for the contract it pins.
 
 ```powershell
 cargo build

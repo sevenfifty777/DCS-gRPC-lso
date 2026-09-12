@@ -600,6 +600,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 [[package]]
 name = "dcs-grpc-stubs"
 version = "0.9.2"
+source = "git+https://github.com/sevenfifty777/rust-server.git?tag=v0.9.2#16291fbab9585e6fd8c223e21b0da12fd1a954cd"
 dependencies = [
  "prost",
  "prost-types",
