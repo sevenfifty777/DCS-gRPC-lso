@@ -7,6 +7,13 @@
 **Official release:** [`v0.9.0`](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0)
 **Locked server commit:** [`5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`](https://github.com/sevenfifty777/rust-server/commit/5bd6d6e42491c8697a5c5a95e80a2e689923bd3b)
 
+> **Status note (2026-09-03):** this document records the 0.8.1 -> 0.9.0 migration as performed.
+> Since then the crate moved to 0.3.0 and `Cargo.toml` pins the stubs by local path
+> (`../rust-server/stubs`, fork branch `hook-mechanization-api`: 0.9.1 plus
+> `RecoveryService.GetRecoverySnapshot` and `HookService.GetOwnshipHookState`) pending a tagged
+> `v0.9.2`. The version, commit and audit figures below are historical; see section 7 for the current
+> audit status.
+
 ## 1. Purpose
 
 This migration changes LSO from the upstream DCS-gRPC 0.8.1 Rust stubs to the customized
@@ -136,7 +143,8 @@ They were updated to their verified patched versions:
 | `quinn-proto` | 0.11.14 | 0.11.15 | Fixes high-severity [RUSTSEC-2026-0185](https://rustsec.org/advisories/RUSTSEC-2026-0185.html), remote memory exhaustion during out-of-order stream reassembly |
 | `anyhow` | 1.0.102 | 1.0.103 | Fixes [RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190.html), unsoundness in `Error::downcast_mut()` |
 
-The final audit reported zero known vulnerabilities. It retained one allowed maintenance warning:
+The final audit at that time (2026-08-28) reported zero known vulnerabilities. It retained one
+allowed maintenance warning (this is no longer the current status; see section 7):
 
 - `ttf-parser 0.20.0` is marked unmaintained by
   [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192.html).
@@ -171,7 +179,7 @@ provisional commit to the tag target was therefore reviewed before the lockfile 
 | `README.md` | States that the forked DCS-gRPC 0.9.0 server is required |
 | `docs/ADMIN_GUIDE.md` | Updates installation requirements, repository instructions, and the official release baseline |
 | `docs/LSO_ANALYSIS.md` | Updates the architecture and dependency descriptions |
-| `docs/analysis2.md` | Updates the recorded server, stubs, and `tonic` versions |
+| `docs/analysis2.md` (since removed from the repository) | Updated the recorded server, stubs, and `tonic` versions |
 
 The supplied 0.9.0 server documentation under `docs/DCS-gRPC-0.9.0/` remains a reference copy and
 was not rewritten as part of this migration.
@@ -196,10 +204,10 @@ cargo test --locked --no-fail-fast
 Result:
 
 ```text
-55 passed; 0 failed; 0 ignored
+55 passed; 0 failed; 0 ignored   (result on 2026-08-28; the suite has since grown, see CI)
 ```
 
-This validates compilation of the generated 0.9.0 clients and all existing unit tests, including
+This validated compilation of the generated 0.9.0 clients and all existing unit tests, including
 carrier cable geometry and grading tests. It does not replace a live integration test against a
 running DCS World server.
 
@@ -209,12 +217,19 @@ running DCS World server.
 cargo audit
 ```
 
-Final result:
+Result on 2026-08-28 (historical):
 
 ```text
 0 vulnerabilities
 1 allowed warning: ttf-parser 0.20.0 is unmaintained
 ```
+
+**Current status (2026-09-03):** `cargo audit` on the current lockfile reports 12 vulnerabilities and
+10 warnings. They were recorded and deferred in
+`docs/DCS_gRPC_analyse/GET_RECOVERY_SNAPSHOT_IMPLEMENTATION.md` (that directory is a local, ignored
+analysis archive). CI now runs `cargo audit` as a separate non-blocking job (`audit`,
+`continue-on-error: true`) so the figure is visible on every push without failing the build; the
+advisories still have to be triaged and either upgraded or added to an allow-list.
 
 ### Reference and whitespace checks
 
@@ -226,8 +241,9 @@ successfully.
 The repository-wide `cargo fmt -- --check` command still reports formatting drift in pre-existing
 source files. Broad automatic formatting was deliberately not applied because it would create
 unrelated runtime-code changes. On 2026-08-28, `cargo clippy --locked -- -D warnings` continued to
-report the same seven existing code-quality findings; see `docs/analysis_results.md` for the current
-validation summary.
+report the same seven existing code-quality findings (the `docs/analysis_results.md` summary that
+recorded them has since been removed; CI now runs `cargo clippy -- -D warnings` and
+`cargo fmt -- --check` on every push).
 
 ## 8. Runtime Deployment Requirement
 

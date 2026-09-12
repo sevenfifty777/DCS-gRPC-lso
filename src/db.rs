@@ -63,10 +63,20 @@ pub struct DbPass {
     pub grading_version: String,
     pub wire_estimation_confidence: String,
     pub grading_availability: String,
+    /// `dcs_wire`, `hook_transient`, `kinematic`, `unconfirmed` or `none`.
+    pub arrest_evidence: String,
+    /// Commanded hook state: `up`, `down` or `unknown`.
+    pub hook_state: String,
 }
 
-/// Pass record as returned from a database query (JSON-serialisable for the web API).
-#[derive(Debug, serde::Serialize)]
+/// Pass record as read back from the database. Since 0.4.0 only the migration
+/// tests read rows; the DCS Web Dashboard queries `lso.db` directly.
+#[cfg(test)]
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "mirrors every `passes` column for the migration tests; only some are asserted"
+)]
 pub struct StoredPass {
     pub id: i64,
     pub timestamp: String,
@@ -114,12 +124,21 @@ pub struct StoredPass {
     pub grading_version: Option<String>,
     pub wire_estimation_confidence: Option<String>,
     pub grading_availability: Option<String>,
+    pub arrest_evidence: Option<String>,
+    pub hook_state: Option<String>,
 }
 
 impl RecoveryDb {
     /// Open (or create) the LSO database at `path` and apply the schema migration.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // Write-ahead logging lets an external read-only consumer (the DCS Web
+        // Dashboard LSO page reading this file directly) query the board while
+        // a pass is being inserted, without either side waiting on the other's
+        // lock. `busy_timeout` covers the brief checkpoint windows where WAL
+        // still serialises access. Both pragmas are no-ops for `:memory:`.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", 2000)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS passes (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,6 +205,9 @@ impl RecoveryDb {
             ("intended_spot", "TEXT"),
             ("actual_nearest_spot", "TEXT"),
             ("distance_to_intended_spot_m", "REAL"),
+            // Migration 6: arrest confirmation source and commanded hook state.
+            ("arrest_evidence", "TEXT"),
+            ("hook_state", "TEXT"),
         ] {
             ensure_column(&conn, "passes", name, definition)?;
         }
@@ -195,7 +217,8 @@ impl RecoveryDb {
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -204,16 +227,18 @@ impl RecoveryDb {
 
     /// Persist a completed recovery pass.
     pub fn insert(&self, pass: &DbPass) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = crate::utils::lock_unpoisoned(&self.conn);
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO passes \
                 (timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
                  map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                  recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                  confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability) \
+                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability,
+                 arrest_evidence, hook_state) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
+                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
+                     ?42, ?43)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -256,20 +281,25 @@ impl RecoveryDb {
                 &pass.telemetry_health,
                 &pass.wire_estimation_confidence,
                 &pass.grading_availability,
+                &pass.arrest_evidence,
+                &pass.hook_state,
             ],
         )?;
         Ok(inserted == 1)
     }
 
-    /// Return all passes ordered newest-first.
+    /// Return all passes ordered newest-first (test-only since the web board
+    /// moved to the DCS Web Dashboard).
+    #[cfg(test)]
     pub fn all_passes(&self) -> rusqlite::Result<Vec<StoredPass>> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = crate::utils::lock_unpoisoned(&self.conn);
         let mut stmt = conn.prepare(
             "SELECT id, timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
                     map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                     recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                     confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability \
+                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability,
+                    arrest_evidence, hook_state \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -322,18 +352,11 @@ impl RecoveryDb {
                 telemetry_health: row.get(39)?,
                 wire_estimation_confidence: row.get(40)?,
                 grading_availability: row.get(41)?,
+                arrest_evidence: row.get(42)?,
+                hook_state: row.get(43)?,
             })
         })?;
         rows.collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_query_failure_for_test(&self) {
-        self.conn
-            .lock()
-            .expect("db mutex poisoned")
-            .execute_batch("DROP TABLE passes;")
-            .expect("invalidate test database");
     }
 }
 
@@ -404,6 +427,8 @@ mod tests {
             grading_version: "project-derived-v1".to_string(),
             wire_estimation_confidence: "high".to_string(),
             grading_availability: "available".to_string(),
+            arrest_evidence: "dcs_wire".to_string(),
+            hook_state: "down".to_string(),
         };
         assert!(db.insert(&entry).expect("insert pass"));
         assert!(!db.insert(&entry).expect("duplicate is idempotent"));
@@ -412,10 +437,46 @@ mod tests {
 
         assert_eq!(passes.len(), 1);
         assert_eq!(passes[0].outcome, "Qualif Bolter");
+        assert_eq!(passes[0].arrest_evidence.as_deref(), Some("dcs_wire"));
+        assert_eq!(passes[0].hook_state.as_deref(), Some("down"));
         assert_eq!(passes[0].points_awarded, Some(true));
         assert_eq!(passes[0].intended_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].actual_nearest_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].distance_to_intended_spot_m, Some(1.25));
+    }
+
+    #[test]
+    fn database_uses_write_ahead_logging_for_external_readers() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dcs-grpc-lso-wal-{}-{unique}.db",
+            std::process::id()
+        ));
+
+        let db = RecoveryDb::open(&path).expect("open database");
+        {
+            let conn = db.conn.lock().expect("db mutex poisoned");
+            let mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("read journal_mode");
+            assert_eq!(mode.to_lowercase(), "wal");
+            let timeout: i64 = conn
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .expect("read busy_timeout");
+            assert_eq!(timeout, 2000);
+        }
+        // The schema migration already wrote to the file, so the WAL sidecars
+        // an external reader relies on must exist while we hold the connection.
+        assert!(path.with_extension("db-wal").exists());
+        assert!(path.with_extension("db-shm").exists());
+
+        drop(db);
+        for extension in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(extension));
+        }
     }
 
     #[test]
@@ -453,6 +514,8 @@ mod tests {
         assert_eq!(passes[0].points_awarded, Some(true));
         assert_eq!(passes[0].intended_spot, None);
         assert_eq!(passes[0].actual_nearest_spot, None);
+        assert_eq!(passes[0].arrest_evidence, None);
+        assert_eq!(passes[0].hook_state, None);
         drop(db);
         std::fs::remove_file(path).expect("remove isolated migration fixture");
     }

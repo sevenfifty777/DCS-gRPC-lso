@@ -4,27 +4,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tokio::task::JoinHandle;
-
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::db::{RecoveryDb, SharedDb};
-use crate::tasks::{HookSamplingConfig, HookSamplingMode, PilotKind, SessionLog, TaskParams};
+use crate::tasks::{
+    CarrierCandidate, HookSamplingConfig, HookSamplingMode, PilotKind, PlaneCandidate,
+    RecoveryContext, RecoveryTelemetryMode, SessionLog, SharedRegistry, UnitRegistry,
+    EVENT_FANOUT_CAPACITY,
+};
+use crate::utils::lock_unpoisoned;
 use crate::utils::shutdown::ShutdownHandle;
 use backoff::ExponentialBackoff;
-use futures_util::future::select;
+use futures_util::future::{select, Either};
 use futures_util::{StreamExt, TryFutureExt};
 use stubs::coalition::v0::coalition_service_client::CoalitionServiceClient;
 use stubs::common::v0::{Coalition, GroupCategory};
 use stubs::group::v0::group_service_client::GroupServiceClient;
-use stubs::mission::v0::mission_service_client::MissionServiceClient;
 use stubs::mission::v0::stream_events_response::Event;
 use stubs::unit::v0::unit_service_client::UnitServiceClient;
 use stubs::{coalition, common, group, mission, unit};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::Status;
 
-type RecoveryTaskMap = Arc<Mutex<HashMap<(u32, u32), JoinHandle<()>>>>;
+/// A generation that stayed connected at least this long is considered
+/// healthy; when it later fails, reconnection starts from a fresh backoff
+/// instead of the 30 s ceiling accumulated by earlier failures.
+const HEALTHY_UPTIME: Duration = Duration::from_secs(60);
 
 #[derive(clap::Parser)]
 pub struct Opts {
@@ -52,11 +57,11 @@ pub struct Opts {
     #[clap(long = "no-acmi")]
     no_acmi: bool,
 
-    /// Hook draw-argument polling rate used by the independent sampler.
+    /// Hook draw-argument polling rate used by the independent sampler (legacy acquisition only).
     #[clap(long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(2..=4))]
     hook_sampling_hz: u64,
 
-    /// Timeout for one hook draw-argument RPC.
+    /// Timeout for one hook draw-argument RPC (legacy acquisition only).
     #[clap(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(250..=300))]
     hook_timeout_ms: u64,
 
@@ -64,15 +69,51 @@ pub struct Opts {
     #[clap(long)]
     legacy_inline_hook_sampling: bool,
 
-    /// Port to serve the web greenie board on (e.g. 8080). Disabled if not specified.
+    /// Recovery telemetry source. Auto uses the atomic API when supported and
+    /// falls back to the legacy transform calls only on UNIMPLEMENTED.
+    #[clap(long, value_enum, default_value_t = RecoveryTelemetryMode::Auto)]
+    recovery_telemetry_mode: RecoveryTelemetryMode,
+
+    /// Timeout for one atomic recovery snapshot. Must remain below the 300 ms
+    /// stale-observation threshold.
+    #[clap(long, default_value_t = 250, value_parser = clap::value_parser!(u64).range(100..=299))]
+    recovery_snapshot_timeout_ms: u64,
+
+    /// Poll HookService.GetOwnshipHookState during CATOBAR recoveries as a
+    /// diagnostic. It only returns data on a client DCS instance with a local
+    /// cockpit; on a dedicated server it is always unavailable.
     #[clap(long)]
+    ownship_hook_diagnostics: bool,
+
+    /// Removed in 0.4.0: the greenie board is now the LSO page of the DCS Web
+    /// Dashboard, which reads `<out-dir>/lso.db` directly. The flag stays
+    /// hidden for one release so an old service definition fails with a clear
+    /// message instead of clap's "unexpected argument".
+    #[clap(long, hide = true)]
     web_port: Option<u16>,
+
+    /// Removed in 0.4.0 together with the web server.
+    #[clap(long, hide = true)]
+    web_expose_ucid: bool,
+}
+
+/// The loopback web board was removed in 0.4.0. Refuse its flags loudly rather
+/// than silently running without the board the operator expected.
+fn reject_removed_web_flags(opts: &Opts) -> Result<(), crate::error::Error> {
+    if opts.web_port.is_some() || opts.web_expose_ucid {
+        return Err(crate::error::Error::RemovedOption(
+            "--web-port and --web-expose-ucid were removed in LSO 0.4.0: the greenie board is now \
+             the LSO page of the DCS Web Dashboard (set its LSO_DIR to this --out-dir)",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn execute(
     opts: Opts,
     shutdown_handle: ShutdownHandle,
 ) -> Result<(), crate::error::Error> {
+    reject_removed_web_flags(&opts)?;
     if opts.discord_webhook.is_some() {
         tracing::info!("Discord integration enabled.");
     }
@@ -86,14 +127,6 @@ pub async fn execute(
             Default::default()
         });
 
-    let backoff = ExponentialBackoff {
-        // never wait longer than 30s for a retry
-        max_interval: Duration::from_secs(30),
-        // never stop trying
-        max_elapsed_time: None,
-        ..Default::default()
-    };
-
     let session_log: SessionLog = Arc::new(Mutex::new(Vec::new()));
     let db: SharedDb = Arc::new(RecoveryDb::open(&opts.out_dir.join("lso.db"))?);
     let generation_counter = Arc::new(AtomicU64::new(0));
@@ -106,24 +139,23 @@ pub async fn execute(
         }
     });
 
-    // Optionally start the web greenie board dashboard.
-    if let Some(port) = opts.web_port {
-        let db = db.clone();
-        tokio::spawn(async move {
-            if let Err(err) = crate::web::serve(db, port).await {
-                tracing::error!(%err, "web dashboard server error");
-            }
-        });
-    }
-
-    select(
-        Box::pin(backoff::future::retry_notify(
+    loop {
+        let backoff = ExponentialBackoff {
+            // never wait longer than 30s for a retry
+            max_interval: Duration::from_secs(30),
+            // never stop trying
+            max_elapsed_time: None,
+            ..Default::default()
+        };
+        let attempt = backoff::future::retry_notify(
             backoff,
-            // on each try, run the program and consider every error as transient (ie. worth
-            // retrying)
+            // on each try, run the program; failures of a young connection are transient
+            // (retry with growing delay), failures after a healthy uptime restart the
+            // outer loop with a fresh backoff.
             || async {
                 let generation = generation_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                run(
+                let started = Instant::now();
+                match run(
                     &opts,
                     users.clone(),
                     shutdown_handle.clone(),
@@ -132,7 +164,13 @@ pub async fn execute(
                     generation,
                 )
                 .await
-                .map_err(backoff::Error::transient)
+                {
+                    Ok(()) => Ok(()),
+                    Err(err) if started.elapsed() >= HEALTHY_UPTIME => {
+                        Err(backoff::Error::Permanent(err))
+                    }
+                    Err(err) => Err(backoff::Error::transient(err)),
+                }
             },
             // error hook:
             |err, backoff: Duration| {
@@ -142,10 +180,15 @@ pub async fn execute(
                     "retrying after error"
                 );
             },
-        )),
-        shutdown_handle.signal(),
-    )
-    .await;
+        );
+        match select(Box::pin(attempt), shutdown_handle.signal()).await {
+            Either::Left((Err(err), _)) => {
+                tracing::info!(%err, "connection lost after a healthy uptime; reconnecting");
+                continue;
+            }
+            Either::Left((Ok(()), _)) | Either::Right(_) => break,
+        }
+    }
     metrics_handle.abort();
 
     print_greenie_board(&session_log);
@@ -161,7 +204,6 @@ async fn run(
     db: SharedDb,
     generation: u64,
 ) -> Result<(), crate::error::Error> {
-    let out_dir = opts.out_dir.clone();
     let channel = Endpoint::from(opts.uri.clone())
         .connect_timeout(crate::client::RPC_DEADLINE)
         .keep_alive_while_idle(true)
@@ -171,7 +213,6 @@ async fn run(
     let mut coalition_svc = CoalitionServiceClient::new(channel.clone());
     let group_svc = GroupServiceClient::new(channel.clone());
     let mut unit_svc = UnitServiceClient::new(channel.clone());
-    let mut mission_svc = MissionServiceClient::new(channel.clone());
     let mut mission_client = crate::client::MissionClient::new(channel.clone());
     let mut metadata_client = crate::client::MetadataClient::new(channel.clone());
     let dcs_grpc_version = match metadata_client.get_version().await {
@@ -239,9 +280,7 @@ async fn run(
     )
     .await?;
 
-    let planes: Arc<Mutex<HashMap<String, PlaneCandidate>>> = Arc::new(Mutex::new(HashMap::new()));
-    let carriers: Arc<Mutex<HashMap<String, CarrierCandidate>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let registry: SharedRegistry = Arc::new(Mutex::new(UnitRegistry::default()));
     let mut net_client = crate::client::NetClient::new(channel.clone());
     let players = match net_client.get_players().await {
         Ok(players) => players,
@@ -255,16 +294,15 @@ async fn run(
         for unit in units {
             match check_candidate(&mut unit_svc, &unit, opts.include_ki).await? {
                 Some(Candidate::Plane(plane_info)) => {
-                    planes.lock().expect("planes mutex poisoned").insert(
-                        unit.name.clone(),
-                        plane_candidate(&unit, plane_info, &players, session_id),
-                    );
+                    let plane = plane_candidate(&unit, plane_info, &players, session_id);
+                    lock_unpoisoned(&registry).planes.insert(unit.id, plane);
                 }
                 Some(Candidate::Carrier(carrier_info)) => {
-                    carriers.lock().expect("carriers mutex poisoned").insert(
-                        unit.name,
+                    lock_unpoisoned(&registry).carriers.insert(
+                        unit.id,
                         CarrierCandidate {
                             id: unit.id,
+                            name: unit.name,
                             carrier_type: unit.r#type.unwrap_or_default(),
                             carrier_info,
                         },
@@ -274,140 +312,72 @@ async fn run(
             }
         }
     }
-
-    let (tx, mut rx) = mpsc::channel(16);
-
-    // Tracks the active detect_recovery_attempt task for each (plane_id, carrier_id) pair.
-    // When a Birth event re-spawns a known unit the old task is aborted before a new one starts,
-    // preventing duplicate recordings.
-    let active_tasks: RecoveryTaskMap = Arc::new(Mutex::new(HashMap::new()));
-
-    let discord_webhook = opts.discord_webhook.clone();
-    let record_acmi = !opts.no_acmi;
-    let hook_sampling = HookSamplingConfig {
-        mode: if opts.legacy_inline_hook_sampling {
-            HookSamplingMode::LegacyInline
-        } else {
-            HookSamplingMode::Independent
-        },
-        frequency_hz: opts.hook_sampling_hz,
-        timeout: Duration::from_millis(opts.hook_timeout_ms),
-    };
-    let active_tasks2 = active_tasks.clone();
-    let session_channel = channel.clone();
-    let session_shutdown = shutdown_handle.clone();
-    let dcs_grpc_version = dcs_grpc_version.clone();
-    let spawn_detect_recovery_attempt =
-        move |carrier_id: u32,
-              carrier_name: String,
-              carrier_type: String,
-              carrier_info: &'static CarrierInfo,
-              plane_id: u32,
-              plane_name: String,
-              plane_type: String,
-              plane_info: &'static AirplaneInfo,
-              pilot_name: String,
-              pilot_kind: PilotKind,
-              pilot_identity: String,
-              pilot_ucid: Option<String>| {
-            if !carrier_info.supports_aircraft_type(&plane_type) {
-                tracing::trace!(%carrier_name, %plane_name, %plane_type, "unsupported recovery pair rejected");
-                return;
-            }
-            let out_dir = out_dir.clone();
-            let discord_webhook = discord_webhook.clone();
-            let record_acmi = record_acmi;
-            let hook_sampling = hook_sampling;
-            let users = users.clone();
-            let channel = channel.clone();
-            let shutdown_handle = shutdown_handle.clone();
-            let session_log = session_log.clone();
-            let db = db.clone();
-            let dcs_grpc_version = dcs_grpc_version.clone();
-            let handle = tokio::spawn(async move {
-                if let Err(err) =
-                    crate::tasks::detect_recovery_attempt::detect_recovery_attempt(TaskParams {
-                        out_dir: &out_dir,
-                        discord_webhook,
-                        record_acmi,
-                        hook_sampling,
-                        users,
-                        ch: channel,
-                        carrier_id,
-                        carrier_name: &carrier_name,
-                        carrier_type: &carrier_type,
-                        plane_id,
-                        plane_name: &plane_name,
-                        plane_type: &plane_type,
-                        pilot_name: &pilot_name,
-                        pilot_kind,
-                        pilot_identity: &pilot_identity,
-                        pilot_ucid,
-                        carrier_info,
-                        plane_info,
-                        shutdown: shutdown_handle,
-                        session_log,
-                        db,
-                        session_id,
-                        generation,
-                        dcs_grpc_version: &dcs_grpc_version,
-                    })
-                    .await
-                {
-                    tracing::error!(%err, plane_id, carrier_id, session_id, generation, "recovery pair stopped after isolated error");
-                }
-            });
-            // Abort any existing task for this pair before registering the new one.
-            if let Ok(mut map) = active_tasks2.lock() {
-                if let Some(old) = map.insert((plane_id, carrier_id), handle) {
-                    tracing::debug!(
-                        plane_id,
-                        carrier_id,
-                        "aborting stale detect_recovery_attempt task for re-spawned unit"
-                    );
-                    old.abort();
-                }
-            }
-        };
-
-    let carrier_snapshot = carriers.lock().expect("carriers mutex poisoned").clone();
-    let plane_snapshot = planes.lock().expect("planes mutex poisoned").clone();
-    for (carrier_name, carrier) in &carrier_snapshot {
-        for (plane_name, plane) in &plane_snapshot {
-            spawn_detect_recovery_attempt(
-                carrier.id,
-                carrier_name.clone(),
-                carrier.carrier_type.clone(),
-                carrier.carrier_info,
-                plane.id,
-                plane_name.clone(),
-                plane.plane_type.clone(),
-                plane.plane_info,
-                plane.pilot_name.clone(),
-                plane.pilot_kind,
-                plane.pilot_identity.clone(),
-                plane.pilot_ucid.clone(),
-            );
-        }
+    {
+        let registry = lock_unpoisoned(&registry);
+        tracing::info!(
+            planes = registry.planes.len(),
+            carriers = registry.carriers.len(),
+            "initial unit discovery complete"
+        );
     }
 
-    // listen for birth events to track carriers and planes spawned at a later point in time
-    let mut events = mission_svc
-        .stream_events(crate::client::request_with_deadline(
-            mission::v0::StreamEventsRequest {},
-        ))
-        .await?
-        .into_inner();
+    let (tx, mut rx) = mpsc::channel(16);
+    let (event_tx, _event_rx) = broadcast::channel(EVENT_FANOUT_CAPACITY);
+
+    let context = Arc::new(RecoveryContext {
+        out_dir: opts.out_dir.clone(),
+        discord_webhook: opts.discord_webhook.clone(),
+        record_acmi: !opts.no_acmi,
+        hook_sampling: HookSamplingConfig {
+            mode: if opts.legacy_inline_hook_sampling {
+                HookSamplingMode::LegacyInline
+            } else {
+                HookSamplingMode::Independent
+            },
+            frequency_hz: opts.hook_sampling_hz,
+            timeout: Duration::from_millis(opts.hook_timeout_ms),
+        },
+        recovery_telemetry_mode: opts.recovery_telemetry_mode,
+        recovery_snapshot_timeout: Duration::from_millis(opts.recovery_snapshot_timeout_ms),
+        ownship_hook_diagnostics: opts.ownship_hook_diagnostics,
+        users,
+        ch: channel.clone(),
+        shutdown: shutdown_handle.clone(),
+        session_log,
+        db,
+        session_id,
+        generation,
+        dcs_grpc_version,
+        events: event_tx.clone(),
+        fatal: tx.clone(),
+    });
+
+    // Single detection supervisor for every known plane/carrier.
+    let supervisor_registry = registry.clone();
+    let supervisor_context = context.clone();
+    let tx_supervisor = tx.clone();
+    let supervisor_handle = tokio::spawn(async move {
+        if let Err(err) = crate::tasks::detect_recovery_attempt::supervise_recoveries(
+            supervisor_registry,
+            supervisor_context,
+        )
+        .await
+        {
+            tx_supervisor.send(err).await.ok();
+        }
+    });
+
+    // The single mission event stream: fans every event out to the active
+    // recorders and registers carriers and planes spawned later.
+    let mut events = Box::pin(mission_client.stream_events().await?);
     let tx_events = tx.clone();
     let include_ki = opts.include_ki;
+    let event_registry = registry.clone();
     let event_handle = tokio::spawn(async move {
         let _stream_guard = crate::metrics::RUNTIME_METRICS.stream();
         while let Some(event) = events.next().await {
-            let event = match event {
-                Ok(stubs::mission::v0::StreamEventsResponse {
-                    event: Some(event), ..
-                }) => event,
-                Ok(_) => continue,
+            let (time, event) = match event {
+                Ok(event) => event,
                 Err(err) => {
                     crate::metrics::RUNTIME_METRICS.observe_queue_depth(
                         tx_events
@@ -426,9 +396,9 @@ async fn run(
                         initiator: Some(common::v0::initiator::Initiator::Unit(unit)),
                     }),
                 ..
-            }) = event
+            }) = &event
             {
-                match check_candidate(&mut unit_svc, &unit, include_ki).await {
+                match check_candidate(&mut unit_svc, unit, include_ki).await {
                     Ok(Some(Candidate::Plane(plane_info))) => {
                         let players = match net_client.get_players().await {
                             Ok(players) => players,
@@ -441,57 +411,23 @@ async fn run(
                                 Vec::new()
                             }
                         };
-                        let plane = plane_candidate(&unit, plane_info, &players, session_id);
-                        planes
-                            .lock()
-                            .expect("planes mutex poisoned")
-                            .insert(unit.name.clone(), plane.clone());
-                        let carrier_snapshot =
-                            carriers.lock().expect("carriers mutex poisoned").clone();
-                        for (carrier_name, carrier) in carrier_snapshot {
-                            spawn_detect_recovery_attempt(
-                                carrier.id,
-                                carrier_name,
-                                carrier.carrier_type,
-                                carrier.carrier_info,
-                                plane.id,
-                                unit.name.clone(),
-                                plane.plane_type.clone(),
-                                plane.plane_info,
-                                plane.pilot_name.clone(),
-                                plane.pilot_kind,
-                                plane.pilot_identity.clone(),
-                                plane.pilot_ucid.clone(),
-                            );
-                        }
+                        let plane = plane_candidate(unit, plane_info, &players, session_id);
+                        tracing::debug!(unit_id = unit.id, name = %unit.name, "plane registered at birth");
+                        lock_unpoisoned(&event_registry)
+                            .planes
+                            .insert(unit.id, plane);
                     }
                     Ok(Some(Candidate::Carrier(carrier_info))) => {
-                        let carrier = CarrierCandidate {
-                            id: unit.id,
-                            carrier_type: unit.r#type.clone().unwrap_or_default(),
-                            carrier_info,
-                        };
-                        carriers
-                            .lock()
-                            .expect("carriers mutex poisoned")
-                            .insert(unit.name.clone(), carrier.clone());
-                        let plane_snapshot = planes.lock().expect("planes mutex poisoned").clone();
-                        for (plane_name, plane) in plane_snapshot {
-                            spawn_detect_recovery_attempt(
-                                carrier.id,
-                                unit.name.clone(),
-                                carrier.carrier_type.clone(),
-                                carrier.carrier_info,
-                                plane.id,
-                                plane_name,
-                                plane.plane_type,
-                                plane.plane_info,
-                                plane.pilot_name,
-                                plane.pilot_kind,
-                                plane.pilot_identity,
-                                plane.pilot_ucid,
-                            );
-                        }
+                        tracing::debug!(unit_id = unit.id, name = %unit.name, "carrier registered at birth");
+                        lock_unpoisoned(&event_registry).carriers.insert(
+                            unit.id,
+                            CarrierCandidate {
+                                id: unit.id,
+                                name: unit.name.clone(),
+                                carrier_type: unit.r#type.clone().unwrap_or_default(),
+                                carrier_info,
+                            },
+                        );
                     }
                     Ok(None) => {}
                     Err(err) => {
@@ -503,6 +439,9 @@ async fn run(
                     }
                 }
             }
+
+            // No receiver is fine: nothing is being recorded right now.
+            let _ = event_tx.send(Arc::new((time, event)));
         }
         crate::metrics::RUNTIME_METRICS.observe_queue_depth(
             tx_events
@@ -517,6 +456,8 @@ async fn run(
     });
 
     let tx_session = tx.clone();
+    let session_channel = channel.clone();
+    let session_shutdown = shutdown_handle.clone();
     let session_watchdog = tokio::spawn(async move {
         let mut client = crate::client::MissionClient::new(session_channel);
         let mut ticks = crate::utils::interval::interval(Duration::from_secs(1), session_shutdown);
@@ -570,27 +511,10 @@ async fn run(
         Some(err) => Err(err),
         None => Err(tonic::Status::aborted("All tasks finished unexpectedly").into()),
     };
-    if let Ok(mut tasks) = active_tasks.lock() {
-        for (_, handle) in tasks.drain() {
-            handle.abort();
-        }
-    }
+    supervisor_handle.abort();
     event_handle.abort();
     session_watchdog.abort();
     result
-
-    // This point is reached after shutdown or fatal error; print the greenie board.
-}
-
-#[derive(Debug, Clone)]
-struct PlaneCandidate {
-    id: u32,
-    pilot_name: String,
-    plane_type: String,
-    plane_info: &'static AirplaneInfo,
-    pilot_kind: PilotKind,
-    pilot_identity: String,
-    pilot_ucid: Option<String>,
 }
 
 fn plane_candidate(
@@ -629,6 +553,7 @@ fn plane_candidate(
 
     PlaneCandidate {
         id: unit.id,
+        name: unit.name.clone(),
         pilot_name,
         plane_type: unit.r#type.clone().unwrap_or_default(),
         plane_info,
@@ -636,13 +561,6 @@ fn plane_candidate(
         pilot_identity,
         pilot_ucid,
     }
-}
-
-#[derive(Debug, Clone)]
-struct CarrierCandidate {
-    id: u32,
-    carrier_type: String,
-    carrier_info: &'static CarrierInfo,
 }
 
 #[derive(Debug)]
@@ -697,10 +615,7 @@ async fn check_candidate(
 
 /// Print a session greenie board to stdout.
 fn print_greenie_board(session_log: &SessionLog) {
-    let passes = match session_log.lock() {
-        Ok(log) => log.clone(),
-        Err(_) => return,
-    };
+    let passes = lock_unpoisoned(session_log).clone();
     if passes.is_empty() {
         return;
     }
@@ -746,7 +661,7 @@ fn print_greenie_board(session_log: &SessionLog) {
             dcs,
         );
     }
-    println!("╚═══════════════════════╩══════╩══════╩════════════════════╝");
+    println!("╚══════════════════════╩══════╩══════╩════════════════════╝");
     println!();
 }
 
@@ -851,5 +766,48 @@ mod tests {
         assert_eq!(opts.hook_sampling_hz, 2);
         assert_eq!(opts.hook_timeout_ms, 250);
         assert!(opts.legacy_inline_hook_sampling);
+        assert_eq!(opts.recovery_telemetry_mode, RecoveryTelemetryMode::Auto);
+        assert_eq!(opts.recovery_snapshot_timeout_ms, 250);
+        assert!(!opts.ownship_hook_diagnostics);
+    }
+
+    #[test]
+    fn removed_web_flags_are_refused_with_guidance() {
+        let opts = Opts::try_parse_from(["lso-run", "--web-port", "8080"])
+            .expect("the hidden flag still parses so the refusal can explain itself");
+        let err = reject_removed_web_flags(&opts).expect_err("removed flag must be refused");
+        assert!(err.to_string().contains("DCS Web Dashboard"), "{err}");
+
+        let opts = Opts::try_parse_from(["lso-run", "--web-expose-ucid"]).expect("parses");
+        assert!(reject_removed_web_flags(&opts).is_err());
+
+        let opts = Opts::try_parse_from(["lso-run"]).expect("parses");
+        assert!(reject_removed_web_flags(&opts).is_ok());
+    }
+
+    #[test]
+    fn registry_replaces_units_by_id_and_keeps_both_kinds() {
+        let mut registry = UnitRegistry::default();
+        let info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        registry.planes.insert(
+            1,
+            plane_candidate(&unit(1, "Hornet-1", Some("A")), info, &[], 1),
+        );
+        registry.planes.insert(
+            1,
+            plane_candidate(&unit(1, "Hornet-1", Some("B")), info, &[], 1),
+        );
+        registry.carriers.insert(
+            5,
+            CarrierCandidate {
+                id: 5,
+                name: "CVN".to_string(),
+                carrier_type: "CVN_71".to_string(),
+                carrier_info: CarrierInfo::by_type("CVN_71").unwrap(),
+            },
+        );
+        assert_eq!(registry.planes.len(), 1);
+        assert_eq!(registry.planes[&1].pilot_name, "B");
+        assert_eq!(registry.carriers.len(), 1);
     }
 }

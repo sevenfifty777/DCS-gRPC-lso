@@ -136,6 +136,27 @@ const FORRESTAL: CarrierInfo = CarrierInfo {
     ),
 };
 
+/// External-model hook draw argument shared by the F/A-18C and the VNAO T-45.
+/// Validated against the installed module files (SHA-256 checked, 2026-09-02):
+/// `0` = hook up, `1` = hook down. During an arrestment the animated value
+/// transiently drops into the "up" band while the cable loads the hook.
+const HOOK_ARGUMENT_25: HookArgument = HookArgument {
+    id: 25,
+    up_max: 0.2,
+    down_min: 0.8,
+    polarity: "external_arg_25_zero_up_one_down_live_validated_2026-09",
+};
+
+/// Heatblur F-14 external hook argument (all variants). Same polarity as
+/// argument 25; the arrestment excursion lasts ~6.5 s and starts before
+/// `RunwayTouch`.
+const HOOK_ARGUMENT_1305: HookArgument = HookArgument {
+    id: 1305,
+    up_max: 0.2,
+    down_min: 0.8,
+    polarity: "external_arg_1305_zero_up_one_down_live_validated_2026-09",
+};
+
 static FA18C: AirplaneInfo = AirplaneInfo {
     name: "F/A-18C Hornet",
     hook: DVec3 {
@@ -148,6 +169,7 @@ static FA18C: AirplaneInfo = AirplaneInfo {
         y: -2.240897,
         z: -7.237348,
     },
+    hook_argument: Some(HOOK_ARGUMENT_25),
     glide_slope: 3.5,
     aoa_rating: |aoa: f64| -> Aoa {
         // https://forums.vrsimulations.com/support/index.php/Navigation_Tutorial_Flight#Angle_of_Attack_Bracket
@@ -195,6 +217,7 @@ static F14A: AirplaneInfo = AirplaneInfo {
     name: "F-14A Tomcat",
     hook: F14_HOOK,
     landing_reference: F14_HOOK,
+    hook_argument: Some(HOOK_ARGUMENT_1305),
     glide_slope: 3.5,
     aoa_rating: f14_aoa_rating,
 };
@@ -203,6 +226,7 @@ static F14B: AirplaneInfo = AirplaneInfo {
     name: "F-14B Tomcat",
     hook: F14_HOOK,
     landing_reference: F14_HOOK,
+    hook_argument: Some(HOOK_ARGUMENT_1305),
     glide_slope: 3.5,
     aoa_rating: f14_aoa_rating,
 };
@@ -211,6 +235,7 @@ static F14BU: AirplaneInfo = AirplaneInfo {
     name: "F-14B(U) Tomcat",
     hook: F14_HOOK,
     landing_reference: F14_HOOK,
+    hook_argument: Some(HOOK_ARGUMENT_1305),
     glide_slope: 3.5,
     aoa_rating: f14_aoa_rating,
 };
@@ -227,6 +252,7 @@ static T45: AirplaneInfo = AirplaneInfo {
         y: -1.778766,
         z: -4.782536,
     },
+    hook_argument: Some(HOOK_ARGUMENT_25),
     glide_slope: 3.5,
     aoa_rating: |aoa: f64| -> Aoa {
         // Thresholds derived from VNAO T-45 v1.0.2 DEU (DisplayElectronicsUnit.lua).
@@ -268,6 +294,7 @@ static AV8B: AirplaneInfo = AirplaneInfo {
         y: -1.89645,
         z: 0.0,
     },
+    hook_argument: None,
     // V/STOL V1.3 keeps the CATOBAR-style sloped approach display, but the
     // reference path terminates at 120 ft above the water abeam spot 7.5.
     glide_slope: 3.0,
@@ -489,6 +516,24 @@ pub enum Aoa {
     Slow,
 }
 
+/// External-model draw argument that exposes the physical arresting-hook
+/// position through `Unit.getDrawArgumentValue`, with its validated polarity.
+///
+/// Values are the animated hook position, not the cockpit lever: a real
+/// arrestment drives the value from the down band into the up band for a few
+/// seconds (starting before `RunwayTouch`). Consumers must therefore latch the
+/// pre-contact baseline instead of reading the latest sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HookArgument {
+    pub id: u32,
+    /// Values at or below this are "hook up".
+    pub up_max: f64,
+    /// Values at or above this are "hook down".
+    pub down_min: f64,
+    /// Provenance label persisted in reports.
+    pub polarity: &'static str,
+}
+
 #[derive(Debug)]
 pub struct AirplaneInfo {
     /// Human-readable aircraft display name shown in grading output.
@@ -499,6 +544,9 @@ pub struct AirplaneInfo {
     /// For CATOBAR aircraft this mirrors the hook; for AV-8B this is the pilot
     /// position projected vertically onto the calibrated ground-contact plane.
     pub landing_reference: DVec3,
+    /// Validated external hook draw argument; `None` when the module has no
+    /// arresting hook or its argument has not been validated live.
+    pub hook_argument: Option<HookArgument>,
     /// The optimal glide slope in degrees.
     pub glide_slope: f64,
     /// A function that returns its current AOA rating.

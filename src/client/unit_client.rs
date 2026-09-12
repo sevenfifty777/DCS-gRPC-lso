@@ -8,6 +8,7 @@ use crate::transform::{ObservedTransform, Transform};
 use super::{request_with_deadline, request_with_timeout, GrpcResult};
 use crate::metrics::RpcKind;
 
+#[derive(Clone)]
 pub struct UnitClient {
     svc: UnitServiceClient<Channel>,
 }

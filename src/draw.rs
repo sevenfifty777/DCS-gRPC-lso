@@ -377,6 +377,33 @@ fn side_range_y(track: &TrackResult) -> Range<f64> {
     }
 }
 
+fn recovery_label(grading: &Grading, is_vstol: bool, arrest_evidence: &str) -> Cow<'static, str> {
+    match grading {
+        Grading::Unknown => Cow::Borrowed(""),
+        Grading::Bolter => Cow::Borrowed("Bolter"),
+        Grading::Recovered { .. } if !is_vstol && arrest_evidence == "unconfirmed" => {
+            Cow::Borrowed("Deck contact (arrest unconfirmed)")
+        }
+        Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
+        Grading::WaveoffDcs => Cow::Borrowed("Waveoff (DCS LSO)"),
+        Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
+        Grading::Recovered {
+            cable,
+            cable_estimated,
+        } => {
+            if is_vstol {
+                Cow::Borrowed("V/STOL recovery")
+            } else {
+                match crate::track::select_wire_for_display(*cable_estimated, *cable) {
+                    (Some(wire), "estimated") => Cow::Owned(format!("Wire {} (estimated)", wire)),
+                    (Some(wire), "dcs") => Cow::Owned(format!("Wire {} (DCS)", wire)),
+                    _ => Cow::Borrowed("Arrested (wire unknown)"),
+                }
+            }
+        }
+    }
+}
+
 #[tracing::instrument(skip_all)]
 pub fn draw_chart(
     out_dir: &std::path::Path,
@@ -437,23 +464,11 @@ pub fn draw_chart(
     )?;
 
     root_drawing_area.draw_text(
-        &match track.grading {
-            Grading::Unknown => Cow::Borrowed(""),
-            Grading::Bolter => Cow::Borrowed("Bolter"),
-            Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
-            Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
-            Grading::Recovered {
-                cable_estimated, ..
-            } => {
-                if track.carrier_info.is_vstol() {
-                    Cow::Borrowed("V/STOL recovery")
-                } else {
-                    cable_estimated
-                        .map(|wire| Cow::Owned(format!("Wire {} (estimated)", wire)))
-                        .unwrap_or(Cow::Borrowed("(failed to detect cable)"))
-                }
-            }
-        },
+        &recovery_label(
+            &track.grading,
+            track.carrier_info.is_vstol(),
+            track.arrest_evidence,
+        ),
         &text_style,
         (16, 112),
     )?;
@@ -1221,9 +1236,50 @@ impl ValueFormatter<f64> for CustomRange {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        chart_layout, select_catobar_display_runs, select_catobar_final_datums,
-        select_vstol_final_datums, Datum, PANEL_GAP,
+        chart_layout, recovery_label, select_catobar_display_runs, select_catobar_final_datums,
+        select_vstol_final_datums, Datum, Grading, PANEL_GAP,
     };
+
+    #[test]
+    fn catobar_recovery_label_uses_dcs_wire_when_estimate_is_unavailable() {
+        let grading = Grading::Recovered {
+            cable: Some(4),
+            cable_estimated: None,
+        };
+
+        assert_eq!(recovery_label(&grading, false, "dcs_wire"), "Wire 4 (DCS)");
+    }
+
+    #[test]
+    fn catobar_recovery_label_keeps_dcs_wire_authoritative() {
+        let grading = Grading::Recovered {
+            cable: Some(4),
+            cable_estimated: Some(3),
+        };
+
+        assert_eq!(recovery_label(&grading, false, "dcs_wire"), "Wire 4 (DCS)");
+    }
+
+    #[test]
+    fn catobar_recovery_label_separates_kinematic_arrest_from_unconfirmed_contact() {
+        let grading = Grading::Recovered {
+            cable: None,
+            cable_estimated: None,
+        };
+
+        assert_eq!(
+            recovery_label(&grading, false, "kinematic"),
+            "Arrested (wire unknown)"
+        );
+        assert_eq!(
+            recovery_label(&grading, false, "unconfirmed"),
+            "Deck contact (arrest unconfirmed)"
+        );
+        assert_eq!(
+            recovery_label(&Grading::WaveoffDcs, false, "none"),
+            "Waveoff (DCS LSO)"
+        );
+    }
 
     fn two_complete_final_approach_runs() -> Vec<Datum> {
         let mut datums = Vec::new();

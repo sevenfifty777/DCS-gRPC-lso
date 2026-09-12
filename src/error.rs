@@ -18,6 +18,8 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
     #[error("database error")]
     Db(#[from] rusqlite::Error),
+    #[error("{0}")]
+    RemovedOption(&'static str),
 }
 
 impl From<tonic::Status> for Error {

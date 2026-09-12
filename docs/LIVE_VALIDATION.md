@@ -7,8 +7,8 @@
 | implementation base revision | `95f1d27ff273c93b547c963514d26c8d77b31d7f` | known |
 | working branch | `feature/dev-post-tests-20260831` | known; implementation remains uncommitted |
 | imported reliability change | `53f69f5` applied without commit, then extended from the 2026-08-31 corpus | known working-tree provenance |
-| Rust DCS-gRPC stubs | tag `v0.9.0`, commit `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b` | pinned in Cargo.lock |
-| protobuf | DCS-gRPC v0.9.0 | unchanged |
+| Rust DCS-gRPC stubs | local path `../rust-server/stubs`, fork branch `hook-mechanization-api` (0.9.1 + `RecoveryService.GetRecoverySnapshot` + `HookService.GetOwnshipHookState`) | path pin in `Cargo.toml`; tagged `v0.9.2` pending |
+| protobuf | DCS-gRPC 0.9.1 plus `RecoveryService` and `HookService.GetOwnshipHookState` | changed from 0.9.0 |
 | deployed DCS build | not authenticated | required live evidence |
 | deployed `dcs_grpc.dll` SHA-256 | not authenticated | required live evidence |
 | deployed Lua tree SHA-256 | not authenticated | required live evidence |

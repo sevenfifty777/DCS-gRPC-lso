@@ -316,6 +316,14 @@ Sources utilisées pour compléter ce tableau :
 - [ ] Le LSO humain corrige le fil
 - [x] Autre : `Accepter la recommandation mais utiliser le wire_estimated pour l'affichage principal`
 
+> **Annotation 2026-09-02 — décision inversée.** L'estimation géométrique seule a obtenu 0/3
+> contre le `WIRE#` DCS lors des tests live (voir
+> [wire-estimation-hook-post-test-analyze.md](wire-estimation-hook-post-test-analyze.md)). Depuis,
+> DCS `WIRE#` fait autorité pour l'affichage principal ; `wire_estimated` (transitoire de crosse
+> complet corrélé ≤200 ms après le dernier franchissement de plan de câble) n'est utilisé que
+> lorsque DCS ne fournit aucun fil (LSO humain). Les deux valeurs restent stockées séparément avec
+> leur divergence.
+
 ### Arbitrage K — `_OK_` / « Unicorn »
 
 **Recommandation :** désactiver ce bonus tant que la règle fil 3 + 15–18,99 s n'est pas formellement approuvée dans votre spécification métier.

@@ -16,11 +16,16 @@ or through Discord.
 - Carrier-relative final-approach and overhead-pattern PNG charts with AoA-coloured tracks.
 - Bracketed/interpolated gates at 3/4, 1/2, and 1/4 nm with freshness/skew evidence. Incomplete
   observations receive `NC` and no points.
-- Aircraft/carrier transforms stay on the priority loop; CATOBAR hook state is sampled independently
-  at 4 Hz by default with a 300 ms timeout. Stale or unknown hook data is never reused as certainty.
+- Atomic recovery telemetry (`RecoveryService.GetRecoverySnapshot`): carrier, aircraft and the hook
+  draw argument arrive in one server-side callback with one timestamp. In legacy acquisition mode
+  (server without the RPC, or `--recovery-telemetry-mode legacy`) aircraft/carrier transforms stay
+  on the priority loop and CATOBAR hook state is sampled independently at 4 Hz by default with a
+  300 ms timeout. Stale or unknown hook data is never reused as certainty.
 - Separate outcome, grade, points, cause, confidence, completeness, rule version and wire provenance.
 - JSON reports, optional compressed Tacview ACMI recordings, and persistent SQLite history.
-- Optional Discord reports, terminal session summary, and HTTP greenie board.
+- Optional Discord reports, terminal session summary, and a greenie board served by the
+  [DCS Web Dashboard](https://github.com/sevenfifty777/DCS-Web-Dashboard), which reads `lso.db`
+  directly.
 - Offline regeneration of the approach chart from ACMI files created by LSO.
 
 The pass grade is a `PROJECT-DERIVED` training score, never an official USN/USMC certification. It
@@ -30,10 +35,11 @@ uses glideslope and lineup deviations at three gates; AoA colours the charts but
 ## Requirements
 
 - Windows or another platform supported by the Rust dependency stack.
-- DCS World with the official forked
-  [DCS-gRPC `v0.9.0` release](https://github.com/sevenfifty777/rust-server/releases/tag/v0.9.0).
-  The committed lockfile resolves that tag to commit
-  `5bd6d6e42491c8697a5c5a95e80a2e689923bd3b`.
+- DCS World with the [sevenfifty777 DCS-gRPC fork](https://github.com/sevenfifty777/rust-server)
+  at 0.9.1 or later with `RecoveryService.GetRecoverySnapshot` (branch `hook-mechanization-api`;
+  a tagged `v0.9.2` release is being prepared). `Cargo.toml` currently pins the client stubs by
+  local path (`../rust-server/stubs`), so building from source requires that fork checked out next
+  to this repository.
 - A Rust stable toolchain only when building from source.
 
 The DCS-gRPC server and this client must use compatible protobuf APIs. Upstream DCS-gRPC 0.8.1 is
@@ -55,15 +61,22 @@ exponential backoff. Use `--uri` when DCS-gRPC is on another host or port.
 Common examples:
 
 ```powershell
-# Include the persistent web board at http://localhost:8080
-.\lso.exe run -o C:\LSO\recordings --web-port 8080
-
 # Save charts and JSON, but not ACMI
 .\lso.exe run -o C:\LSO\recordings --no-acmi
 
-# A/B diagnostic: compare the independent hook sampler with the former blocking path
+# A/B diagnostic: compare the independent hook sampler with the former blocking path.
+# These flags only matter in legacy acquisition mode; in atomic mode the hook value comes
+# inside GetRecoverySnapshot and no separate hook sampler is used.
 .\lso.exe run -o C:\LSO\recordings --hook-sampling-hz 4 --hook-timeout-ms 300
 .\lso.exe run -o C:\LSO\recordings --legacy-inline-hook-sampling
+
+# Recovery telemetry rollout: automatic capability probe, forced atomic, or rollback
+.\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode auto
+.\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode atomic --recovery-snapshot-timeout-ms 250
+.\lso.exe run -o C:\LSO\recordings --recovery-telemetry-mode legacy
+
+# Opt-in diagnostics
+.\lso.exe run -o C:\LSO\recordings --ownship-hook-diagnostics   # client DCS with a local cockpit only
 
 # Enable debug or trace logging; global flags go before the subcommand
 .\lso.exe -v run -o C:\LSO\recordings
@@ -85,7 +98,7 @@ A completed live pass writes or updates the following items in `--out-dir`:
 |---|---|
 | `LSO-<date>-<pilot>-<recovery-id>.png` | Final-approach trap sheet |
 | `LSO-<date>-<pilot>-<recovery-id>-pattern.png` | Overhead pattern chart |
-| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v3 result, gates, event/time/hook/wire evidence and telemetry quality |
+| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema 7 result, acquisition/sequence provenance, gates, event/time/hook/wire evidence and telemetry quality |
 | `LSO-<date>-<pilot>-<recovery-id>.zip.acmi` | Compressed Tacview recording; omitted with `--no-acmi` |
 | `lso.db` | Shared SQLite history; one row is inserted per saved pass |
 
@@ -112,10 +125,16 @@ SQLite, Discord, or the pattern chart.
 
 Unsupported types are ignored. `Stennis` is DCS's type name for CVN-74.
 
-## Web and Discord
+## Greenie board and Discord
 
-`--web-port <PORT>` serves `/` and `/api/passes` on `127.0.0.1` and refreshes the browser board every
-10 seconds. Phase 1 intentionally has no remote bind, OAuth2 or TLS.
+The greenie board is the **LSO** page of the
+[DCS Web Dashboard](https://github.com/sevenfifty777/DCS-Web-Dashboard). Point the dashboard's
+`LSO_DIR` at this `--out-dir`: it opens `lso.db` read-only (WAL journaling lets both processes use
+the file at the same time), serves the trap-sheet PNGs, groups passes by pilot, and never exposes
+UCIDs. LSO itself opens no listening port.
+
+LSO 0.3 served a loopback board with `--web-port`; that server and `--web-expose-ucid` were removed
+in 0.4.0, and `lso run` refuses both flags with a message pointing here.
 
 Discord delivery is enabled with `--discord-webhook`. Keep webhook URLs out of source control,
 screenshots, logs, and shared command transcripts. `--discord-users` accepts a JSON map from DCS
@@ -132,10 +151,11 @@ pilot names to Discord numeric user IDs; it is optional.
 - [Live validation and version manifest](docs/LIVE_VALIDATION.md)
 - [Deployment and rollback](docs/DEPLOYMENT_ROLLBACK.md)
 - [DCS-gRPC fork migration](docs/DCS_GRPC_FORK_MIGRATION.md)
+- [Current state analysis and improvement plan (2026-09-03)](docs/claude-plan/as-rust-dcs-scripting-gentle-cat.md)
 - [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGES.md)
 
-`docs/DCS-gRPC-0.9.0/` is a bundled upstream/fork reference snapshot and is not maintained as LSO
+`docs/DCS-gRPC-0.9.1/` is a bundled upstream/fork reference snapshot and is not maintained as LSO
 documentation.
 
 ## License

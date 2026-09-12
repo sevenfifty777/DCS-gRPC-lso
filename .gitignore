@@ -43,5 +43,5 @@ coverage/
 .ignore/
 modelviewer/
 trap_records/
-docs/analys-codex-justice/
 NATOPS/
+docs/DCS_gRPC_analyse

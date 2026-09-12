@@ -7,9 +7,11 @@ and describe the expected and observed wire.
 
 ## Development setup
 
-Install a stable Rust toolchain, clone the repository, and run from the repository root. Cargo
-fetches the DCS-gRPC stubs from the official fork release tag selected in `Cargo.toml`; the committed
-`Cargo.lock` records the exact resolved commit.
+Install a stable Rust toolchain, clone the repository, and run from the repository root. `Cargo.toml`
+currently pins the DCS-gRPC stubs by local path (`../rust-server/stubs`), so clone the
+[sevenfifty777/rust-server](https://github.com/sevenfifty777/rust-server) fork (branch
+`hook-mechanization-api`, 0.9.1 plus `RecoveryService`/`HookService`) next to this repository before
+building. A tagged `v0.9.2` release will replace the path pin.
 
 ```powershell
 cargo build
@@ -50,9 +52,10 @@ cargo test generate_chart_images -- --nocapture
 
 The images are written under `target/test-charts/` and are not source files.
 
-When dependencies change, also run `cargo audit` if `cargo-audit` is installed. Do not update the
-DCS-gRPC release tag or its resolved commit without reviewing protobuf compatibility and updating
-the migration and administrator documentation.
+When dependencies change, also run `cargo audit` if `cargo-audit` is installed (CI runs it as a
+non-blocking job). Do not change the DCS-gRPC stubs pin (path today, release tag once `v0.9.2` is
+published) without reviewing protobuf compatibility and updating the migration and administrator
+documentation.
 
 ## Change guidelines
 
@@ -62,7 +65,7 @@ the migration and administrator documentation.
   CLI flags, output fields, network binding, or supported units change.
 - Do not commit Discord webhook URLs, credentials, local databases, generated charts, logs, or
   private recordings.
-- Preserve the bundled `docs/DCS-gRPC-0.9.0/` reference snapshot unless deliberately replacing the
+- Preserve the bundled `docs/DCS-gRPC-0.9.1/` reference snapshot unless deliberately replacing the
   pinned server version.
 
 This repository is licensed under the [GNU AGPL v3](LICENSE). Contributions are submitted under

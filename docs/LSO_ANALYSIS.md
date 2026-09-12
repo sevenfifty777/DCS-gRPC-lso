@@ -4,14 +4,14 @@ LSO is a Rust/Tokio binary with live (`lso run`) and deterministic ACMI replay (
 The reliability implementation is organized as:
 
 ```text
-DCS-gRPC v0.9.0
+DCS-gRPC fork 0.9.1+ (RecoveryService.GetRecoverySnapshot, HookService.GetOwnshipHookState)
   -> session/generation supervisor and strict discovery
   -> one isolated detector per compatible aircraft/carrier pair
   -> 10 Hz recovery recorder + correlated mission events
   -> time alignment and bounded Track state
   -> gates, evidence, outcome, completeness and project score
   -> idempotent SQLite + atomic local artifacts
-  -> blocking-worker PNG + optional Discord + loopback dashboard
+  -> blocking-worker PNG + optional Discord (the DCS Web Dashboard reads lso.db directly)
 ```
 
 | Module | Responsibility |
@@ -24,7 +24,6 @@ DCS-gRPC v0.9.0
 | `grading.rs` | project score and experimental V/STOL model |
 | `db.rs` | additive migrations and idempotent private persistence |
 | `metrics.rs` | RPC/stream/queue/IO/render instrumentation |
-| `web.rs` | loopback-only private dashboard |
 
 Detailed current contracts:
 
