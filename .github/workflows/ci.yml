@@ -14,13 +14,15 @@ jobs:
 
     env:
       CARGO_TERM_COLOR: always
-      # Cargo.toml pins dcs-grpc-stubs by path to ../rust-server/stubs, so the fork must be
-      # checked out next to this repository. Switch this to the `v0.9.2` tag once it is published.
-      RUST_SERVER_REF: main
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # plotters -> font-kit -> yeslogic-fontconfig-sys links against system fontconfig on Linux
+      # (on Windows font-kit uses DirectWrite, so this is only needed on the runner).
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev fonts-dejavu-core
 
       - uses: actions/cache@v4
         with:
@@ -40,8 +42,6 @@ jobs:
           override: true
           components: rustfmt, clippy
 
-      - name: Clone DCS-gRPC fork (path dependency for dcs-grpc-stubs)
-        run: git clone --depth 1 --branch ${{ env.RUST_SERVER_REF }} https://github.com/sevenfifty777/rust-server ../rust-server
 
       - name: Build
         run: cargo build
