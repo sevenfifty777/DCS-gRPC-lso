@@ -1,0 +1,224 @@
+syntax = "proto3";
+
+package dcs.recovery.v0;
+
+import "dcs/common/v0/common.proto";
+
+option csharp_namespace = "RurouniJones.Dcs.Grpc.V0.Recovery";
+option go_package = "github.com/DCS-gRPC/go-bindings/dcs/v0/recovery";
+
+/**
+ * Recovery-specific, callback-atomic observations for grading clients.
+ *
+ * Both DCS objects are read sequentially inside one mission Lua callback and
+ * share one mission-relative timestamp. This is not a simulator-wide state
+ * transaction.
+ */
+service RecoveryService {
+  rpc GetRecoverySnapshot(GetRecoverySnapshotRequest)
+      returns (GetRecoverySnapshotResponse) {}
+  rpc StartRecoveryTelemetry(StartRecoveryTelemetryRequest)
+      returns (StartRecoveryTelemetryResponse) {}
+  rpc ReadRecoveryTelemetry(ReadRecoveryTelemetryRequest)
+      returns (ReadRecoveryTelemetryResponse) {}
+  rpc StopRecoveryTelemetry(StopRecoveryTelemetryRequest)
+      returns (StopRecoveryTelemetryResponse) {}
+}
+
+message GetRecoverySnapshotRequest {
+  string carrier_name = 1;
+  string aircraft_name = 2;
+  // Optional external-model argument to observe with the two transforms.
+  optional uint32 aircraft_draw_argument = 3;
+  // Client-generated correlation sequence, echoed unchanged by the server.
+  uint64 sequence = 4;
+}
+
+message RecoveryTransform {
+  dcs.common.v0.Position position = 1;
+  dcs.common.v0.Orientation orientation = 2;
+  dcs.common.v0.Velocity velocity = 3;
+}
+
+enum DrawArgumentStatus {
+  DRAW_ARGUMENT_STATUS_UNSPECIFIED = 0;
+  DRAW_ARGUMENT_STATUS_NOT_REQUESTED = 1;
+  DRAW_ARGUMENT_STATUS_OBSERVED = 2;
+  DRAW_ARGUMENT_STATUS_UNAVAILABLE = 3;
+}
+
+message DrawArgumentObservation {
+  DrawArgumentStatus status = 1;
+  // Zero is a valid observed DCS draw-argument value.
+  optional double value = 2;
+  // Diagnostic detail set together with DRAW_ARGUMENT_STATUS_UNAVAILABLE: the
+  // Lua error raised by `Unit.getDrawArgumentValue`, or a description of the
+  // unexpected return type. Absent for every other status.
+  optional string detail = 3;
+}
+
+message GetRecoverySnapshotResponse {
+  // Mission-relative time captured once for the whole callback observation.
+  double time = 1;
+  RecoveryTransform carrier = 2;
+  RecoveryTransform aircraft = 3;
+  DrawArgumentObservation aircraft_draw_argument = 4;
+  uint64 sequence = 5;
+
+  // Server-side latency diagnostics. All of these fields are additive and
+  // optional: a field is absent whenever the bridge could not measure it.
+
+  // Wall-clock milliseconds the request spent in the mission IPC queue, from
+  // the moment the gRPC handler enqueued it until the mission scheduler
+  // dequeued it for execution. Measured by the Rust bridge with a monotonic
+  // clock at dequeue time and handed to the Lua callback; it does not include
+  // the Lua execution time or the gRPC transport.
+  optional double queue_wait_ms = 6;
+  // Wall-clock milliseconds spent inside the Lua `getRecoverySnapshot`
+  // callback, from entry until the observation (transforms and draw argument)
+  // was collected. Measured with the bridge's monotonic clock
+  // (`GRPC.monotonicMs`), falling back to `os.clock()` (CPU time) when the
+  // mission environment still exposes `os`. Absent when neither is available.
+  optional double lua_exec_ms = 7;
+  // Depth of the mission IPC queue when this request was enqueued, including
+  // the request itself (1 means the queue was otherwise empty).
+  optional uint32 queue_depth = 8;
+  // DCS `timer.getTime()` observed when the Lua callback started executing.
+  // It equals `time` because the whole observation happens inside that one
+  // callback; it is exposed separately so clients can compare it with model
+  // time obtained through other channels.
+  optional double dequeued_model_time = 9;
+}
+
+/**
+ * Starts (or idempotently renews) a bounded source-side telemetry capture.
+ * Unit names and DCS IDs are both required so a same-name respawn cannot be
+ * mistaken for the unit incarnation registered by the client.
+ */
+message StartRecoveryTelemetryRequest {
+  string recovery_handle = 1;
+  string aircraft_name = 2;
+  uint32 aircraft_id = 3;
+  string carrier_name = 4;
+  uint32 carrier_id = 5;
+}
+
+message StartRecoveryTelemetryResponse {
+  string source_epoch = 1;
+  string recovery_handle = 2;
+  double lease_expires_at = 3;
+  double configured_period = 4;
+  uint32 capacity = 5;
+  double retention_seconds = 6;
+  bool already_active = 7;
+}
+
+message ReadRecoveryTelemetryRequest {
+  string recovery_handle = 1;
+  // Empty means that the client does not know the epoch yet.
+  string expected_source_epoch = 2;
+  // Exclusive cursor: only snapshots with sequence > after_sequence are read.
+  uint64 after_sequence = 3;
+  // Zero selects the server default. The server always clamps this value.
+  uint32 limit = 4;
+}
+
+enum RecoveryTelemetryLifecycleStatus {
+  RECOVERY_TELEMETRY_LIFECYCLE_STATUS_UNSPECIFIED = 0;
+  RECOVERY_TELEMETRY_LIFECYCLE_STATUS_ACTIVE = 1;
+  RECOVERY_TELEMETRY_LIFECYCLE_STATUS_UNKNOWN = 2;
+  RECOVERY_TELEMETRY_LIFECYCLE_STATUS_EXPIRED = 3;
+  RECOVERY_TELEMETRY_LIFECYCLE_STATUS_STOPPED = 4;
+  RECOVERY_TELEMETRY_LIFECYCLE_STATUS_EPOCH_MISMATCH = 5;
+}
+
+enum RecoveryTelemetryLossReason {
+  RECOVERY_TELEMETRY_LOSS_REASON_UNSPECIFIED = 0;
+  RECOVERY_TELEMETRY_LOSS_REASON_NONE = 1;
+  RECOVERY_TELEMETRY_LOSS_REASON_RETENTION_EXPIRED = 2;
+  RECOVERY_TELEMETRY_LOSS_REASON_CAPACITY_OVERFLOW = 3;
+  // The missing sequence range contains both retention and capacity evictions.
+  RECOVERY_TELEMETRY_LOSS_REASON_MIXED = 4;
+}
+
+enum UnitObservationStatus {
+  UNIT_OBSERVATION_STATUS_UNSPECIFIED = 0;
+  UNIT_OBSERVATION_STATUS_VALID = 1;
+  UNIT_OBSERVATION_STATUS_NOT_FOUND = 2;
+  UNIT_OBSERVATION_STATUS_ID_MISMATCH = 3;
+  UNIT_OBSERVATION_STATUS_READ_ERROR = 4;
+  UNIT_OBSERVATION_STATUS_INVALID_DATA = 5;
+}
+
+message RecoveryUnitObservation {
+  UnitObservationStatus status = 1;
+  string expected_name = 2;
+  uint32 expected_id = 3;
+  optional uint32 resolved_id = 4;
+  optional RecoveryTransform transform = 5;
+  // Diagnostic offset from callback start. Absent if unavailable.
+  optional uint64 read_started_offset_us = 6;
+  optional uint64 read_finished_offset_us = 7;
+}
+
+message RecoveryTelemetrySnapshot {
+  string recovery_handle = 1;
+  string source_epoch = 2;
+  uint64 sequence = 3;
+  uint64 capture_tick = 4;
+  // Mission-relative timestamp read once for the whole capture callback.
+  double capture_time = 5;
+  RecoveryUnitObservation aircraft = 6;
+  RecoveryUnitObservation carrier = 7;
+  // Whole callback duration, absent if the native monotonic clock is unavailable.
+  optional uint64 capture_duration_us = 8;
+}
+
+message RecoveryTelemetryDiagnostics {
+  optional double last_capture_time = 1;
+  double configured_period = 2;
+  optional double observed_gap = 3;
+  uint64 missed_capture_intervals = 4;
+  uint64 snapshots_produced = 5;
+  uint64 invalid_snapshots_produced = 6;
+  uint64 snapshots_served = 7;
+  uint64 retention_expiration_count = 8;
+  uint64 capacity_overflow_count = 9;
+  uint32 high_water_mark = 10;
+  uint32 active_recoveries = 11;
+  uint32 active_carriers = 12;
+  optional uint64 last_capture_duration_us = 13;
+  uint64 read_batches = 14;
+  uint32 last_batch_size = 15;
+  optional double source_age = 16;
+}
+
+message ReadRecoveryTelemetryResponse {
+  string source_epoch = 1;
+  string recovery_handle = 2;
+  RecoveryTelemetryLifecycleStatus lifecycle_status = 3;
+  uint64 oldest_available_sequence = 4;
+  uint64 newest_available_sequence = 5;
+  uint64 next_after_sequence = 6;
+  RecoveryTelemetryLossReason loss_reason = 7;
+  uint64 overflow_count = 8;
+  double configured_period = 9;
+  uint32 capacity = 10;
+  double retention_seconds = 11;
+  repeated RecoveryTelemetrySnapshot snapshots = 12;
+  RecoveryTelemetryDiagnostics diagnostics = 13;
+  double lease_expires_at = 14;
+  // Mission-relative time at which the retained ring was read.
+  double read_time = 15;
+}
+
+message StopRecoveryTelemetryRequest {
+  string recovery_handle = 1;
+  string expected_source_epoch = 2;
+}
+
+message StopRecoveryTelemetryResponse {
+  string source_epoch = 1;
+  string recovery_handle = 2;
+  RecoveryTelemetryLifecycleStatus lifecycle_status = 3;
+}

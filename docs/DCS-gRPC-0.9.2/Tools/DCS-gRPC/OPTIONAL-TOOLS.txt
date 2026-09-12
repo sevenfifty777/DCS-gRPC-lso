@@ -1,0 +1,14 @@
+DCS-gRPC optional diagnostic tools
+==================================
+
+These third-party programs are not required to run the DCS-gRPC server.
+
+grpcurl - command-line gRPC client
+Official downloads: https://github.com/fullstorydev/grpcurl/releases
+
+grpcui - browser-based graphical gRPC client
+Official downloads: https://github.com/fullstorydev/grpcui/releases
+
+Download a reviewed release directly from the official project page and verify
+the published checksum before running it. DCS-gRPC does not redistribute these
+executables.
