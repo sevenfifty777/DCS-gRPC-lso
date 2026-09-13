@@ -72,8 +72,14 @@ pub struct DbPass {
     pub fallback_source: String,
 }
 
-/// Pass record as returned from a database query (JSON-serialisable for the web API).
-#[derive(Debug, serde::Serialize)]
+/// Pass record as read back from the database. Since 0.5.0 only the migration
+/// tests read rows; the DCS Web Dashboard queries `lso.db` directly.
+#[cfg(test)]
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "mirrors every `passes` column for the migration tests; only some are asserted"
+)]
 pub struct StoredPass {
     pub id: i64,
     pub timestamp: String,
@@ -133,6 +139,13 @@ impl RecoveryDb {
     /// Open (or create) the LSO database at `path` and apply the schema migration.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // Write-ahead logging lets an external read-only consumer (the DCS Web
+        // Dashboard LSO page reading this file directly) query the board while
+        // a pass is being inserted, without either side waiting on the other's
+        // lock. `busy_timeout` covers the brief checkpoint windows where WAL
+        // still serialises access. Both pragmas are no-ops for `:memory:`.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", 2000)?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS passes (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,7 +242,7 @@ impl RecoveryDb {
 
     /// Persist a completed recovery pass.
     pub fn insert(&self, pass: &DbPass) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = crate::utils::lock_unpoisoned(&self.conn);
         let inserted = conn.execute(
             "INSERT OR IGNORE INTO passes \
                 (timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
@@ -294,9 +307,11 @@ impl RecoveryDb {
         Ok(inserted == 1)
     }
 
-    /// Return all passes ordered newest-first.
+    /// Return all passes ordered newest-first (test-only since the web board
+    /// moved to the DCS Web Dashboard).
+    #[cfg(test)]
     pub fn all_passes(&self) -> rusqlite::Result<Vec<StoredPass>> {
-        let conn = self.conn.lock().expect("db mutex poisoned");
+        let conn = crate::utils::lock_unpoisoned(&self.conn);
         let mut stmt = conn.prepare(
             "SELECT id, timestamp, pilot_name, pilot_ucid, aircraft_id, pass_grade, wire, spot, spot_grade, spot_distance_m, dcs_grading, aircraft_type, \
                     map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
@@ -371,15 +386,6 @@ impl RecoveryDb {
             })
         })?;
         rows.collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_query_failure_for_test(&self) {
-        self.conn
-            .lock()
-            .expect("db mutex poisoned")
-            .execute_batch("DROP TABLE passes;")
-            .expect("invalidate test database");
     }
 }
 
@@ -477,6 +483,40 @@ mod tests {
         assert_eq!(passes[0].actual_nearest_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].distance_to_intended_spot_m, Some(1.25));
         assert_eq!(passes[0].secondary_causes, ["hook_history_truncated"]);
+    }
+
+    #[test]
+    fn database_uses_write_ahead_logging_for_external_readers() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dcs-grpc-lso-wal-{}-{unique}.db",
+            std::process::id()
+        ));
+
+        let db = RecoveryDb::open(&path).expect("open database");
+        {
+            let conn = db.conn.lock().expect("db mutex poisoned");
+            let mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .expect("read journal_mode");
+            assert_eq!(mode.to_lowercase(), "wal");
+            let timeout: i64 = conn
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .expect("read busy_timeout");
+            assert_eq!(timeout, 2000);
+        }
+        // The schema migration already wrote to the file, so the WAL sidecars
+        // an external reader relies on must exist while we hold the connection.
+        assert!(path.with_extension("db-wal").exists());
+        assert!(path.with_extension("db-shm").exists());
+
+        drop(db);
+        for extension in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(extension));
+        }
     }
 
     #[test]

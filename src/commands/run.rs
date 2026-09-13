@@ -157,15 +157,35 @@ pub struct Opts {
     #[clap(long)]
     baseline_manifest: Option<PathBuf>,
 
-    /// Port to serve the web greenie board on (e.g. 8080). Disabled if not specified.
-    #[clap(long)]
+    /// Removed in 0.5.0: the greenie board is now the LSO page of the DCS Web
+    /// Dashboard, which reads `<out-dir>/lso.db` directly. The flag stays
+    /// hidden for one release so an old service definition fails with a clear
+    /// message instead of clap's "unexpected argument".
+    #[clap(long, hide = true)]
     web_port: Option<u16>,
+
+    /// Removed in 0.5.0 together with the web server.
+    #[clap(long, hide = true)]
+    web_expose_ucid: bool,
+}
+
+/// The loopback web board was removed in 0.5.0. Refuse its flags loudly rather
+/// than silently running without the board the operator expected.
+fn reject_removed_web_flags(opts: &Opts) -> Result<(), crate::error::Error> {
+    if opts.web_port.is_some() || opts.web_expose_ucid {
+        return Err(crate::error::Error::RemovedOption(
+            "--web-port and --web-expose-ucid were removed in LSO 0.5.0: the greenie board is now \
+             the LSO page of the DCS Web Dashboard (set its LSO_DIR to this --out-dir)",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn execute(
     opts: Opts,
     shutdown_handle: ShutdownHandle,
 ) -> Result<(), crate::error::Error> {
+    reject_removed_web_flags(&opts)?;
     if !opts.positions_only && opts.discord_webhook.is_some() {
         tracing::info!("Discord integration enabled.");
     }
@@ -202,17 +222,6 @@ pub async fn execute(
             crate::metrics::RUNTIME_METRICS.log_snapshot(metrics_started.elapsed().as_secs_f64());
         }
     });
-
-    // Optionally start the web greenie board dashboard.
-    if let (Some(port), Some(db)) = (opts.web_port, db.clone()) {
-        tokio::spawn(async move {
-            if let Err(err) = crate::web::serve(db, port).await {
-                tracing::error!(%err, "web dashboard server error");
-            }
-        });
-    } else if opts.web_port.is_some() {
-        tracing::warn!("web dashboard disabled in positions-only mode because SQLite is disabled");
-    }
 
     select(
         Box::pin(backoff::future::retry_notify(
@@ -987,6 +996,20 @@ mod tests {
     use super::*;
     use clap::Parser;
     use stubs::net::v0::get_players_response::GetPlayerInfo;
+
+    #[test]
+    fn removed_web_flags_are_refused_with_guidance() {
+        let opts = Opts::try_parse_from(["lso-run", "--web-port", "8080"])
+            .expect("the hidden flag still parses so the refusal can explain itself");
+        let err = reject_removed_web_flags(&opts).expect_err("removed flag must be refused");
+        assert!(err.to_string().contains("DCS Web Dashboard"), "{err}");
+
+        let opts = Opts::try_parse_from(["lso-run", "--web-expose-ucid"]).expect("parses");
+        assert!(reject_removed_web_flags(&opts).is_err());
+
+        let opts = Opts::try_parse_from(["lso-run"]).expect("parses");
+        assert!(reject_removed_web_flags(&opts).is_ok());
+    }
 
     fn unit(id: u32, name: &str, player_name: Option<&str>) -> common::v0::Unit {
         common::v0::Unit {

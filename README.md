@@ -3,8 +3,8 @@
 LSO is a Rust command-line tool that monitors DCS carrier recoveries through the
 [sevenfifty777 DCS-gRPC fork](https://github.com/sevenfifty777/rust-server). It records the Case I
 pattern and final approach, estimates the arresting wire, applies a simplified gate-based pass
-grade, produces trap-sheet images and structured output, and can publish a greenie board locally
-or through Discord.
+grade, produces trap-sheet images and structured output, and can publish a greenie board through
+the DCS Web Dashboard or Discord.
 
 ![LSO example report](docs/example.png)
 
@@ -25,7 +25,8 @@ or through Discord.
 - Per-recovery source-capture gap, delivery-age, reader-sequence-loss and source-ring-churn
   diagnostics, plus sliding-window telemetry health that identifies sustained gate-capture risk.
 - JSON reports, optional compressed Tacview ACMI recordings, and persistent SQLite history.
-- Optional Discord reports, terminal session summary, and HTTP greenie board.
+- Optional Discord reports and terminal session summary. The greenie board is the LSO page of the
+  DCS Web Dashboard, which reads `lso.db` directly.
 - Offline regeneration of the approach chart from ACMI files created by LSO.
 
 The pass grade is a `PROJECT-DERIVED` training score, never an official USN/USMC certification. It
@@ -62,9 +63,6 @@ with `--api-key-env` or pass an empty name only for an intentionally unauthentic
 Common examples:
 
 ```powershell
-# Include the persistent web board at http://localhost:8080
-.\lso.exe run -o C:\LSO\recordings --web-port 8080
-
 # Save charts and JSON, but not ACMI
 .\lso.exe run -o C:\LSO\recordings --no-acmi
 
@@ -107,7 +105,7 @@ be discovered and recorded concurrently.
 The default `--position-source buffered` lifecycle is idempotent `StartRecoveryTelemetry`, ordered
 `ReadRecoveryTelemetry` batches with an exclusive sequence cursor, then best-effort
 `StopRecoveryTelemetry`. Epoch changes, sequence-contract violations, invalid unit observations and
-source retention/capacity loss remain explicit technical evidence in the schema-v3 report. Invalid
+source retention/capacity loss remain explicit technical evidence in the schema-v9 report. Invalid
 source observations retain their source timestamp/entity/status and are attributed at finalization;
 receipt time is never substituted for missing source time. `groove-ab` reuses persisted geometry
 exactly, but cannot reconstruct unpersisted RPC timing, events, UTC anchors or velocities.
@@ -123,9 +121,9 @@ A completed live pass writes or updates the following items in `--out-dir`:
 |---|---|
 | `LSO-<date>-<pilot>-<recovery-id>.png` | Final-approach trap sheet |
 | `LSO-<date>-<pilot>-<recovery-id>-pattern.png` | Overhead pattern chart |
-| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v3 result, gates, event/time/hook/wire evidence and telemetry quality |
+| `LSO-<date>-<pilot>-<recovery-id>.json` | Schema-v9 result, gates, event/time/hook/wire evidence and telemetry quality |
 | `LSO-<date>-<pilot>-<recovery-id>.zip.acmi` | Compressed Tacview recording; omitted with `--no-acmi` |
-| `lso.db` | Shared SQLite history; one row is inserted per saved pass |
+| `lso.db` | Shared SQLite history in WAL mode; one row is inserted per saved pass. The DCS Web Dashboard reads it directly |
 
 Pilot names in filenames are reduced to ASCII alphanumeric characters. Offline `file` mode writes
 only a regenerated approach PNG to the current working directory; it does not update JSON,
@@ -157,10 +155,13 @@ files participate; untracked files (including `target/`) deliberately do not.
 
 Unsupported types are ignored. `Stennis` is DCS's type name for CVN-74.
 
-## Web and Discord
+## Greenie board and Discord
 
-`--web-port <PORT>` serves `/` and `/api/passes` on `127.0.0.1` and refreshes the browser board every
-10 seconds. Phase 1 intentionally has no remote bind, OAuth2 or TLS.
+The embedded loopback web board (`--web-port`) was removed in 0.5.0. The greenie board is now the
+LSO page of the DCS Web Dashboard, which opens `<out-dir>/lso.db` read-only; point its `LSO_DIR` at
+the same `--out-dir`. The database is opened in SQLite WAL mode with a 2 s busy timeout so the
+dashboard can query while a pass is being inserted. Passing `--web-port` or `--web-expose-ucid`
+now stops LSO with a message that says so, instead of silently running without a board.
 
 Discord delivery is enabled with `--discord-webhook`. Keep webhook URLs out of source control,
 screenshots, logs, and shared command transcripts. `--discord-users` accepts a JSON map from DCS

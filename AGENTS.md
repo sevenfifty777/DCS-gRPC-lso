@@ -23,9 +23,10 @@
 > la probe haute cohérente, pour la référence AoA comme pour la requête de fin de tentative. Le
 > grading CASE I CATOBAR `project-derived-v7` classe les épisodes GS/lineup/AoA par zone,
 > persistance et qualité de correction ; V/STOL et les Cuts de sécurité restent séparés. Crate
-> `lso` 0.2.0,
-> Rust 2021 ; les changements postérieurs au tag `0.2.0` sont sous `Unreleased` dans
-> [CHANGES.md](CHANGES.md).
+> `lso` 0.5.0 (lignée d'intégration, postérieure à la fois à `astra-review` 0.4.0 et à la refonte
+> 0.2.0), Rust 2021 ; les changements postérieurs au tag `0.2.0` sont sous `Unreleased` dans
+> [CHANGES.md](CHANGES.md). Le dashboard web embarqué (`src/web.rs`, `--web-port`) a été retiré :
+> le greenie board est la page LSO du DCS Web Dashboard, qui lit `lso.db` directement (WAL).
 
 Pour un résumé humain, vulgarisé, du fonctionnement du module : voir [primer.md](primer.md).
 Pour la roadmap, les décisions ouvertes et les bugs connus non résolus : voir
@@ -201,7 +202,8 @@ modifier les règles CATOBAR/V/STOL sans demande dédiée.
   commit `16291fb`). Aucun checkout frère n'est requis : Cargo récupère le tag directement. Le fork
   contient `RecoveryService` (start/read/stop telemetry), et LSO en dépend directement pour la
   source bufferisée par défaut.
-- `tonic = 0.13`, Axum direct 0.8 (aligné sur la ligne de Tonic). Contrainte durable : les clients
+- `tonic = 0.13` (plus de dépendance Axum directe depuis le retrait du dashboard embarqué).
+  Contrainte durable : les clients
   générés par les stubs sont paramétrés par les types de transport de **leur propre** version de
   `tonic` (`tonic::transport::Channel` passé à `MissionServiceClient`/`UnitServiceClient`/
   `WorldServiceClient`, etc.) — la version `tonic` directe de LSO doit donc rester alignée
@@ -300,7 +302,6 @@ Frontières implémentées (fichiers vérifiés présents) :
   "Persistance et atomicité" plus bas.
 - [src/metrics.rs](src/metrics.rs) : instrumentation RPC/stream/queue/IO/rendu — voir
   "Observabilité runtime" plus bas.
-- [src/web.rs](src/web.rs) : dashboard privé loopback-only.
 - [src/draw.rs](src/draw.rs) : rendu PNG (approche + pattern), déporté en `spawn_blocking`. Le
   pattern est segmenté aux retournements approche/départ confirmés (>150 m) et aux discontinuités ;
   la branche contenant l’entrée en groove, ou le touchdown/la plus récente en fallback, conserve
@@ -932,9 +933,11 @@ modifie pas la complétude positionnelle. Seule une perte/débordement de positi
 noté produit `BufferLimit`.
 
 SQLite : migrations additives 2–6 (`schema_migrations`), index unique partiel `recovery_id`,
-`INSERT OR IGNORE`. Discord seulement pour une nouvelle ligne. UCID uniquement SQLite/API privée,
-jamais JSON/PNG/ACMI/Discord/log public. Dashboard loopback `127.0.0.1`, sans OAuth/TLS, privé
-phase 1.
+`INSERT OR IGNORE`, base ouverte en mode WAL avec `busy_timeout` 2 s pour qu'un lecteur externe
+(page LSO du DCS Web Dashboard, qui ouvre `lso.db` directement) puisse interroger le board pendant
+une insertion. Discord seulement pour une nouvelle ligne. UCID uniquement SQLite, jamais
+JSON/PNG/ACMI/Discord/log public. Le dashboard loopback embarqué a été retiré ; `--web-port` et
+`--web-expose-ucid` restent analysés une version et arrêtent LSO avec un message explicite.
 
 Contenu des migrations (`src/db.rs`) : 1 = table `passes` historique ; 2 = champs
 recovery/session/carrier/complétude/provenance du brin + index unique de recovery ; 3 =
@@ -975,7 +978,7 @@ journalise display et chaîne debug. Les échecs SQLite/PNG/ACMI/Discord arriven
 
 ## Contrats de données
 
-JSON reste `schema_version: 3`, évolution additive : aucun ancien champ supprimé/renommé ; `cause`
+JSON porte `schema_version: 9` (premier numéro de la lignée fusionnée, après le schéma 8 d'`astra-review` et le schéma 3 de la refonte ; la disposition des champs est celle de la refonte), évolution additive : aucun ancien champ supprimé/renommé ; `cause`
 reste l'alias primaire ; `causes` contient primaire/secondaires ; `event_correlation`,
 `wind_heading_deg`/`wind_speed_mps`, `wind_reference_established` et `trajectory_deviations` sont
 des ajouts récents ; `trajectory_deviations[].lineup_deviation_m`/`alt_m`/`bank_deg`/
@@ -1079,7 +1082,7 @@ colonnes additives, le pointer vers la sauvegarde pré-changement lors d'un roll
 **Bascule** : arrêter uniquement le process/service LSO et attendre sa sortie, mettre à jour le
 chemin de l'exécutable ou le pointeur de version, démarrer et vérifier sous deux minutes : connexion,
 version/session serveur rapportée, aucune erreur de migration, nombre de paires strictes attendu,
-dashboard sur `127.0.0.1`, log de métriques à 10 s. Rollback immédiat d'acquisition de position sans
+page LSO du DCS Web Dashboard qui lit bien `lso.db`, log de métriques à 10 s. Rollback immédiat d'acquisition de position sans
 changer de binaire : redémarrer avec `--position-source unary` ; `--legacy-inline-hook-sampling`
 restaure indépendamment l'ancien chemin hook bloquant. Conserver les logs bufferisé et indépendant
 avant la bascule pour garder les percentiles A/B comparables. Le candidat bufferisé exige le
@@ -1090,7 +1093,7 @@ ligne, ni déployer seulement une moitié du paquet serveur.
 **Rollback en moins de cinq minutes** : arrêter LSO, pointer vers le binaire précédent préservé, si
 un test de compatibilité l'a exigé écarter la base de la tentative ratée et restaurer la sauvegarde
 pré-changement (sans jamais écraser la copie ratée avant diagnostic), redémarrer l'ancien binaire,
-confirmer connexion gRPC/session ID/dossier de sortie/dashboard loopback, consigner heures UTC,
+confirmer connexion gRPC/session ID/dossier de sortie/lecture de `lso.db` par le dashboard, consigner heures UTC,
 hashs de binaire et raison. Un rollback réussi se mesure à la reprise de l'enregistrement local ;
 un échec Discord/PNG est secondaire et ne doit jamais retarder la restauration de la persistance
 locale.

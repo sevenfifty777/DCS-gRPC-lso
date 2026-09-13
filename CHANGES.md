@@ -1,11 +1,26 @@
 # LSO Changelog
 
-This file records user-visible changes. The crate version remains `0.2.0`; changes after the
-`0.2.0` tag are therefore listed under Unreleased.
+This file records user-visible changes. The crate version is `0.5.0` on the integration lineage
+(the first number after both the `astra-review` 0.4.0 line and the refonte 0.2.0 line); changes
+since the `0.2.0` tag are listed under Unreleased.
 
 ## Unreleased
 
+### Removed
+
+- The embedded loopback web greenie board (`src/web.rs`, `--web-port`, `/api/passes`) and the
+  direct `axum` dependency. The greenie board is the LSO page of the DCS Web Dashboard, which reads
+  `<out-dir>/lso.db` directly. `--web-port` and `--web-expose-ucid` remain parseable for one
+  release and stop LSO with an explanatory error (`src/commands/run.rs`).
+
 ### Changed
+
+- JSON reports are `schema_version: 9`, the first number of the merged lineage after the
+  `astra-review` schema 8 and the refonte schema 3. The field layout is the refonte's; the number
+  only guarantees that a consumer can tell the three lineages apart (`src/tasks/record_recovery.rs`).
+- `lso.db` is opened in SQLite WAL mode with a 2 s busy timeout so an external reader (the DCS Web
+  Dashboard) can query the board while a pass is being inserted. Database mutex poisoning is
+  recovered instead of propagated (`src/db.rs`, `src/utils/mod.rs`).
 
 - CASE I CATOBAR grading is versioned `project-derived-v7`: correction quality is measured from
   the deterministic episode peak, uses START/MIDDLE/IN_CLOSE/RAMP deadlines of 3.0/2.5/1.5/0.75 s,

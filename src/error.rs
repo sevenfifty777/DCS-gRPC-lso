@@ -42,6 +42,8 @@ pub enum Error {
         #[source]
         source: rusqlite::Error,
     },
+    #[error("{0}")]
+    RemovedOption(&'static str),
 }
 
 impl Error {

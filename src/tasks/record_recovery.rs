@@ -1527,7 +1527,10 @@ pub async fn record_recovery(
         track.touchdown_time_dcs,
     );
     let report = RecoveryReport {
-        schema_version: 3,
+        // Schema 9 is the first number of the merged lineage: it follows both
+        // the astra-review reports (schema 8) and the refonte reports (schema 3)
+        // so a consumer can never confuse the three field layouts.
+        schema_version: 9,
         recovery_id: &recovery_id,
         pilot_name: &track.pilot_name,
         pilot_kind: params.pilot_kind,
