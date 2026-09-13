@@ -28,6 +28,26 @@ pub struct Transform {
     pub time: f64,
 }
 
+impl Transform {
+    /// Whether every value the tracker's geometry depends on is finite. `aoa` is deliberately
+    /// excluded: it is `NaN` by construction when the velocity is zero (see `From` below) and
+    /// every consumer already treats a non-finite AoA as "unknown". A transform that fails this
+    /// check must never reach the geometry: a single `NaN` position poisons the carrier
+    /// smoothing, the distance minima and the outcome decision in one tick.
+    pub fn has_finite_geometry(&self) -> bool {
+        let finite_vec = |v: DVec3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+        finite_vec(self.position)
+            && finite_vec(self.velocity)
+            && finite_vec(self.forward)
+            && self.alt.is_finite()
+            && self.heading.is_finite()
+            && self.yaw.is_finite()
+            && self.pitch.is_finite()
+            && self.roll.is_finite()
+            && self.time.is_finite()
+    }
+}
+
 impl From<(f64, Position, Orientation, Velocity)> for Transform {
     fn from(
         (time, position, orientation, velocity): (f64, Position, Orientation, Velocity),

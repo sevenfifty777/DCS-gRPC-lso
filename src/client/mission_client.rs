@@ -1,19 +1,14 @@
-use std::future::ready;
-
-use futures_util::{Stream, StreamExt};
 use stubs::mission;
 use stubs::mission::v0::mission_service_client::MissionServiceClient;
-use stubs::mission::v0::stream_events_response::Event;
-use tonic::{transport::Channel, Status};
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, GrpcChannel, GrpcResult};
 
 pub struct MissionClient {
-    svc: MissionServiceClient<Channel>,
+    svc: MissionServiceClient<GrpcChannel>,
 }
 
 impl MissionClient {
-    pub fn new(ch: Channel) -> Self {
+    pub fn new(ch: GrpcChannel) -> Self {
         Self {
             svc: MissionServiceClient::new(ch),
         }
@@ -41,32 +36,6 @@ impl MissionClient {
             .map_err(Box::new)?
             .into_inner();
         Ok(res.datetime)
-    }
-
-    /// Opens the long-lived mission event stream. No `grpc-timeout` is attached:
-    /// the deadline used for unary calls would apply to the whole stream.
-    pub async fn stream_events(
-        &mut self,
-    ) -> GrpcResult<impl Stream<Item = Result<(f64, Event), Status>>> {
-        crate::metrics::RUNTIME_METRICS.count_rpc();
-        let events = self
-            .svc
-            .stream_events(tonic::Request::new(mission::v0::StreamEventsRequest {}))
-            .await
-            .map_err(Box::new)?
-            .into_inner()
-            .filter_map(|event| {
-                ready(match event {
-                    Ok(stubs::mission::v0::StreamEventsResponse {
-                        time,
-                        event: Some(event),
-                        ..
-                    }) => Some(Ok((time, event))),
-                    Err(err) => Some(Err(err)),
-                    Ok(_) => None,
-                })
-            });
-        Ok(events)
     }
 
     pub async fn get_session_id(&mut self) -> GrpcResult<i64> {

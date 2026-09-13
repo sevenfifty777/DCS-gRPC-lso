@@ -1,0 +1,222 @@
+# Candidate runtime tuning configuration for DCS-gRPC-lso.
+#
+# IMPORTANT: the current executable does not load this file yet. These values mirror the
+# thresholds currently compiled into the Rust code and are provided as the future configuration
+# baseline. Changing this file alone does not change grading or recovery detection.
+
+# Identifies the structure of this configuration file for future compatibility checks.
+schema_version = 1
+
+# Gives this set of tuning values a human-readable identity in logs and recovery reports.
+profile = "default-project-derived-v4"
+
+[groove_entry.catobar]
+# Sets the maximum absolute aircraft bank angle accepted while confirming wings-level rollout.
+max_bank_deg = 10.0
+
+# Arms the observed port-side final turn only at or below this deck-relative altitude.
+last_turn_arm_max_altitude_ft = 600.0
+
+# Port-side lineup corridor used as optional interception evidence, never as an entry prerequisite.
+port_lineup_corridor_deg = -0.75
+
+# Resets a completed/candidate branch once its along-axis distance grows by this amount outbound.
+branch_reset_outbound_growth_m = 150.0
+
+# Legacy diagnostic threshold; ground-track error no longer blocks Case I entry.
+max_track_error_deg = 10.0
+
+# Legacy diagnostic threshold; lineup error no longer blocks Case I entry.
+max_lineup_deg = 2.0
+
+# Legacy diagnostic threshold; lineup rate no longer blocks Case I entry.
+max_lineup_rate_deg_per_s = 0.5
+
+# Sets how long bank <= max_bank_deg and inbound progress must remain continuously satisfied.
+stability_duration_s = 0.75
+
+# Sets the history window used to estimate the aircraft ground track relative to the landing axis.
+track_window_s = 2.0
+
+# Sets the minimum amount of track history required before the ground-track estimate is trusted.
+minimum_track_window_s = 1.0
+
+# Sets the history window used to estimate whether lineup is stable, converging, or diverging.
+lineup_trend_window_s = 1.0
+
+# V/STOL legacy box only; not a CATOBAR Case I entry prerequisite.
+detection_max_altitude_ft = 300.0
+
+# V/STOL legacy box only; not a CATOBAR Case I entry prerequisite.
+detection_max_lineup_deg = 10.0
+
+[grading.catobar]
+# Sets the maximum high glideslope deviation that can still receive an OK grade.
+ok_gs_high_deg = 0.5
+
+# Sets the maximum low glideslope deviation magnitude that can still receive an OK grade.
+ok_gs_low_deg = 0.5
+
+# Sets the maximum absolute lineup deviation that can still receive an OK grade.
+ok_lineup_deg = 1.0
+
+# Sets the high glideslope deviation at which the pass is reduced to No Grade.
+no_grade_gs_high_deg = 1.0
+
+# Sets the low glideslope deviation magnitude at which the pass is reduced to No Grade.
+no_grade_gs_low_deg = 1.0
+
+# Sets the absolute lineup deviation at which the pass is reduced to No Grade.
+no_grade_lineup_deg = 2.0
+
+# Sets how many consecutive trajectory samples must exceed a normal grading threshold before the excursion counts.
+trajectory_persistence_samples = 2
+
+[grading.catobar.perfect]
+# Sets the maximum high glideslope deviation allowed for an automatic perfect pass.
+gs_high_deg = 0.4
+
+# Sets the maximum low glideslope deviation magnitude allowed for an automatic perfect pass.
+gs_low_deg = 0.3
+
+# Sets the maximum absolute lineup deviation allowed for an automatic perfect pass.
+lineup_deg = 0.5
+
+# Sets the minimum groove duration allowed for an automatic perfect pass.
+groove_time_min_s = 15.0
+
+# Sets the maximum groove duration allowed for an automatic perfect pass.
+groove_time_max_s = 18.0
+
+[grading.catobar.corrections]
+# Sets how far back from the final trajectory sample the worsening-trend analysis looks.
+trend_window_s = 4.0
+
+# Sets the minimum worsening GS or lineup slope that prevents an otherwise clean OK grade.
+trend_worsening_deg_per_s = 0.075
+
+# Sets the trailing trajectory window inspected for alternating over-control corrections.
+oscillation_window_s = 4.0
+
+# Sets the minimum angular change required for a direction reversal to count as an oscillation.
+oscillation_min_swing_deg = 0.3
+
+# Sets the minimum number of qualifying direction reversals required to detect over-control.
+oscillation_min_reversals = 2
+
+# Sets the distance from touchdown inside which deviations receive the stricter late-approach treatment.
+late_window_distance_m = 150.0
+
+# Sets the glideslope deviation magnitude that produces No Grade inside the late-approach window.
+late_window_gs_deg = 0.8
+
+# Sets the absolute lineup deviation that produces No Grade inside the late-approach window.
+late_window_lineup_deg = 1.5
+
+[grading.catobar.cut]
+# Sets the low glideslope deviation magnitude that produces a Cut inside the quarter-NM zone.
+gs_low_deg = 2.5
+
+# Sets the sustained downward sink rate that produces a Cut inside the quarter-NM zone.
+sink_rate_mps = 8.0
+
+# Sets the sustained absolute aircraft bank angle that produces a Cut inside the quarter-NM zone.
+bank_deg = 30.0
+
+# Sets how many consecutive dangerous sink-rate or bank samples are required to produce a Cut.
+persistence_samples = 3
+
+[grading.vstol]
+# Sets the high glideslope deviation at which one V/STOL gate falls below an OK gate grade.
+ok_gs_high_deg = 0.5
+
+# Sets the low glideslope deviation magnitude at which one V/STOL gate falls below an OK gate grade.
+ok_gs_low_deg = 0.5
+
+# Sets the absolute lineup deviation at which one V/STOL gate falls below an OK gate grade.
+ok_lineup_deg = 1.0
+
+# Sets the high glideslope deviation at which one V/STOL gate becomes No Grade.
+no_grade_gs_high_deg = 1.0
+
+# Sets the low glideslope deviation magnitude at which one V/STOL gate becomes No Grade.
+no_grade_gs_low_deg = 1.0
+
+# Sets the absolute lineup deviation at which one V/STOL gate becomes No Grade.
+no_grade_lineup_deg = 2.0
+
+# Sets the low glideslope deviation magnitude that produces a Cut at the V/STOL quarter-NM gate.
+cut_gs_low_deg = 2.5
+
+# Sets the minimum average gate score mapped to an OK V/STOL approach grade.
+approach_ok_min_points = 3.5
+
+# Sets the minimum average gate score mapped to an (OK) V/STOL approach grade.
+approach_fair_min_points = 2.5
+
+# Sets the minimum average gate score mapped to a No Grade V/STOL approach grade.
+approach_no_grade_min_points = 1.0
+
+[grading.vstol.spot]
+# Sets the observation radius around the intended Tarawa spot used to collect touchdown evidence.
+observation_radius_m = 15.0
+
+# Sets the maximum touchdown distance, exclusive at the boundary, that earns spot grade A.
+grade_a_max_distance_m = 1.0
+
+# Sets the maximum touchdown distance, exclusive at the boundary, that earns spot grade B.
+grade_b_max_distance_m = 3.0
+
+# Sets the maximum touchdown distance, exclusive at the boundary, that earns spot grade C.
+grade_c_max_distance_m = 5.0
+
+# Sets the score bonus awarded for a spot grade A.
+grade_a_bonus_points = 1.0
+
+# Sets the score bonus awarded for a spot grade B.
+grade_b_bonus_points = 0.75
+
+# Sets the score bonus awarded for a spot grade C.
+grade_c_bonus_points = 0.5
+
+# Sets the score bonus awarded for a spot grade D.
+grade_d_bonus_points = 0.0
+
+[outcome.experimental]
+# Sets how far distance must grow after the closest approach before a departure outcome is finalized.
+departure_distance_growth_m = 150.0
+
+# Sets the maximum hook-relative altitude at deck-threshold crossing that excludes a high fly-over.
+deck_crossing_altitude_cap_ft = 50.0
+
+# Sets the maximum hook height at deck-threshold crossing that can geometrically confirm contact.
+deck_contact_max_hook_height_m = 1.0
+
+[wire_estimation]
+# Sets the horizontal deceleration rate treated as the onset of carrier arrestment.
+deceleration_threshold_mps2 = 5.0
+
+# Sets how many consecutive samples must exceed the deceleration threshold to confirm its onset.
+deceleration_min_consecutive_samples = 2
+
+# Sets how long before detected deceleration a wire crossing may occur and remain a valid candidate.
+onset_tolerance_s = 1.2
+
+[arrest_confirmation]
+# Sets the maximum aircraft-to-carrier horizontal speed treated as the arrested low-speed state.
+low_relative_speed_mps = 5.0
+
+# Sets how long the low-relative-speed state must be continuously maintained.
+low_speed_hold_s = 2.0
+
+# Sets the minimum number of samples required during the low-relative-speed hold.
+minimum_low_speed_samples = 3
+
+# Sets the maximum time difference allowed between correlated contact and deceleration onset.
+maximum_contact_onset_delta_s = 1.2
+
+# Sets the maximum hook height above deck allowed while confirming the aircraft remains on deck.
+maximum_on_deck_hook_height_m = 3.0
+
+# Sets the forward relative speed interpreted as departure after a possible arrestment.
+departure_relative_speed_mps = 10.0

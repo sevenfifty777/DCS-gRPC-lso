@@ -7,7 +7,6 @@ mod error;
 mod grading;
 mod lso_notation;
 mod metrics;
-mod ownship_hook;
 mod tasks;
 mod telemetry;
 #[cfg(test)]
@@ -38,11 +37,20 @@ struct Opts {
 #[derive(clap::Parser)]
 enum Command {
     /// Connect to DCS-gRPC to track carrier recoveries.
-    Run(commands::run::Opts),
+    Run(Box<commands::run::Opts>),
 
     /// Extract carrier recoveries from ACMI recordings (must be recordings created by the LSO;
     /// recordings directly from TacView will not work).
     File(commands::file::Opts),
+
+    /// Offline diagnostic: replay already-recorded JSON reports with an artificially reduced
+    /// pre-groove sampling cadence and compare the resulting gates/grade to the full cadence
+    /// actually recorded. Never affects live recording or the fork.
+    CadenceAb(commands::cadence_ab::Opts),
+
+    /// Offline diagnostic: compare recorded groove entry with the current Case I roll-out detector.
+    /// Reads schema-v3 JSON reports without modifying them.
+    GrooveAb(commands::groove_ab::Opts),
 }
 
 #[tokio::main]
@@ -55,14 +63,7 @@ async fn main() {
     };
     tracing_subscriber::registry()
         .with(filter::filter_fn(move |m| {
-            let target = m.target();
-            // Transport-level failures (tonic/h2/hyper) are otherwise invisible
-            // even at -vv; keep their warnings and errors.
-            (target.starts_with("lso") && m.level() <= &max_level)
-                || ((target.starts_with("tonic")
-                    || target.starts_with("h2")
-                    || target.starts_with("hyper"))
-                    && m.level() <= &tracing::Level::WARN)
+            m.target().starts_with("lso") && m.level() <= &max_level
         }))
         .with(fmt::layer().with_ansi(opts.color))
         .init();
@@ -78,11 +79,13 @@ async fn main() {
     });
 
     let result = match opts.command {
-        Command::Run(opts) => commands::run::execute(opts, shutdown_handle).await,
+        Command::Run(opts) => commands::run::execute(*opts, shutdown_handle).await,
         Command::File(opts) => commands::file::execute(opts),
+        Command::CadenceAb(opts) => commands::cadence_ab::execute(opts),
+        Command::GrooveAb(opts) => commands::groove_ab::execute(opts),
     };
     if let Err(err) = result {
-        tracing::error!(%err, "LSO terminated with an error");
+        tracing::error!(error = %err, error_chain = ?err, "LSO terminated with an error");
         std::process::exit(1);
     }
 }

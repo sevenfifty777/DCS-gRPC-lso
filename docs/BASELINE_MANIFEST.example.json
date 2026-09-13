@@ -1,0 +1,11 @@
+{
+  "dcs_build": "2.x.x.x",
+  "mission": "carrier-qualification-baseline.miz",
+  "mission_sha256": null,
+  "dcs_grpc_dll_sha256": null,
+  "dcs_grpc_lua_sha256": null,
+  "module_versions": {
+    "F-14": "replace-with-version",
+    "Supercarrier": "replace-with-version"
+  }
+}

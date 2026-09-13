@@ -33,8 +33,24 @@ dist/
 build/
 coverage/
 
-# Generated analysis output
+# Generated analysis output (graphify knowledge graph, rebuilt locally)
+/graphify-out/
 
+# Built binaries and locally recorded passes never belong in source control:
+# the release binary is published on GitHub Releases, and recorded passes
+# carry real pilot callsigns and a SQLite file. Test fixtures live in
+# tests/recordings/ instead.
+/releases/
+/trap sample/
+
+# Local launch scripts carry the Discord webhook and machine-specific paths.
+# Keep them untracked; read the webhook from the environment (see
+# docs/ADMIN_GUIDE.md).
+/run-live*.ps1
+/run-*.ps1
+# Site-specific baseline manifest (mission hash, deployed DLL/Lua hashes); the
+# template is docs/BASELINE_MANIFEST.example.json.
+/live-baseline.json
 
 # ACMI files
 
@@ -43,5 +59,6 @@ coverage/
 .ignore/
 modelviewer/
 trap_records/
+docs/analys-codex-justice/
 NATOPS/
-docs/DCS_gRPC_analyse
+test-runs/

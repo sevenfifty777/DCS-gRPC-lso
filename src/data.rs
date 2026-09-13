@@ -136,27 +136,6 @@ const FORRESTAL: CarrierInfo = CarrierInfo {
     ),
 };
 
-/// External-model hook draw argument shared by the F/A-18C and the VNAO T-45.
-/// Validated against the installed module files (SHA-256 checked, 2026-09-02):
-/// `0` = hook up, `1` = hook down. During an arrestment the animated value
-/// transiently drops into the "up" band while the cable loads the hook.
-const HOOK_ARGUMENT_25: HookArgument = HookArgument {
-    id: 25,
-    up_max: 0.2,
-    down_min: 0.8,
-    polarity: "external_arg_25_zero_up_one_down_live_validated_2026-09",
-};
-
-/// Heatblur F-14 external hook argument (all variants). Same polarity as
-/// argument 25; the arrestment excursion lasts ~6.5 s and starts before
-/// `RunwayTouch`.
-const HOOK_ARGUMENT_1305: HookArgument = HookArgument {
-    id: 1305,
-    up_max: 0.2,
-    down_min: 0.8,
-    polarity: "external_arg_1305_zero_up_one_down_live_validated_2026-09",
-};
-
 static FA18C: AirplaneInfo = AirplaneInfo {
     name: "F/A-18C Hornet",
     hook: DVec3 {
@@ -169,8 +148,8 @@ static FA18C: AirplaneInfo = AirplaneInfo {
         y: -2.240897,
         z: -7.237348,
     },
-    hook_argument: Some(HOOK_ARGUMENT_25),
     glide_slope: 3.5,
+    hook_draw_argument: Some(25),
     aoa_rating: |aoa: f64| -> Aoa {
         // https://forums.vrsimulations.com/support/index.php/Navigation_Tutorial_Flight#Angle_of_Attack_Bracket
         if aoa <= 6.9 {
@@ -206,19 +185,46 @@ fn f14_aoa_rating(aoa: f64) -> Aoa {
     }
 }
 
-/// Hook position shared by all F-14 variants (extracted via ModelViewer2).
-const F14_HOOK: DVec3 = DVec3 {
+/// Raw hook position shared by all F-14 variants, as extracted via ModelViewer2.
+const F14_HOOK_MODEL: DVec3 = DVec3 {
     x: 0.0,
     y: -1.978941,
     z: -6.563727,
 };
 
+/// Empirical vertical correction applied on top of `F14_HOOK_MODEL`. A live human test (5
+/// September 2026, evening, F-14B(U)) measured the modelled hook sitting ~0.8-1.1 m *below* deck
+/// level while the aircraft was physically on deck or rolling through a wire (`alt_m` in
+/// `trajectory_deviations` reaching -0.67 to -1.1 m instead of ~0.0 m; the T-45's own extracted
+/// hook offset shows 0.0 m at touchdown by comparison). This inflated near-deck GS deviations
+/// (a bolter measured 0.06° from the sink-rate/bank Cut), fed a spurious "below-deck ⇒ contact"
+/// reading (see the `Bolter`-without-proof fix in `Track::next`), and is the likely common cause
+/// of the wire-estimate bias tracked separately (`Track::wire_estimate_at`). PROJECT-DERIVED, not
+/// a ModelViewer2 re-extraction: applied until a fresh ModelViewer2 measurement is available
+/// (see tasking-roadmap.md) and until F-14A/F-14B are checked against a human recording of their
+/// own (this constant is shared by all three variants).
+const F14_HOOK_VERTICAL_CORRECTION_M: f64 = 1.0;
+
+/// Hook position shared by all F-14 variants: `F14_HOOK_MODEL` plus the empirical vertical
+/// correction above.
+const F14_HOOK: DVec3 = DVec3 {
+    x: F14_HOOK_MODEL.x,
+    y: F14_HOOK_MODEL.y + F14_HOOK_VERTICAL_CORRECTION_M,
+    z: F14_HOOK_MODEL.z,
+};
+
+/// Hook-animation draw-argument index shared by all F-14 variants (distinct from the F/A-18C
+/// and T-45's index 25). Confirmed by the user; the up/down polarity itself is assumed to
+/// follow the same `<= 0.2` up / `>= 0.8` down convention already validated for the F/A-18C,
+/// not independently confirmed for the F-14 — see `AirplaneInfo::hook_draw_argument`.
+const F14_HOOK_DRAW_ARGUMENT: Option<u32> = Some(1305);
+
 static F14A: AirplaneInfo = AirplaneInfo {
     name: "F-14A Tomcat",
     hook: F14_HOOK,
     landing_reference: F14_HOOK,
-    hook_argument: Some(HOOK_ARGUMENT_1305),
     glide_slope: 3.5,
+    hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -226,8 +232,8 @@ static F14B: AirplaneInfo = AirplaneInfo {
     name: "F-14B Tomcat",
     hook: F14_HOOK,
     landing_reference: F14_HOOK,
-    hook_argument: Some(HOOK_ARGUMENT_1305),
     glide_slope: 3.5,
+    hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -235,8 +241,8 @@ static F14BU: AirplaneInfo = AirplaneInfo {
     name: "F-14B(U) Tomcat",
     hook: F14_HOOK,
     landing_reference: F14_HOOK,
-    hook_argument: Some(HOOK_ARGUMENT_1305),
     glide_slope: 3.5,
+    hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -252,8 +258,10 @@ static T45: AirplaneInfo = AirplaneInfo {
         y: -1.778766,
         z: -4.782536,
     },
-    hook_argument: Some(HOOK_ARGUMENT_25),
     glide_slope: 3.5,
+    // Same draw-argument index as the F/A-18C (25), confirmed by the user. Polarity likewise
+    // assumed, not independently confirmed for the T-45 -- see `hook_draw_argument`.
+    hook_draw_argument: Some(25),
     aoa_rating: |aoa: f64| -> Aoa {
         // Thresholds derived from VNAO T-45 v1.0.2 DEU (DisplayElectronicsUnit.lua).
         // The cockpit AOA indexer uses UNITS_AOA (set by the EFM DLL). A commented reference
@@ -294,10 +302,10 @@ static AV8B: AirplaneInfo = AirplaneInfo {
         y: -1.89645,
         z: 0.0,
     },
-    hook_argument: None,
     // V/STOL V1.3 keeps the CATOBAR-style sloped approach display, but the
     // reference path terminates at 120 ft above the water abeam spot 7.5.
     glide_slope: 3.0,
+    hook_draw_argument: None,
     // AV-8B target approach AOA: 10-12 degrees.  This rating is used only
     // for the trace colour / AOA indication; it does NOT change the V/STOL
     // approach grade, which remains based on GS + LU at the three gates.
@@ -507,31 +515,13 @@ impl CarrierInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Aoa {
     Fast,
     SlightlyFast,
     OnSpeed,
     SlightlySlow,
     Slow,
-}
-
-/// External-model draw argument that exposes the physical arresting-hook
-/// position through `Unit.getDrawArgumentValue`, with its validated polarity.
-///
-/// Values are the animated hook position, not the cockpit lever: a real
-/// arrestment drives the value from the down band into the up band for a few
-/// seconds (starting before `RunwayTouch`). Consumers must therefore latch the
-/// pre-contact baseline instead of reading the latest sample.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct HookArgument {
-    pub id: u32,
-    /// Values at or below this are "hook up".
-    pub up_max: f64,
-    /// Values at or above this are "hook down".
-    pub down_min: f64,
-    /// Provenance label persisted in reports.
-    pub polarity: &'static str,
 }
 
 #[derive(Debug)]
@@ -544,13 +534,18 @@ pub struct AirplaneInfo {
     /// For CATOBAR aircraft this mirrors the hook; for AV-8B this is the pilot
     /// position projected vertically onto the calibrated ground-contact plane.
     pub landing_reference: DVec3,
-    /// Validated external hook draw argument; `None` when the module has no
-    /// arresting hook or its argument has not been validated live.
-    pub hook_argument: Option<HookArgument>,
     /// The optimal glide slope in degrees.
     pub glide_slope: f64,
     /// A function that returns its current AOA rating.
     pub aoa_rating: fn(aoa: f64) -> Aoa,
+    /// DCS `UnitService.GetDrawArgumentValue` index for this type's arresting-hook animation,
+    /// when known. `None` for a type with no arresting hook (AV-8B) or no known index yet.
+    /// `Track::calibrated_hook_state` (`src/track.rs`) only ever attempts to interpret a raw
+    /// value into up/down for a type that has one; every other type stays `Unknown`, never
+    /// inferred. The up/down thresholds themselves (`<= 0.2` / `>= 0.8`) were only empirically
+    /// confirmed against a test corpus for the F/A-18C — reused unverified for every other type
+    /// below (see `HookObservation::polarity` in `Track::new`, `src/track.rs`).
+    pub hook_draw_argument: Option<u32>,
 }
 
 impl PartialEq for AirplaneInfo {
@@ -558,6 +553,7 @@ impl PartialEq for AirplaneInfo {
         self.hook == other.hook
             && self.landing_reference == other.landing_reference
             && self.glide_slope == other.glide_slope
+            && self.hook_draw_argument == other.hook_draw_argument
     }
 }
 

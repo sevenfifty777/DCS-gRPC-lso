@@ -1,15 +1,14 @@
 use stubs::world;
 use stubs::world::v0::world_service_client::WorldServiceClient;
-use tonic::transport::Channel;
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, GrpcChannel, GrpcResult};
 
 pub struct WorldClient {
-    svc: WorldServiceClient<Channel>,
+    svc: WorldServiceClient<GrpcChannel>,
 }
 
 impl WorldClient {
-    pub fn new(ch: Channel) -> Self {
+    pub fn new(ch: GrpcChannel) -> Self {
         Self {
             svc: WorldServiceClient::new(ch),
         }

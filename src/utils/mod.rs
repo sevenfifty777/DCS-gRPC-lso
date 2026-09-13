@@ -2,8 +2,8 @@ pub mod interval;
 pub mod precision;
 pub mod shutdown;
 
-/// Locks a mutex and recovers the data when a previous holder panicked. The
-/// guarded state in this application is always left consistent between
+/// Lock a mutex and recover from poisoning instead of propagating the panic.
+/// Guarded state in this application is always left consistent between
 /// statements, so continuing is preferable to silently killing discovery or
 /// the database for the rest of the process lifetime.
 pub fn lock_unpoisoned<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {

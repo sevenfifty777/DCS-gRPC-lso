@@ -1,15 +1,14 @@
 use stubs::metadata;
 use stubs::metadata::v0::metadata_service_client::MetadataServiceClient;
-use tonic::transport::Channel;
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, GrpcChannel, GrpcResult};
 
 pub struct MetadataClient {
-    svc: MetadataServiceClient<Channel>,
+    svc: MetadataServiceClient<GrpcChannel>,
 }
 
 impl MetadataClient {
-    pub fn new(channel: Channel) -> Self {
+    pub fn new(channel: GrpcChannel) -> Self {
         Self {
             svc: MetadataServiceClient::new(channel),
         }

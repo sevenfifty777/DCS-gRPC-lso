@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::ops::{Neg, Range};
 use std::path::PathBuf;
 
@@ -14,7 +13,7 @@ use plotters_bitmap::bitmap_pixel::RGBPixel;
 use plotters_bitmap::BitMapBackend;
 
 use crate::data::{AirplaneInfo, Aoa, CarrierRecovery};
-use crate::track::{Datum, GateDatum, GateQuality, GateStatus, Grading, PatternDatum, TrackResult};
+use crate::track::{Datum, GateDatum, GateQuality, GateStatus, PatternDatum, TrackResult};
 use crate::utils::{ft_to_nm, m_to_ft, m_to_nm, nm_to_ft, nm_to_m};
 
 const THEME_BG: RGBColor = RGBColor(31, 41, 55); // 1F2937
@@ -30,6 +29,9 @@ const THEME_AOA_SLIGHTLY_FAST: RGBColor = RGBColor(239, 165, 68); // EFA544
 const THEME_AOA_ON_SPEED: RGBColor = RGBColor(254, 240, 138); // FEF08A
 const THEME_AOA_SLIGHTLY_SLOW: RGBColor = RGBColor(170, 197, 34); // AAC522
 const THEME_AOA_SLOW: RGBColor = RGBColor(34, 197, 94); // 22C55E
+/// Neutral grey for a datum whose AoA is unknown (`NaN`: zero velocity, or no wind reference
+/// and no usable geometry). It must never borrow a real band's colour.
+const THEME_AOA_UNKNOWN: RGBColor = RGBColor(148, 163, 184); // 94A3B8
 
 const WIDTH: u32 = 1000;
 const X_LABEL_AREA_SIZE: u32 = 30;
@@ -377,33 +379,6 @@ fn side_range_y(track: &TrackResult) -> Range<f64> {
     }
 }
 
-fn recovery_label(grading: &Grading, is_vstol: bool, arrest_evidence: &str) -> Cow<'static, str> {
-    match grading {
-        Grading::Unknown => Cow::Borrowed(""),
-        Grading::Bolter => Cow::Borrowed("Bolter"),
-        Grading::Recovered { .. } if !is_vstol && arrest_evidence == "unconfirmed" => {
-            Cow::Borrowed("Deck contact (arrest unconfirmed)")
-        }
-        Grading::WaveoffUnknown => Cow::Borrowed("Waveoff (initiator unknown)"),
-        Grading::WaveoffDcs => Cow::Borrowed("Waveoff (DCS LSO)"),
-        Grading::TouchAndGo { .. } => Cow::Borrowed("T&G (CQ)"),
-        Grading::Recovered {
-            cable,
-            cable_estimated,
-        } => {
-            if is_vstol {
-                Cow::Borrowed("V/STOL recovery")
-            } else {
-                match crate::track::select_wire_for_display(*cable_estimated, *cable) {
-                    (Some(wire), "estimated") => Cow::Owned(format!("Wire {} (estimated)", wire)),
-                    (Some(wire), "dcs") => Cow::Owned(format!("Wire {} (DCS)", wire)),
-                    _ => Cow::Borrowed("Arrested (wire unknown)"),
-                }
-            }
-        }
-    }
-}
-
 #[tracing::instrument(skip_all)]
 pub fn draw_chart(
     out_dir: &std::path::Path,
@@ -447,10 +422,19 @@ pub fn draw_chart(
         Some(points) => format!("{points:.1}"),
         None => "no".to_string(),
     };
+    let assessment_suffix =
+        if track.telemetry_quality.completeness == crate::track::Completeness::Complete {
+            ""
+        } else if track.pass_grade != crate::grading::PassGrade::Incomplete {
+            " — partial assessment"
+        } else {
+            " — outcome only"
+        };
     root_drawing_area.draw_text(
         &format!(
-            "Grade: {}  ({} pts)",
+            "Grade: {}{}  ({} pts)",
             track.pass_grade.label(),
+            assessment_suffix,
             grade_points_text
         ),
         &text_style,
@@ -463,12 +447,13 @@ pub fn draw_chart(
         (16, 80),
     )?;
 
+    // Same pilot-facing headline as the Discord embed and SQLite log: DCS/LQM wire evidence is
+    // shown alone whenever available, never next to a diverging Rust estimate.
+    // See Grading::pilot_facing_outcome for the rationale.
     root_drawing_area.draw_text(
-        &recovery_label(
-            &track.grading,
-            track.carrier_info.is_vstol(),
-            track.arrest_evidence,
-        ),
+        &track
+            .grading
+            .pilot_facing_outcome(track.carrier_info.is_vstol()),
         &text_style,
         (16, 112),
     )?;
@@ -500,12 +485,7 @@ pub fn draw_chart(
             &format!(
                 "{}: {}",
                 label,
-                fmt_gate(
-                    gate,
-                    quality,
-                    track.telemetry_quality.max_sample_gap_ms,
-                    track.carrier_info.is_vstol(),
-                )
+                fmt_gate(gate, quality, track.carrier_info.is_vstol())
             ),
             &text_style_small,
             (16, y_pos),
@@ -1118,22 +1098,23 @@ fn text_style() -> TextStyle<'static> {
     TextStyle::from(("sans-serif", 20).into_font()).color(&THEME_FG)
 }
 
-fn fmt_gate(
-    gate: Option<&GateDatum>,
-    quality: &GateQuality,
-    max_sample_gap_ms: f64,
-    vstol: bool,
-) -> String {
+fn fmt_gate(gate: Option<&GateDatum>, quality: &GateQuality, vstol: bool) -> String {
     match gate {
         Some(g) if vstol => format!("ALT {:+.0}ft  LAT {:+.0}ft", g.gs_deviation_ft, g.lineup_ft),
         Some(g) => format!(
             "GS {:+.1}\u{00B0}  LU {:+.1}\u{00B0}",
             g.gs_deviation_deg, g.lineup_deg
         ),
+        None if quality.coverage_source == Some("continuous_trajectory_bracket") => {
+            "COVERED — continuous trajectory".to_string()
+        }
         None if quality.status == GateStatus::Late => "LATE".to_string(),
         None if quality.status == GateStatus::Invalid => {
             if quality.reason.as_deref() == Some("stale_gate_bracket") {
-                format!("INVALID — gap up to {:.0} ms", max_sample_gap_ms)
+                quality.bracket_gap_ms.map_or_else(
+                    || "INVALID — stale bracket".to_string(),
+                    |gap| format!("INVALID — bracket gap {:.0} ms", gap),
+                )
             } else {
                 format!(
                     "INVALID — {}",
@@ -1187,6 +1168,12 @@ fn select_catobar_display_runs(datums: &[Datum]) -> Vec<Vec<Datum>> {
 }
 
 fn aoa_color(aoa: f64, plane_info: &'static AirplaneInfo) -> RGBColor {
+    // Every module's rating table is a chain of `<=`/`<` comparisons, all of which are false for
+    // NaN, so an unknown AoA used to fall through to the last arm and be painted as Slow
+    // (review finding F17). Grading already skips non-finite AoA; the chart must too.
+    if !aoa.is_finite() {
+        return THEME_AOA_UNKNOWN;
+    }
     match (plane_info.aoa_rating)(aoa) {
         Aoa::Fast => THEME_AOA_FAST,
         Aoa::SlightlyFast => THEME_AOA_SLIGHTLY_FAST,
@@ -1236,49 +1223,23 @@ impl ValueFormatter<f64> for CustomRange {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        chart_layout, recovery_label, select_catobar_display_runs, select_catobar_final_datums,
-        select_vstol_final_datums, Datum, Grading, PANEL_GAP,
+        aoa_color, chart_layout, pattern_branch_diagnostic, select_catobar_display_runs,
+        select_catobar_final_datums, select_pattern_branches, select_vstol_final_datums, Datum,
+        PatternDatum, PANEL_GAP, THEME_AOA_SLOW, THEME_AOA_UNKNOWN,
     };
 
     #[test]
-    fn catobar_recovery_label_uses_dcs_wire_when_estimate_is_unavailable() {
-        let grading = Grading::Recovered {
-            cable: Some(4),
-            cable_estimated: None,
-        };
-
-        assert_eq!(recovery_label(&grading, false, "dcs_wire"), "Wire 4 (DCS)");
-    }
-
-    #[test]
-    fn catobar_recovery_label_keeps_dcs_wire_authoritative() {
-        let grading = Grading::Recovered {
-            cable: Some(4),
-            cable_estimated: Some(3),
-        };
-
-        assert_eq!(recovery_label(&grading, false, "dcs_wire"), "Wire 4 (DCS)");
-    }
-
-    #[test]
-    fn catobar_recovery_label_separates_kinematic_arrest_from_unconfirmed_contact() {
-        let grading = Grading::Recovered {
-            cable: None,
-            cable_estimated: None,
-        };
-
-        assert_eq!(
-            recovery_label(&grading, false, "kinematic"),
-            "Arrested (wire unknown)"
-        );
-        assert_eq!(
-            recovery_label(&grading, false, "unconfirmed"),
-            "Deck contact (arrest unconfirmed)"
-        );
-        assert_eq!(
-            recovery_label(&Grading::WaveoffDcs, false, "none"),
-            "Waveoff (DCS LSO)"
-        );
+    fn unknown_aoa_is_painted_neutral_not_slow() {
+        for aircraft in ["FA-18C_hornet", "F-14B", "T-45", "AV8BNA"] {
+            let plane = crate::data::AirplaneInfo::by_type(aircraft).unwrap();
+            assert_eq!(aoa_color(f64::NAN, plane), THEME_AOA_UNKNOWN, "{aircraft}");
+            assert_eq!(
+                aoa_color(f64::INFINITY, plane),
+                THEME_AOA_UNKNOWN,
+                "{aircraft}"
+            );
+            assert_eq!(aoa_color(40.0, plane), THEME_AOA_SLOW, "{aircraft}");
+        }
     }
 
     fn two_complete_final_approach_runs() -> Vec<Datum> {
@@ -1376,6 +1337,92 @@ mod layout_tests {
         assert!(selected.iter().all(|datum| datum.y == 180.0));
         assert_eq!(selected.last().map(|datum| datum.x), Some(0.0));
     }
+
+    fn pattern_datum(time: f64, astern_m: f64) -> PatternDatum {
+        PatternDatum {
+            time,
+            astern_m,
+            port_m: 0.0,
+            alt_ft: 600.0,
+            aoa: 7.0,
+        }
+    }
+
+    #[test]
+    fn simple_pattern_stays_in_one_primary_branch() {
+        let datums = [
+            pattern_datum(0.0, 2_000.0),
+            pattern_datum(1.0, 1_600.0),
+            pattern_datum(2.0, 1_200.0),
+            pattern_datum(3.0, 800.0),
+            pattern_datum(4.0, 400.0),
+            pattern_datum(5.0, 200.0),
+        ];
+
+        let selection = select_pattern_branches(&datums, Some(4.5), Some(5.0));
+        assert_eq!(selection.ranges, vec![0..6]);
+        assert_eq!(selection.primary_index, Some(0));
+        assert_eq!(selection.reason, "groove_entry");
+    }
+
+    #[test]
+    fn repeated_high_passes_are_separate_and_the_groove_branch_is_primary() {
+        let datums = [
+            // First high pass, followed by a departure of more than 150 m.
+            pattern_datum(0.0, 2_500.0),
+            pattern_datum(1.0, 2_100.0),
+            pattern_datum(2.0, 1_700.0),
+            pattern_datum(3.0, 1_300.0),
+            pattern_datum(4.0, 900.0),
+            pattern_datum(5.0, 1_000.0),
+            pattern_datum(6.0, 1_100.0),
+            // Circuit and second high pass.
+            pattern_datum(7.0, 1_500.0),
+            pattern_datum(8.0, 1_900.0),
+            pattern_datum(9.0, 2_300.0),
+            pattern_datum(10.0, 1_900.0),
+            pattern_datum(11.0, 1_500.0),
+            pattern_datum(12.0, 1_100.0),
+            pattern_datum(13.0, 800.0),
+            pattern_datum(14.0, 900.0),
+            pattern_datum(15.0, 1_000.0),
+            // Circuit and actual final.
+            pattern_datum(16.0, 1_400.0),
+            pattern_datum(17.0, 1_800.0),
+            pattern_datum(18.0, 2_200.0),
+            pattern_datum(19.0, 1_800.0),
+            pattern_datum(20.0, 1_400.0),
+            pattern_datum(21.0, 1_000.0),
+            pattern_datum(22.0, 850.0),
+            pattern_datum(23.0, 450.0),
+            pattern_datum(24.0, 100.0),
+        ];
+
+        let selection = select_pattern_branches(&datums, Some(22.0), Some(24.0));
+        assert_eq!(selection.ranges, vec![0..7, 7..16, 16..25]);
+        assert_eq!(selection.primary_index, Some(2));
+
+        let diagnostic = pattern_branch_diagnostic(&datums, Some(22.0), Some(24.0));
+        assert_eq!(diagnostic.pattern_branch_count, 3);
+        assert_eq!(diagnostic.primary_pattern_branch, Some(2));
+        assert_eq!(diagnostic.attenuated_branch_count, 2);
+        assert_eq!(diagnostic.selection_reason, "groove_entry");
+    }
+
+    #[test]
+    fn a_time_discontinuity_never_creates_a_rendering_connection() {
+        let datums = [
+            pattern_datum(0.0, 2_000.0),
+            pattern_datum(1.0, 1_500.0),
+            pattern_datum(10.0, 1_000.0),
+            pattern_datum(11.0, 500.0),
+        ];
+
+        let selection = select_pattern_branches(&datums, None, Some(11.0));
+        assert_eq!(selection.ranges, vec![0..2, 2..4]);
+        assert_eq!(selection.primary_index, Some(1));
+        assert_eq!(selection.reason, "touchdown");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1390,6 +1437,155 @@ const PAT_AHEAD_NM: f64 = 3.0; // ahead  (top of chart)
 /// Physical size of the pattern PNG.
 const PAT_IMG_W: u32 = 900;
 const PAT_IMG_H: u32 = 900;
+
+const PATTERN_BRANCH_REVERSAL_M: f64 = 150.0;
+const PATTERN_BRANCH_MAX_GAP_S: f64 = 2.0;
+const PATTERN_BRANCH_MAX_STEP_M: f64 = 500.0;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct PatternRenderingDiagnostic {
+    pub pattern_branch_count: usize,
+    /// Zero-based index in chronological branch order.
+    pub primary_pattern_branch: Option<usize>,
+    pub selection_reason: &'static str,
+    pub attenuated_branch_count: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PatternBranchSelection {
+    ranges: Vec<std::ops::Range<usize>>,
+    primary_index: Option<usize>,
+    reason: &'static str,
+}
+
+/// Split overview history at a confirmed approach-to-departure reversal or a
+/// telemetry discontinuity. A branch starts just after one pass and contains
+/// the following circuit plus its next inbound leg, so drawing branches as
+/// separate series cannot join two circuits with an artificial chord.
+fn select_pattern_branches(
+    datums: &[PatternDatum],
+    groove_entry_time: Option<f64>,
+    touchdown_time: Option<f64>,
+) -> PatternBranchSelection {
+    #[derive(Clone, Copy)]
+    enum Motion {
+        Approaching { minimum_distance_m: f64 },
+        Departing { maximum_distance_m: f64 },
+    }
+
+    if datums.is_empty() {
+        return PatternBranchSelection {
+            ranges: Vec::new(),
+            primary_index: None,
+            reason: "no_pattern_data",
+        };
+    }
+
+    let distance = |datum: &PatternDatum| datum.astern_m.hypot(datum.port_m);
+    let mut ranges = Vec::new();
+    let mut branch_start = 0;
+    let mut motion = Motion::Approaching {
+        minimum_distance_m: distance(&datums[0]),
+    };
+
+    for index in 1..datums.len() {
+        let previous = &datums[index - 1];
+        let datum = &datums[index];
+        let previous_distance_m = distance(previous);
+        let current_distance_m = distance(datum);
+        let dt = datum.time - previous.time;
+        let step_m = (datum.astern_m - previous.astern_m).hypot(datum.port_m - previous.port_m);
+        let continuous = datum.time.is_finite()
+            && previous.time.is_finite()
+            && previous_distance_m.is_finite()
+            && current_distance_m.is_finite()
+            && dt > 0.0
+            && dt <= PATTERN_BRANCH_MAX_GAP_S
+            && step_m.is_finite()
+            && step_m <= PATTERN_BRANCH_MAX_STEP_M;
+
+        if !continuous {
+            ranges.push(branch_start..index);
+            branch_start = index;
+            motion = Motion::Approaching {
+                minimum_distance_m: distance(datum),
+            };
+            continue;
+        }
+
+        motion = match motion {
+            Motion::Approaching { minimum_distance_m }
+                if current_distance_m - minimum_distance_m > PATTERN_BRANCH_REVERSAL_M =>
+            {
+                ranges.push(branch_start..index + 1);
+                branch_start = index + 1;
+                Motion::Departing {
+                    maximum_distance_m: current_distance_m,
+                }
+            }
+            Motion::Approaching { minimum_distance_m } => Motion::Approaching {
+                minimum_distance_m: minimum_distance_m.min(current_distance_m),
+            },
+            Motion::Departing { maximum_distance_m }
+                if maximum_distance_m - current_distance_m > PATTERN_BRANCH_REVERSAL_M =>
+            {
+                Motion::Approaching {
+                    minimum_distance_m: current_distance_m,
+                }
+            }
+            Motion::Departing { maximum_distance_m } => Motion::Departing {
+                maximum_distance_m: maximum_distance_m.max(current_distance_m),
+            },
+        };
+    }
+    if branch_start < datums.len() {
+        ranges.push(branch_start..datums.len());
+    }
+    ranges.retain(|range| !range.is_empty());
+
+    let anchor = groove_entry_time
+        .filter(|time| time.is_finite())
+        .map(|time| (time, "groove_entry"))
+        .or_else(|| {
+            touchdown_time
+                .filter(|time| time.is_finite())
+                .map(|time| (time, "touchdown"))
+        });
+    let anchored_index = anchor.and_then(|(anchor_time, _)| {
+        ranges.iter().position(|range| {
+            datums[range.start].time <= anchor_time && anchor_time <= datums[range.end - 1].time
+        })
+    });
+    let primary_index = anchored_index.or_else(|| ranges.len().checked_sub(1));
+    let reason = if anchored_index.is_some() {
+        anchor.map(|(_, reason)| reason).unwrap_or("latest_branch")
+    } else {
+        "latest_branch"
+    };
+
+    PatternBranchSelection {
+        ranges,
+        primary_index,
+        reason,
+    }
+}
+
+pub(crate) fn pattern_branch_diagnostic(
+    datums: &[PatternDatum],
+    groove_entry_time: Option<f64>,
+    touchdown_time: Option<f64>,
+) -> PatternRenderingDiagnostic {
+    let selection = select_pattern_branches(datums, groove_entry_time, touchdown_time);
+    PatternRenderingDiagnostic {
+        pattern_branch_count: selection.ranges.len(),
+        primary_pattern_branch: selection.primary_index,
+        selection_reason: selection.reason,
+        attenuated_branch_count: selection
+            .ranges
+            .len()
+            .saturating_sub(usize::from(selection.primary_index.is_some())),
+    }
+}
 
 /// Draw a top-down bird's-eye chart of the full recovery circuit and save it
 /// next to the approach chart as `<filename>-pattern.png`.
@@ -1417,8 +1613,13 @@ pub fn draw_pattern_chart(
     let title_style = TextStyle::from(("sans-serif", 22).into_font()).color(&THEME_FG);
     root.draw_text(
         &format!(
-            "Pattern — {}  {} pts",
+            "Pattern — {}{}  {} pts",
             track.pass_grade.label(),
+            if track.telemetry_quality.completeness == crate::track::Completeness::Complete {
+                ""
+            } else {
+                " — partial/no points"
+            },
             match track.grade_points {
                 Some(points) if track.carrier_info.is_vstol() => format!("{points:.2}"),
                 Some(points) => format!("{points:.1}"),
@@ -1428,6 +1629,29 @@ pub fn draw_pattern_chart(
         &title_style,
         (16, 12),
     )?;
+
+    let groove_entry_time = track.groove_entry.as_ref().map(|entry| entry.timestamp_dcs);
+    let branch_selection = select_pattern_branches(
+        &track.pattern_datums,
+        groove_entry_time,
+        track.touchdown_time_dcs,
+    );
+    if branch_selection.ranges.len() > 1 {
+        let previous_count = branch_selection.ranges.len() - 1;
+        let branch_text_color = THEME_GUIDE_GRAY.mix(0.75);
+        let branch_style =
+            TextStyle::from(("sans-serif", 15).into_font()).color(&branch_text_color);
+        root.draw_text(
+            &format!(
+                "{previous_count} circuit{} antérieur{} atténué{}",
+                if previous_count > 1 { "s" } else { "" },
+                if previous_count > 1 { "s" } else { "" },
+                if previous_count > 1 { "s" } else { "" },
+            ),
+            &branch_style,
+            (16, 38),
+        )?;
+    }
 
     let x_range = (-PAT_WIDTH_NM / 2.0)..(PAT_WIDTH_NM / 2.0);
     // chart_y = -astern_m: carrier at 0, ahead = positive, astern = negative
@@ -1518,54 +1742,66 @@ pub fn draw_pattern_chart(
         let _ = label; // label kept for reference
     }
 
-    // Pattern track coloured by AoA
-    let datums_nm: Vec<_> = track
-        .pattern_datums
-        .iter()
-        .map(|d| PatternDatum {
-            time: d.time,
-            // chart coords: port on left (negate port_m), ahead at top (negate astern_m)
-            astern_m: -m_to_nm(d.astern_m), // chart_y = -astern_m
-            port_m: -m_to_nm(d.port_m),     // chart_x = -port_m
-            alt_ft: d.alt_ft,
-            aoa: d.aoa,
-        })
-        .filter(|d| {
-            d.port_m >= -PAT_WIDTH_NM / 2.0
-                && d.port_m <= PAT_WIDTH_NM / 2.0
-                && d.astern_m >= -PAT_ASTERN_NM
-                && d.astern_m <= PAT_AHEAD_NM
-        })
-        .collect();
+    // Draw each circuit as an independent series. Only the branch containing
+    // groove entry (or touchdown fallback) keeps the normal AoA colours.
+    let mut primary_datums_nm = Vec::new();
+    for (branch_index, range) in branch_selection.ranges.iter().enumerate() {
+        let datums_nm: Vec<_> = track.pattern_datums[range.clone()]
+            .iter()
+            .map(|d| PatternDatum {
+                time: d.time,
+                // chart coords: port on left (negate port_m), ahead at top (negate astern_m)
+                astern_m: -m_to_nm(d.astern_m),
+                port_m: -m_to_nm(d.port_m),
+                alt_ft: d.alt_ft,
+                aoa: d.aoa,
+            })
+            .filter(|d| {
+                d.port_m >= -PAT_WIDTH_NM / 2.0
+                    && d.port_m <= PAT_WIDTH_NM / 2.0
+                    && d.astern_m >= -PAT_ASTERN_NM
+                    && d.astern_m <= PAT_AHEAD_NM
+            })
+            .collect();
 
-    let mut iter = datums_nm.iter().peekable();
-    let mut seg_pts: Vec<(f64, f64)> = Vec::new();
-    let mut seg_color = THEME_AOA_ON_SPEED;
-
-    while let Some(d) = iter.next() {
-        let pt = (d.port_m, d.astern_m); // (chart_x, chart_y)
-        let color = aoa_color(d.aoa, track.plane_info);
-        if seg_pts.is_empty() {
-            seg_color = color;
-        }
-        if color != seg_color || iter.peek().is_none() {
-            if color != seg_color {
-                seg_pts.push(pt);
-            }
+        if Some(branch_index) != branch_selection.primary_index {
             chart.draw_series(LineSeries::new(
-                std::mem::take(&mut seg_pts),
-                seg_color.stroke_width(2),
+                datums_nm.iter().map(|d| (d.port_m, d.astern_m)),
+                THEME_GUIDE_GRAY.mix(0.35).stroke_width(1),
             ))?;
-            seg_color = color;
+            continue;
         }
-        seg_pts.push(pt);
-    }
-    if !seg_pts.is_empty() {
-        chart.draw_series(LineSeries::new(seg_pts, seg_color.stroke_width(2)))?;
+
+        let mut iter = datums_nm.iter().peekable();
+        let mut seg_pts: Vec<(f64, f64)> = Vec::new();
+        let mut seg_color = THEME_AOA_ON_SPEED;
+        while let Some(d) = iter.next() {
+            let pt = (d.port_m, d.astern_m);
+            let color = aoa_color(d.aoa, track.plane_info);
+            if seg_pts.is_empty() {
+                seg_color = color;
+            }
+            if color != seg_color || iter.peek().is_none() {
+                if color != seg_color {
+                    seg_pts.push(pt);
+                }
+                chart.draw_series(LineSeries::new(
+                    std::mem::take(&mut seg_pts),
+                    seg_color.stroke_width(2),
+                ))?;
+                seg_color = color;
+            }
+            seg_pts.push(pt);
+        }
+        if !seg_pts.is_empty() {
+            chart.draw_series(LineSeries::new(seg_pts, seg_color.stroke_width(2)))?;
+        }
+        primary_datums_nm = datums_nm;
     }
 
-    // Touchdown marker (last datum)
-    if let Some(last) = datums_nm.last() {
+    // Touchdown/end marker belongs to the selected final branch, not to an
+    // unrelated later fragment.
+    if let Some(last) = primary_datums_nm.last() {
         chart.draw_series(std::iter::once(Circle::new(
             (last.port_m, last.astern_m),
             5,

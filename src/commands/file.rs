@@ -9,7 +9,7 @@ use std::time::Instant;
 use crate::data::{AirplaneInfo, CarrierInfo};
 use crate::draw::DrawError;
 use crate::tasks::detect_recovery_attempt::is_recovery_attempt;
-use crate::tasks::record_recovery::{ACMI_HOOK_PROPERTY, FILENAME_DATETIME_FORMAT};
+use crate::tasks::record_recovery::FILENAME_DATETIME_FORMAT;
 use crate::track::{HookSampleStatus, Track, TrackResult};
 use crate::transform::Transform;
 use tacview::record::{Event, EventKind, GlobalProperty, Property, Record, Tag, Update};
@@ -17,10 +17,27 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime, UtcOffset};
 use ultraviolet::{DRotor3, DVec3};
 
-/// How long replay keeps feeding samples after the touchdown event so the
-/// hook transient can recover and the deck kinematics can settle, mirroring
-/// the live recorder's post-landing window.
+/// Custom Tacview property carrying the raw hook draw argument on each aircraft frame of an
+/// LSO-written ACMI, so offline replay can reproduce the hook classifier and the wire estimator.
+/// Older recordings without it replay with the sidecar samples only (see `HookSample`).
+pub const ACMI_HOOK_PROPERTY: &str = "LSOHook";
+
+/// How long replay keeps feeding samples after the touchdown event so the hook transient can
+/// recover and the deck kinematics can settle, mirroring the live recorder's post-landing window.
 const REPLAY_POST_LANDING_S: f64 = 10.0;
+
+/// A raw hook draw-argument sample `(dcs_time, value)` supplied alongside an ACMI that predates
+/// the embedded `LSOHook` property (the `*.hook.json` sidecars in `tests/recordings/live_2026-09`).
+pub type HookSample = (f64, f64);
+
+/// What the offline replay is allowed to read from the recording besides positions.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReplayOptions {
+    /// Drop every DCS LSO `Message` event, i.e. replay the pass as if a human LSO had run the
+    /// pattern and DCS had emitted no `WIRE#`. Used by the live fixtures to prove that the
+    /// independent evidence (hook transient, deck kinematics) still grades the trap.
+    pub ignore_dcs_grading: bool,
+}
 
 #[derive(clap::Parser)]
 pub struct Opts {
@@ -33,7 +50,7 @@ pub fn execute(opts: Opts) -> Result<(), crate::error::Error> {
     let start = Instant::now();
 
     let mut file = File::open(opts.input)?;
-    let mut tracks = extract_tracks(&mut file, &[])?;
+    let mut tracks = extract_tracks(&mut file, &[], ReplayOptions::default())?;
     for track in &mut tracks {
         track.draw()?;
     }
@@ -43,34 +60,37 @@ pub fn execute(opts: Opts) -> Result<(), crate::error::Error> {
     Ok(())
 }
 
-/// A raw hook draw-argument sample `(dcs_time, value)` supplied alongside an
-/// ACMI that predates the embedded `LSOHook` property.
-pub type HookSample = (f64, f64);
-
 #[allow(unused)] // used in integration tests
 pub fn extract_recoveries(rd: &mut impl Read) -> Result<Vec<TrackResult>, crate::error::Error> {
-    extract_recoveries_with_hook(rd, &[])
+    extract_recoveries_with_hook(rd, &[], ReplayOptions::default())
 }
 
-/// Extracts recoveries, feeding `hook_samples` (sorted by time) to the track as
-/// the replay clock passes each sample. Hook values embedded in the ACMI take
-/// precedence for the frame they belong to.
+/// Extracts recoveries, feeding `hook_samples` (sorted by time) to the track as the replay clock
+/// passes each sample. Hook values embedded in the ACMI take precedence for the frame they belong
+/// to.
 #[allow(unused)] // used in integration tests
 pub fn extract_recoveries_with_hook(
     rd: &mut impl Read,
     hook_samples: &[HookSample],
+    options: ReplayOptions,
 ) -> Result<Vec<TrackResult>, crate::error::Error> {
-    let mut tracks = extract_tracks(rd, hook_samples)?;
+    let tracks = extract_tracks(rd, hook_samples, options)?;
     Ok(tracks
         .into_iter()
-        .filter(|t| t.is_recovery_attempt)
-        .map(|t| t.datums.finish())
+        .flat_map(|t| {
+            let mut recoveries = t.completed;
+            if t.is_recovery_attempt {
+                recoveries.push(t.datums.finish());
+            }
+            recoveries
+        })
         .collect())
 }
 
 fn extract_tracks(
     rd: &mut impl Read,
     hook_samples: &[HookSample],
+    options: ReplayOptions,
 ) -> Result<Vec<CarrierPlanePair>, crate::error::Error> {
     let parser = tacview::Parser::new_compressed(rd)?;
 
@@ -206,6 +226,10 @@ fn extract_tracks(
                 mut params,
                 text: Some(dcs_grading),
             }) => {
+                if options.ignore_dcs_grading {
+                    tracing::trace!(dcs_grading, "dcs lso grading ignored by replay option");
+                    continue;
+                }
                 if let Some((carrier_id, plane_id)) = params
                     .pop()
                     .and_then(|id| u64::from_str(&id).ok())
@@ -250,9 +274,13 @@ struct CarrierPlanePair {
     is_done: bool,
     datums: Track,
     landed: bool,
-    /// DCS time at which the touchdown was applied to the track.
+    /// Replay time of the touchdown event once applied to the track.
     landed_at: Option<f64>,
-    /// Hook value embedded in the current plane frame, if any.
+    /// Attempts that ended without a touchdown (waveoff, low pass over the ship) before the one
+    /// currently in `datums`. Live, each of these would have been its own recorder; replay
+    /// restarts a fresh `Track` the same way instead of stopping at the first one.
+    completed: Vec<TrackResult>,
+    /// Hook value embedded in the current plane frame (`LSOHook`), if any.
     frame_hook: Option<f64>,
     /// External hook samples not yet fed to the track (sorted by time).
     pending_hook: VecDeque<HookSample>,
@@ -283,6 +311,7 @@ impl CarrierPlanePair {
             datums: Track::new(pilot_name, carrier_info, plane_info),
             landed: false,
             landed_at: None,
+            completed: Vec::new(),
             frame_hook: None,
             pending_hook: hook_samples.iter().copied().collect(),
         }
@@ -393,7 +422,8 @@ impl CarrierPlanePair {
         if self.is_recovery_attempt {
             let frame_hook = self.frame_hook.take();
             let mut should_continue = self.datums.next(&self.carrier, &self.plane, frame_hook);
-            // External hook samples (sidecar) up to the current replay time.
+            // External hook samples (sidecar) up to the current replay time keep their own
+            // timestamps, exactly like the live independent sampler.
             while let Some(&(time, raw)) = self.pending_hook.front() {
                 if time > self.plane.time {
                     break;
@@ -406,8 +436,8 @@ impl CarrierPlanePair {
                 self.datums.landed(&self.carrier, &self.plane);
                 self.landed_at = Some(self.plane.time);
             }
-            // Like the live recorder, keep feeding samples for a while after the
-            // touchdown so the hook transient and deck kinematics are observed.
+            // Like the live recorder, keep feeding samples for a while after the touchdown so
+            // the hook transient and the deck kinematics are observed.
             if self
                 .landed_at
                 .is_some_and(|landed_at| self.plane.time - landed_at > REPLAY_POST_LANDING_S)
@@ -415,7 +445,21 @@ impl CarrierPlanePair {
                 should_continue = false;
             }
             if !should_continue {
-                self.is_done = true;
+                if self.landed_at.is_some() {
+                    self.is_done = true;
+                } else {
+                    // No touchdown: this attempt is over (waveoff, go-around, low pass) but
+                    // the recording may still contain the real approach. Finalise it and start
+                    // a fresh track, exactly like the live detector spawns a new recorder.
+                    let finished = std::mem::replace(
+                        &mut self.datums,
+                        Track::new(&self.pilot_name, self.carrier_info, self.plane_info),
+                    )
+                    .finish();
+                    tracing::debug!(grading = ?finished.grading, "replay attempt ended without touchdown; restarting");
+                    self.completed.push(finished);
+                    self.is_recovery_attempt = false;
+                }
             }
         } else if is_recovery_attempt(&self.carrier, &self.plane) {
             self.is_recovery_attempt = true;
@@ -442,42 +486,7 @@ impl CarrierPlanePair {
                 Track::new(&self.pilot_name, self.carrier_info, self.plane_info),
             )
             .finish();
-            let png = crate::draw::draw_chart(&out_dir, &filename, &track)?;
-            let (wire_estimated, wire_dcs) = match track.grading {
-                crate::track::Grading::Recovered {
-                    cable,
-                    cable_estimated,
-                } => (cable_estimated, cable),
-                crate::track::Grading::TouchAndGo { cable_estimated } => (cable_estimated, None),
-                _ => (None, None),
-            };
-            let wire_label = |wire: Option<u8>| {
-                wire.map(|wire| wire.to_string())
-                    .unwrap_or_else(|| "-".to_string())
-            };
-            // One line per pass so an offline regrade can be compared with the
-            // live JSON report without opening the PNG.
-            println!(
-                "{} {} outcome={} pass_grade={} points={} hook={} arrest_evidence={} wire_dcs={} wire_estimated={} completeness={:?} png={}",
-                track.pilot_name,
-                self.plane_info.name,
-                crate::tasks::record_recovery::recovery_outcome(
-                    &track.grading,
-                    self.carrier_info.is_vstol(),
-                    track.arrest_evidence,
-                ),
-                track.pass_grade.label(),
-                track
-                    .grade_points
-                    .map(|points| points.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
-                track.hook_state.as_str(),
-                track.arrest_evidence,
-                wire_label(wire_dcs),
-                wire_label(wire_estimated),
-                track.telemetry_quality.completeness,
-                png.display(),
-            );
+            crate::draw::draw_chart(&out_dir, &filename, &track)?;
             self.is_recovery_attempt = false;
             self.landed = false;
             self.landed_at = None;

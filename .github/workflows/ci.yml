@@ -42,40 +42,23 @@ jobs:
           override: true
           components: rustfmt, clippy
 
-
       - name: Build
-        run: cargo build
+        run: cargo build --locked
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace --no-fail-fast
 
       - name: Lint
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Check formatting
-        run: cargo fmt -- --check
-
-  audit:
-    name: Audit (non-blocking)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-
-    env:
-      CARGO_TERM_COLOR: always
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+        run: cargo fmt --all -- --check
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        # 0.21.x cannot parse the CVSS 4.0 scores the RustSec database publishes since
+        # September 2026 ("unsupported CVSS version: 4.0"); 0.22 is the first line that does.
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Audit dependencies
+        # cargo-audit automatically loads the reviewed ignore list from .cargo/audit.toml.
         run: cargo audit

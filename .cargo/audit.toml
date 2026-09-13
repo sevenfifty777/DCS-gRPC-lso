@@ -1,7 +1,7 @@
 # cargo audit configuration
 # Run: cargo audit
 #
-# Last reviewed: 2026-06-10
+# Last reviewed: 2026-09-13 (cargo-audit 0.22.2; 0.21.x no longer parses the database)
 # All ignored advisories are blocked by serenity 0.12.5 (latest on crates.io).
 # Dependency chain: serenity -> tokio-tungstenite 0.21 -> rustls 0.22.4 -> rustls-webpki 0.102.8
 # Re-evaluate when serenity 0.13+ is released.
@@ -22,4 +22,7 @@ ignore = [
     "RUSTSEC-2025-0012",
     # instant 0.1.13 — unmaintained; transitive dep via backoff
     "RUSTSEC-2024-0384",
+    # ttf-parser 0.20.0 — unmaintained; transitive dep via plotters (PNG chart text).
+    # Reported as an allowed warning by cargo-audit 0.22; no CVE. Re-evaluate with plotters.
+    "RUSTSEC-2026-0192",
 ]

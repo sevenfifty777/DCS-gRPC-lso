@@ -1,15 +1,14 @@
 use stubs::net::v0::get_players_response::GetPlayerInfo;
 use stubs::net::v0::net_service_client::NetServiceClient;
-use tonic::transport::Channel;
 
-use super::{request_with_deadline, GrpcResult};
+use super::{request_with_deadline, GrpcChannel, GrpcResult};
 
 pub struct NetClient {
-    svc: NetServiceClient<Channel>,
+    svc: NetServiceClient<GrpcChannel>,
 }
 
 impl NetClient {
-    pub fn new(ch: Channel) -> Self {
+    pub fn new(ch: GrpcChannel) -> Self {
         Self {
             svc: NetServiceClient::new(ch),
         }

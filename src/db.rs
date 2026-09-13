@@ -12,6 +12,7 @@ pub type SharedDb = Arc<RecoveryDb>;
 /// operation. Callers in async code should use `tokio::task::spawn_blocking`.
 pub struct RecoveryDb {
     conn: Mutex<Connection>,
+    path: std::path::PathBuf,
 }
 
 /// Pass record ready for insertion, with all values owned (required for `spawn_blocking`).
@@ -60,20 +61,26 @@ pub struct DbPass {
     pub wire_divergent: bool,
     pub confidence: String,
     pub cause: String,
+    pub secondary_causes_json: String,
     pub grading_version: String,
     pub wire_estimation_confidence: String,
     pub grading_availability: String,
+    pub assessment_scope: String,
+    pub observed_from_distance_m: Option<f64>,
+    pub missing_coverage_json: String,
+    pub points_eligible: bool,
+    pub fallback_source: String,
     /// `dcs_wire`, `hook_transient`, `kinematic`, `unconfirmed` or `none`.
     pub arrest_evidence: String,
     /// Commanded hook state: `up`, `down` or `unknown`.
     pub hook_state: String,
 }
 
-/// Pass record as read back from the database. Since 0.4.0 only the migration
+/// Pass record as read back from the database. Since 0.5.0 only the migration
 /// tests read rows; the DCS Web Dashboard queries `lso.db` directly.
 #[cfg(test)]
 #[derive(Debug)]
-#[expect(
+#[allow(
     dead_code,
     reason = "mirrors every `passes` column for the migration tests; only some are asserted"
 )]
@@ -121,9 +128,15 @@ pub struct StoredPass {
     pub wire_divergent: Option<bool>,
     pub confidence: Option<String>,
     pub cause: Option<String>,
+    pub secondary_causes: Vec<String>,
     pub grading_version: Option<String>,
     pub wire_estimation_confidence: Option<String>,
     pub grading_availability: Option<String>,
+    pub assessment_scope: Option<String>,
+    pub observed_from_distance_m: Option<f64>,
+    pub missing_coverage: Vec<String>,
+    pub points_eligible: Option<bool>,
+    pub fallback_source: Option<String>,
     pub arrest_evidence: Option<String>,
     pub hook_state: Option<String>,
 }
@@ -199,13 +212,21 @@ impl RecoveryDb {
             ("grading_version", "TEXT"),
             ("wire_estimation_confidence", "TEXT"),
             ("grading_availability", "TEXT"),
+            ("secondary_causes_json", "TEXT NOT NULL DEFAULT '[]'"),
             // Existing rows predate optional points and historically always
             // represented an awarded numeric value.
             ("points_awarded", "INTEGER NOT NULL DEFAULT 1"),
             ("intended_spot", "TEXT"),
             ("actual_nearest_spot", "TEXT"),
             ("distance_to_intended_spot_m", "REAL"),
-            // Migration 6: arrest confirmation source and commanded hook state.
+            ("assessment_scope", "TEXT"),
+            ("observed_from_distance_m", "REAL"),
+            ("missing_coverage_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("points_eligible", "INTEGER NOT NULL DEFAULT 0"),
+            ("fallback_source", "TEXT"),
+            // Migration 7 (integration lineage; `astra-review` shipped the same two columns as
+            // its migration 6, which this lineage had already used for the graduated
+            // assessment): arrest confirmation source and commanded hook state.
             ("arrest_evidence", "TEXT"),
             ("hook_state", "TEXT"),
         ] {
@@ -218,11 +239,17 @@ impl RecoveryDb {
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            path: path.to_path_buf(),
         })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Persist a completed recovery pass.
@@ -234,11 +261,12 @@ impl RecoveryDb {
                  map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                  recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                  confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability,
+                 max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
+                 assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
                  arrest_evidence, hook_state) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
-                     ?42, ?43)",
+                     ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42,
+                     ?43, ?44, ?45, ?46, ?47, ?48, ?49)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -281,6 +309,12 @@ impl RecoveryDb {
                 &pass.telemetry_health,
                 &pass.wire_estimation_confidence,
                 &pass.grading_availability,
+                &pass.secondary_causes_json,
+                &pass.assessment_scope,
+                pass.observed_from_distance_m,
+                &pass.missing_coverage_json,
+                pass.points_eligible,
+                &pass.fallback_source,
                 &pass.arrest_evidence,
                 &pass.hook_state,
             ],
@@ -298,7 +332,8 @@ impl RecoveryDb {
                     map_name, grade_date, grade_points, mission_datetime, outcome, recovery_id, pilot_kind, carrier_id, carrier_name, carrier_type,
                     recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                     confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
-                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability,
+                    max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
+                    assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
                     arrest_evidence, hook_state \
              FROM passes ORDER BY id DESC",
         )?;
@@ -352,8 +387,20 @@ impl RecoveryDb {
                 telemetry_health: row.get(39)?,
                 wire_estimation_confidence: row.get(40)?,
                 grading_availability: row.get(41)?,
-                arrest_evidence: row.get(42)?,
-                hook_state: row.get(43)?,
+                secondary_causes: row
+                    .get::<_, Option<String>>(42)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
+                assessment_scope: row.get(43)?,
+                observed_from_distance_m: row.get(44)?,
+                missing_coverage: row
+                    .get::<_, Option<String>>(45)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
+                points_eligible: row.get(46)?,
+                fallback_source: row.get(47)?,
+                arrest_evidence: row.get(48)?,
+                hook_state: row.get(49)?,
             })
         })?;
         rows.collect()
@@ -406,7 +453,7 @@ mod tests {
             grade_points: Some(3.0),
             points_awarded: true,
             mission_datetime: "2026-08-26T00:00:00Z".to_string(),
-            outcome: "Qualif Bolter".to_string(),
+            outcome: "Approach only — outcome unknown".to_string(),
             pilot_kind: "human".to_string(),
             carrier_id: 1,
             carrier_name: "CVN".to_string(),
@@ -423,10 +470,16 @@ mod tests {
             wire_dcs: Some(3),
             wire_divergent: false,
             confidence: "high".to_string(),
-            cause: "correlated_touchdown".to_string(),
+            cause: "approach_only_outcome_unknown".to_string(),
+            secondary_causes_json: "[\"hook_history_truncated\"]".to_string(),
             grading_version: "project-derived-v1".to_string(),
             wire_estimation_confidence: "high".to_string(),
-            grading_availability: "available".to_string(),
+            grading_availability: "available_approach_only".to_string(),
+            assessment_scope: "full".to_string(),
+            observed_from_distance_m: Some(1_389.0),
+            missing_coverage_json: "[]".to_string(),
+            points_eligible: true,
+            fallback_source: "project".to_string(),
             arrest_evidence: "dcs_wire".to_string(),
             hook_state: "down".to_string(),
         };
@@ -436,13 +489,22 @@ mod tests {
         let passes = db.all_passes().expect("query passes");
 
         assert_eq!(passes.len(), 1);
-        assert_eq!(passes[0].outcome, "Qualif Bolter");
+        assert_eq!(passes[0].outcome, "Approach only — outcome unknown");
         assert_eq!(passes[0].arrest_evidence.as_deref(), Some("dcs_wire"));
         assert_eq!(passes[0].hook_state.as_deref(), Some("down"));
+        assert_eq!(
+            passes[0].grading_availability.as_deref(),
+            Some("available_approach_only")
+        );
+        assert_eq!(
+            passes[0].cause.as_deref(),
+            Some("approach_only_outcome_unknown")
+        );
         assert_eq!(passes[0].points_awarded, Some(true));
         assert_eq!(passes[0].intended_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].actual_nearest_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].distance_to_intended_spot_m, Some(1.25));
+        assert_eq!(passes[0].secondary_causes, ["hook_history_truncated"]);
     }
 
     #[test]
