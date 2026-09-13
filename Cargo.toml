@@ -35,9 +35,11 @@ zip = "2.2"
 
 [dependencies.stubs]
 package = "dcs-grpc-stubs"
-# Pinned to the fork release tag that publishes GetOwnshipHookState.
+# Pinned to the fork release the deployed server runs. `build.rs` reads the resolved version of
+# this crate back out of Cargo.lock and exposes it as `DCS_GRPC_STUBS_VERSION`, so the
+# compatibility check and every report's `dcs_grpc_client_stubs` follow this pin automatically.
 git = "https://github.com/sevenfifty777/rust-server.git"
-tag = "v0.9.2"
+tag = "v0.10.0"
 features = ["client"]
 
 [dev-dependencies]

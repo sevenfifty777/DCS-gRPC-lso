@@ -131,11 +131,12 @@ corrigés en conséquence.
 - **Contrat JSON incohérent.** Uniformiser `datums[].alt` actuellement clampé à zéro et
   `trajectory_deviations[].alt_m` non clampé. Renommer ou documenter additivement `aircraft_id`, qui
   est un index de type et non un ID d’unité, sans casser le schema-v3.
-- **Scripts de déploiement locaux.** Rendre `run-live-buffered.ps1` autonome hors du poste de
-  développement : manifeste optionnel ou livré, `$lsoRoot` réellement utilisé, webhook Discord
-  sorti des scripts et lu depuis l’environnement. Vérifier l’écriture UTF-8 sur Windows PowerShell
-  5.1 et PowerShell 7. Inspecter avec `sqlite3` la base `Records` qui mélange deux lignées de schéma
-  avant de faire confiance au board.
+- **Scripts de déploiement locaux.** `run-live*.ps1` est désormais ignoré par git et
+  `docs/ADMIN_GUIDE.md` (13 septembre) fixe la référence : webhook lu depuis l'environnement,
+  release serveur `v0.10.0` avec `recoveryTelemetry.enabled`. Reste à rendre le script lui-même
+  autonome hors du poste de développement (manifeste optionnel ou livré, `$lsoRoot` réellement
+  utilisé), vérifier l'écriture UTF-8 sur Windows PowerShell 5.1 et PowerShell 7, et inspecter avec
+  `sqlite3` la base `Records` qui mélange deux lignées de schéma avant de faire confiance au board.
 
 ### Externaliser les seuils `PROJECT-DERIVED`
 

@@ -28,7 +28,9 @@ use tonic::transport::{Endpoint, Uri};
 use tonic::Status;
 
 type RecoveryTaskMap = Arc<Mutex<RecoveryTaskRegistry>>;
-const DCS_GRPC_CLIENT_STUB_VERSION: &str = "0.10.0";
+/// Derived from the compiled stubs crate (see `crate::client::DCS_GRPC_STUBS_VERSION`), never
+/// typed by hand.
+const DCS_GRPC_CLIENT_STUB_VERSION: &str = crate::client::DCS_GRPC_STUBS_VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct RecoveryTaskKey {
@@ -1171,9 +1173,24 @@ mod tests {
 
     #[test]
     fn dcs_grpc_compatibility_is_checked_by_api_line() {
-        assert_eq!(dcs_grpc_compatibility("0.10.0"), "exact");
-        assert_eq!(dcs_grpc_compatibility("0.10.1"), "compatible_same_api_line");
-        assert_eq!(dcs_grpc_compatibility("0.9.1"), "incompatible_api_line");
+        // The client version is whatever Cargo.lock resolved for the stubs pin; the test derives
+        // its fixtures from it so a repin never leaves a stale literal behind.
+        let client = DCS_GRPC_CLIENT_STUB_VERSION;
+        let mut parts = client.split('.');
+        let (major, minor): (u64, u64) = (
+            parts.next().unwrap().parse().unwrap(),
+            parts.next().unwrap().parse().unwrap(),
+        );
+        assert_ne!(client, "unknown", "build.rs must resolve the stubs version");
+        assert_eq!(dcs_grpc_compatibility(client), "exact");
+        assert_eq!(
+            dcs_grpc_compatibility(&format!("{major}.{minor}.99")),
+            "compatible_same_api_line"
+        );
+        assert_eq!(
+            dcs_grpc_compatibility(&format!("{major}.{}.0", minor + 1)),
+            "incompatible_api_line"
+        );
         assert_eq!(dcs_grpc_compatibility("unknown"), "unknown");
     }
 

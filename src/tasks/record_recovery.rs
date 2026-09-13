@@ -1640,7 +1640,7 @@ pub async fn record_recovery(
         lso_commit: option_env!("GIT_COMMIT_HASH").unwrap_or("unknown"),
         lso_dirty: option_env!("GIT_DIRTY") == Some("true"),
         dcs_grpc_version: params.dcs_grpc_version,
-        dcs_grpc_client_stubs: "0.10.0",
+        dcs_grpc_client_stubs: crate::client::DCS_GRPC_STUBS_VERSION,
         dcs_grpc_compatibility: params.dcs_grpc_compatibility,
         acquisition_source,
         recovery_telemetry: buffered_diagnostics.as_ref(),

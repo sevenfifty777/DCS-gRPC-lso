@@ -52,6 +52,17 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Changed
 
+- `dcs-grpc-stubs` is pinned to the fork release `v0.10.0` (commit `a0dea7f`), the release the
+  deployed server must run. `build.rs` now reads the resolved stubs version from `Cargo.lock` and
+  exposes it as `crate::client::DCS_GRPC_STUBS_VERSION`; the server compatibility check and the
+  `dcs_grpc_client_stubs` report field use it instead of a typed `"0.10.0"` literal, which had
+  misreported every report while the lockfile resolved `0.9.2` (review finding F15;
+  `build.rs`, `build_support.rs`, `src/client/mod.rs`, `src/commands/run.rs`,
+  `src/tasks/record_recovery.rs`).
+- `releases/lso.exe`, `trap sample/` (recorded passes with real callsigns and a SQLite file) and
+  `graphify-out/` are no longer tracked and are ignored; launch scripts (`run-live*.ps1`) stay
+  untracked so the Discord webhook never enters source control. `docs/ADMIN_GUIDE.md` documents
+  the server release, `recoveryTelemetry.enabled`, the read quota, run, stop and rollback.
 - JSON reports are `schema_version: 9`, the first number of the merged lineage after the
   `astra-review` schema 8 and the refonte schema 3. The field layout is the refonte's; the number
   only guarantees that a consumer can tell the three lineages apart (`src/tasks/record_recovery.rs`).

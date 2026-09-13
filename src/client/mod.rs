@@ -18,6 +18,12 @@ use tonic::{Request, Status};
 /// locally instead of being allowed to block every other recovery forever.
 pub const RPC_DEADLINE: Duration = Duration::from_secs(2);
 
+/// Version of the `dcs-grpc-stubs` crate this binary was compiled against, resolved by `build.rs`
+/// from `Cargo.lock` (the exact version behind the `tag =` pin in `Cargo.toml`). This is the
+/// client side of the server compatibility check and the `dcs_grpc_client_stubs` provenance
+/// field of every report; it must never be a typed literal.
+pub const DCS_GRPC_STUBS_VERSION: &str = env!("DCS_GRPC_STUBS_VERSION");
+
 pub type GrpcResult<T> = Result<T, Box<Status>>;
 
 pub type GrpcChannel = InterceptedService<Channel, ApiKeyInterceptor>;

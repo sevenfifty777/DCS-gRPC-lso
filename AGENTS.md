@@ -197,11 +197,14 @@ modifier les règles CATOBAR/V/STOL sans demande dédiée.
 
 ## DCS-gRPC et dépendances
 
-- Stubs : **pin Git immuable** sur le tag `v0.9.2` du fork `sevenfifty777/rust-server` (`Cargo.toml`
-  `[dependencies.stubs] git = "https://github.com/sevenfifty777/rust-server.git"`, `tag = "v0.9.2"`,
-  commit `16291fb`). Aucun checkout frère n'est requis : Cargo récupère le tag directement. Le fork
+- Stubs : **pin Git immuable** sur le tag `v0.10.0` du fork `sevenfifty777/rust-server` (`Cargo.toml`
+  `[dependencies.stubs] git = "https://github.com/sevenfifty777/rust-server.git"`, `tag = "v0.10.0"`,
+  commit `a0dea7f`). Aucun checkout frère n'est requis : Cargo récupère le tag directement. Le fork
   contient `RecoveryService` (start/read/stop telemetry), et LSO en dépend directement pour la
-  source bufferisée par défaut.
+  source bufferisée par défaut. La version compilée des stubs est relue depuis `Cargo.lock` par
+  `build.rs` (`DCS_GRPC_STUBS_VERSION`, exposée par `crate::client::DCS_GRPC_STUBS_VERSION`) :
+  c'est elle que comparent le contrôle de compatibilité et le champ `dcs_grpc_client_stubs` des
+  rapports, jamais un littéral tapé à la main.
 - `tonic = 0.13` (plus de dépendance Axum directe depuis le retrait du dashboard embarqué).
   Contrainte durable : les clients
   générés par les stubs sont paramétrés par les types de transport de **leur propre** version de
@@ -221,11 +224,13 @@ modifier les règles CATOBAR/V/STOL sans demande dédiée.
   autre version mineure de la même ligne, `incompatible` pour une autre ligne. Aucune compatibilité
   fonctionnelle au-delà de cette classification n'a été validée live avec la version actuelle des
   stubs.
-- Commit serveur épinglé : `16291fbab9585e6fd8c223e21b0da12fd1a954cd` (tag `v0.9.2`). **À vérifier** :
-  cette branche visait auparavant le commit non publié `c6fb3f7737f48c82601866f696d7df66ac727414`
-  (workspace `dcs-grpc v0.10.0`) via le chemin local. Le passage à `v0.9.2` aligne LSO sur le tag
-  publié ; si un service ou champ protobuf présent uniquement dans `c6fb3f7` est requis, il faut
-  publier un nouveau tag du fork et remonter le `tag =` plutôt que revenir à un chemin local.
+- Commit serveur épinglé : `a0dea7fb5f088a57b032243cacd7e76582933e46` (tag `v0.10.0`, release du
+  13 septembre 2026). `v0.10.0` est `v0.9.3` renuméroté après la fusion du fork collègue : par
+  rapport à `v0.9.2` il ne change que `grpc.lua` (helper `GRPC.errorResourceExhausted` restauré,
+  sans lequel `maxActiveRecoveries` faisait planter `StartRecoveryTelemetry`) et cesse de suivre
+  `version.lua` ; aucun changement protobuf sur la ligne `0.9.x`/`0.10.x`. Le serveur déployé doit
+  être exactement cette release, avec `recoveryTelemetry.enabled = true` (voir
+  [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md)).
 
 **Procédure pour un futur repin du fork** (quand le chemin local sera remplacé par un tag/rev Git
 immuable, ou lors d'une mise à jour ultérieure de ce pin) :
@@ -1044,7 +1049,7 @@ côté API/dashboard.
 
 Prérequis : toolchain Rust stable (édition 2021, pas de `rust-toolchain.toml` figé) et un accès
 réseau à GitHub au premier build — `Cargo.toml` résout `dcs-grpc-stubs` via un pin Git sur le tag
-`v0.9.2` du fork `sevenfifty777/rust-server` (voir "DCS-gRPC et dépendances" plus haut). Aucun
+`v0.10.0` du fork `sevenfifty777/rust-server` (voir "DCS-gRPC et dépendances" plus haut). Aucun
 checkout frère n'est nécessaire.
 
 - Build direct : `cargo build --release` (ou sans `--release` pour un binaire debug non optimisé)

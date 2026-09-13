@@ -54,4 +54,16 @@ fn main() {
 
     println!("cargo:rustc-env=GIT_COMMIT_HASH={commit}");
     println!("cargo:rustc-env=GIT_DIRTY={dirty}");
+
+    // The DCS-gRPC stubs version this binary was compiled against (see
+    // `build_support::stubs_version_from_lock`). Never a typed literal: the previous hardcoded
+    // "0.10.0" misreported every report's `dcs_grpc_client_stubs` while the lockfile resolved
+    // 0.9.2 (review finding F15).
+    let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
+    println!("cargo:rerun-if-changed={}", lock_path.display());
+    let stubs_version = std::fs::read_to_string(&lock_path)
+        .ok()
+        .and_then(|lock| build_support::stubs_version_from_lock(&lock))
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=DCS_GRPC_STUBS_VERSION={stubs_version}");
 }

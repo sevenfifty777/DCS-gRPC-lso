@@ -41,8 +41,11 @@ uses glideslope and lineup deviations at three gates; AoA colours the charts but
 
 - Windows or another platform supported by the Rust dependency stack.
 - DCS World running the matching DCS-gRPC fork build. This checkout resolves `dcs-grpc-stubs` from
-  the fork release tag `v0.9.2` (`sevenfifty777/rust-server`) so the live client and deployed server
-  use exactly the same protobuf contract.
+  the fork release tag `v0.10.0` (`sevenfifty777/rust-server`) so the live client and deployed server
+  use exactly the same protobuf contract; the compiled stubs version is read back from `Cargo.lock`
+  at build time and reported in every JSON as `dcs_grpc_client_stubs`. The server needs
+  `recoveryTelemetry.enabled = true` for the default buffered position source; see
+  [docs/ADMIN_GUIDE.md](docs/ADMIN_GUIDE.md).
 - A Rust stable toolchain only when building from source.
 
 The DCS-gRPC server and this client must use compatible protobuf APIs. Upstream DCS-gRPC 0.8.1 is
@@ -180,6 +183,7 @@ pilot names to Discord numeric user IDs; it is optional.
 
 ## Documentation
 
+- [Installation and administration](docs/ADMIN_GUIDE.md) — server release, config keys, run, stop, roll back
 - [Full technical reference](AGENTS.md) — architecture, contracts, grading, build, deployment, benchmark
 - [Project overview and grading logic for non-developers](primer.md) (French)
 - [Contributing](CONTRIBUTING.md)
