@@ -6,6 +6,8 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ## Unreleased
 
+## [0.5.0] - 2026-09-13
+
 ### Fixed
 
 - CI pins `cargo-audit` 0.22.2: 0.21.2 failed on every run since the RustSec database started
