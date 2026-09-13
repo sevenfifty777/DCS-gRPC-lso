@@ -48,6 +48,9 @@ coverage/
 # docs/ADMIN_GUIDE.md).
 /run-live*.ps1
 /run-*.ps1
+# Site-specific baseline manifest (mission hash, deployed DLL/Lua hashes); the
+# template is docs/BASELINE_MANIFEST.example.json.
+/live-baseline.json
 
 # ACMI files
 

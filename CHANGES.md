@@ -8,6 +8,9 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Fixed
 
+- JSON files saved with a UTF-8 byte-order mark (Windows PowerShell 5.1's default) now load: the
+  baseline manifest downloaded from the live server started with one and would have been
+  rejected as invalid JSON at line 1, column 1 (`src/commands/run.rs`).
 - A duplicate `Land`/`RunwayTouch` (DCS sends two for one V/STOL landing) is rejected before any
   mutation, so the spot distance, nearest spot and terminal datum measured at the first accepted
   contact are never overwritten by the second event a few metres further on. The V/STOL

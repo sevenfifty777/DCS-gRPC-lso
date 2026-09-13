@@ -319,7 +319,11 @@ async fn read_json_file<T: serde::de::DeserializeOwned>(
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|source| crate::error::Error::file_at(path, source))?;
-    serde_json::from_slice(&bytes).map_err(|source| crate::error::Error::json_at(path, source))
+    // Windows PowerShell 5.1 writes UTF-8 files with a byte-order mark, which serde_json
+    // rejects as "expected value at line 1 column 1". A manifest or Discord users file saved
+    // that way must still load; the mark carries no content.
+    let bytes = bytes.strip_prefix("\u{feff}".as_bytes()).unwrap_or(&bytes);
+    serde_json::from_slice(bytes).map_err(|source| crate::error::Error::json_at(path, source))
 }
 
 async fn load_discord_users(opts: &Opts) -> Result<HashMap<String, u64>, crate::error::Error> {
@@ -1047,6 +1051,21 @@ mod tests {
     use super::*;
     use clap::Parser;
     use stubs::net::v0::get_players_response::GetPlayerInfo;
+
+    #[tokio::test]
+    async fn json_files_saved_with_a_utf8_byte_order_mark_still_load() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("lso-bom-manifest-{unique}.json"));
+        let mut bytes = b"\xEF\xBB\xBF".to_vec();
+        bytes.extend_from_slice(br#"{"dcs_build": "2.9.29.27468", "mission": "m.miz"}"#);
+        std::fs::write(&path, bytes).expect("write manifest");
+        let manifest: BaselineManifest = read_json_file(&path).await.expect("manifest with BOM");
+        assert_eq!(manifest.dcs_build.as_deref(), Some("2.9.29.27468"));
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn removed_web_flags_are_refused_with_guidance() {
