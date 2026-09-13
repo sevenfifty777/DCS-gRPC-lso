@@ -147,6 +147,10 @@ struct RecoveryReport<'a> {
     wire_primary: &'static str,
     wire_estimation: &'a crate::track::WireEstimateEvidence,
     arrest_confirmation: &'a crate::track::ArrestConfirmationEvidence,
+    /// Commanded hook state (`up`/`down`/`unknown`) latched from the pre-contact baseline.
+    hook_state: crate::track::HookState,
+    /// `dcs_wire`, `hook_transient`, `kinematic`, `unconfirmed` or `none`.
+    arrest_evidence: &'static str,
     grading_availability: &'static str,
     assessment_scope: AssessmentScope,
     observed_from_distance_m: Option<f64>,
@@ -1389,7 +1393,11 @@ pub async fn record_recovery(
             Grading::ApproachOnly => "approach_only_outcome_unknown",
             Grading::Bolter => "deck_crossing_without_arrest",
             Grading::TouchAndGo { .. } => "hook_up_near_deck",
-            Grading::Recovered { .. } => "correlated_touchdown",
+            Grading::Recovered { .. } => match track.arrest_evidence {
+                "hook_transient" => "hook_transient_arrest_without_dcs_wire",
+                "kinematic" => "kinematic_arrest_without_wire",
+                _ => "correlated_touchdown",
+            },
             Grading::Unknown => "unknown",
         },
     };
@@ -1614,6 +1622,8 @@ pub async fn record_recovery(
         wire_primary,
         wire_estimation: &track.wire_estimation,
         arrest_confirmation: &track.arrest_confirmation,
+        hook_state: track.hook_state,
+        arrest_evidence: track.arrest_evidence,
         grading_availability,
         assessment_scope,
         observed_from_distance_m,
@@ -1763,6 +1773,8 @@ pub async fn record_recovery(
                 .unwrap_or_else(|_| "[]".to_string()),
             points_eligible: track.grade_points.is_some(),
             fallback_source: fallback_source.as_str().to_string(),
+            arrest_evidence: track.arrest_evidence.to_string(),
+            hook_state: track.hook_state.as_str().to_string(),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(inserted)) => Some(inserted),

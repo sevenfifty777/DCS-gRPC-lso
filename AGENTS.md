@@ -944,7 +944,9 @@ recovery/session/carrier/complétude/provenance du brin + index unique de recove
 `points_awarded` (sépare un vrai zéro d'une absence de points) ; 4 = spot visé, spot actif le plus
 proche et distance au spot visé, séparés ; 5 = gap du segment noté, santé télémétrie, confiance de
 l'estimation de brin et disponibilité de la note ; 6 = causes secondaires encodées JSON (`cause`
-legacy reste la colonne primaire). Au démarrage, chaque `ALTER TABLE` est précédé d'une inspection
+legacy reste la colonne primaire) ; 7 = `arrest_evidence` (`dcs_wire`, `hook_transient`,
+`kinematic`, `unconfirmed`, `none`) et `hook_state` commandé (`up`/`down`/`unknown`) — mêmes
+colonnes que la migration 6 d'`astra-review`, renumérotées pour cette lignée. Au démarrage, chaque `ALTER TABLE` est précédé d'une inspection
 `PRAGMA table_info(passes)` ; une erreur de migration inattendue est retournée, jamais avalée comme
 une simple "colonne déjà existante". Les lignes existantes sont préservées. `points_awarded` vaut
 `true` par défaut pour les lignes historiques (une note numérique existait toujours avant ce champ)
@@ -1008,7 +1010,18 @@ l'altitude relative, la progression inbound, le côté d'approche, l'indice de c
 motif d'armement ; `trajectory_deviations[].track_angle_deg` conserve additivement la route sol
 post-roll-out sans entrer dans le grading. `pattern_rendering` ajoute le nombre de branches de circuit, l’index primaire
 compté à partir de zéro, son motif de sélection et le nombre de branches atténuées ; ce diagnostic décrit le
-rendu uniquement et n’affecte jamais le grading. Voir "Gates, outcomes et câble" et "Contrat de
+rendu uniquement et n’affecte jamais le grading. Les ajouts du 13 septembre 2026 (schéma 9,
+portés depuis `astra-review`) sont `hook_state` (état de crosse commandé, latché sur la ligne de
+base en groove finissant 1,5 s avant la première preuve de contact), `arrest_evidence`
+(`dcs_wire` > `hook_transient` > `kinematic` > `unconfirmed`, `none` hors arrestation),
+`arrest_confirmation.deck_kinematics` (confirmation par déplacement relatif au bateau brut :
+`confirmed`, `reason`, référence de contact, début et durée du maintien, vitesse relative minimale,
+`x` au ralentissement) et `wire_estimation.hook_deflection_time_dcs`/`hook_recovered_time_dcs`/
+`correlation_lag_ms` (transitoire de crosse ayant produit l'estimation ; `reason` vaut alors
+`hook_deflection_correlated_with_wire_crossing`, les franchissements sont désormais
+`finite_hook_plane_crossing`). `arrest_confirmation.source` ajoute `hook_transient` et
+`kinematic` ; `cause` ajoute `hook_transient_arrest_without_dcs_wire` et
+`kinematic_arrest_without_wire`. Voir "Gates, outcomes et câble" et "Contrat de
 télémétrie" ci-dessus.
 
 Les ajouts P0 courants sont `Grading::ApproachOnly`,
@@ -1047,9 +1060,15 @@ checkout frère n'est nécessaire.
   (`lso run -o <dossier>`, variable `DCS_GRPC_API_KEY`, etc.) — non dupliqué ici.
 - Rejeu hors-ligne d'un ACMI déjà produit par LSO (pas un fichier Tacview quelconque) :
   `lso.exe file <chemin.zip.acmi>`, ex. `lso.exe file tests\recordings\wire_3_01_T45.zip.acmi`
-  (fixtures de test réellement présentes dans `tests/recordings/`). Une invariance live/replay est
-  couverte par un test, mais le replay ne peut pas reproduire le timing réseau, l'UCID, la livraison
-  d'événements DCS ni la performance serveur.
+  (fixtures de test réellement présentes dans `tests/recordings/`). Les quatorze passes réelles de
+  `tests/recordings/live_2026-09/` (T-45, F-14B(U), 2–3 septembre 2026) ont chacune un sidecar
+  `*.hook.json` (timeline du draw argument de crosse, crosse commandée par le pilote, `WIRE#`
+  DCS comme étiquette) que `src/tests.rs` rejoue trois fois : telle quelle, sans le message LSO
+  DCS (`ReplayOptions::ignore_dcs_grading`), puis sans aucune donnée de crosse. Le rejeu lit la
+  propriété ACMI `LSOHook` quand elle existe, continue 10 s après le toucher et redémarre une
+  track après une tentative close sans toucher. Il ne peut pas reproduire le timing réseau,
+  l'UCID, la livraison d'événements DCS ni la performance serveur, et ne porte pas de vitesse
+  (`plane.velocity`) : la signature `arrest_confirmation.kinematic` y est toujours vide.
 - Comparaison Case I roll-out sur un rapport ou dossier JSON v3 : `lso.exe groove-ab <chemin>`.
   Sortie TSV sur stdout avec anciennes/nouvelles entrée et durée, diagnostics au nouvel instant et
   amplitudes ajoutées avant l'ancienne entrée ; entrées jamais modifiées. La note

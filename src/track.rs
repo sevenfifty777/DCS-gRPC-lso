@@ -265,6 +265,70 @@ const ARREST_MAX_CONTACT_ONSET_DELTA_S: f64 = 1.2;
 const ARREST_MAX_ON_DECK_HOOK_HEIGHT_M: f64 = 3.0;
 const ARREST_DEPARTURE_RELATIVE_SPEED_MPS: f64 = 10.0;
 
+// ---------------------------------------------------------------------------
+// Hook-transient wire estimate (PROJECT-DERIVED, validated against the September 2026 T-45 and
+// F-14B(U) labelled live corpus in `tests/recordings/live_2026-09/`). A real arrestment drives the
+// animated external hook draw argument from its stable "down" band (`>= HOOK_DOWN_STABLE_MIN`)
+// sharply into the deflected band (`<= HOOK_DEFLECTED_MAX`) within two seconds of the touchdown
+// reference, then back to the down band within eight seconds once the cable pull-back ends. The
+// wire is the last finite pendant crossing no more than 200 ms before that deflection. A steady
+// value, a hook-up baseline or an incomplete transient never names a wire.
+// ---------------------------------------------------------------------------
+const HOOK_DOWN_STABLE_MIN: f64 = 0.8;
+const HOOK_DEFLECTED_MAX: f64 = 0.7;
+const MIN_HOOK_DOWN_STABLE_S: f64 = 0.2;
+const MAX_HOOK_DEFLECTION_RECOVERY_S: f64 = 8.0;
+const MAX_HOOK_DEFLECTION_TOUCH_OFFSET_S: f64 = 2.0;
+const MAX_HOOK_DEFLECTION_WIRE_LAG_MS: f64 = 200.0;
+/// Reject a hook-plane crossing when the hook is not physically near the finite pendant: outside
+/// the two pendant end points, or more than this far above/below it. Prevents an early
+/// overhead-pattern crossing of the infinite wire plane from suppressing the real deck crossing.
+const MAX_WIRE_VERTICAL_SEPARATION_M: f64 = 3.0;
+/// Pilot-commanded hook state is latched from the stable baseline observed this long before the
+/// earliest contact evidence, so the arrestment excursion of the animated hook (which starts up to
+/// ~1.4 s before the DCS touchdown event) never flips a real trap to "hook up".
+const HOOK_BASELINE_GUARD_S: f64 = 1.5;
+const HOOK_BASELINE_WINDOW_S: f64 = 3.0;
+
+// ---------------------------------------------------------------------------
+// Deck-kinematics arrest confirmation (PROJECT-DERIVED, campaign B 2026-09-02/03, ported from
+// `astra-review`): a trapped aircraft's carrier-relative horizontal speed fell below ~5 m/s
+// within 8 s of the contact reference and stayed there for 2 s, while bolters and hook-up
+// touch-and-go passes left the deck at ~47-50 m/s. Unlike `observe_arrest_kinematics` above,
+// this uses displacement relative to the *raw* carrier position over a one-second window, so it
+// works on ACMI replay (which carries no velocity) and is immune to DCS's ~1.4 s stepped ship
+// position. This is the evidence allowed to confirm an arrest when DCS supplies no `WIRE#`
+// (human LSO, DCS waveoff ignored); it never names a wire and never earns "high" confidence.
+// ---------------------------------------------------------------------------
+const DECK_ARREST_MAX_RELATIVE_SPEED_MPS: f64 = 6.0;
+/// Hysteresis applied while checking that the aircraft stays arrested.
+const DECK_ARREST_HOLD_MAX_RELATIVE_SPEED_MPS: f64 = 8.0;
+/// The slow window must start within this time after the contact reference. Live traps settle
+/// 4-5 s after touchdown once the cable pull-back ends.
+const DECK_ARREST_DETECTION_WINDOW_S: f64 = 8.0;
+const DECK_ARREST_HOLD_S: f64 = 2.0;
+const DECK_ARREST_MAX_SAMPLE_GAP_MS: f64 = 300.0;
+/// Deck run-out band along the angled deck, relative to the ideal touchdown point (`x > 0` is
+/// short of it, `x < 0` is beyond it).
+const DECK_ARREST_MIN_X_M: f64 = -160.0;
+const DECK_ARREST_MAX_X_M: f64 = 60.0;
+/// Deck kinematics are recorded once the aircraft is within this distance of the ideal touchdown
+/// point while in the groove.
+const DECK_KINEMATICS_START_X_M: f64 = 60.0;
+const MAX_DECK_KINEMATIC_SAMPLES: usize = 600;
+/// Relative speed is the carrier-relative displacement over at least this window, which spans one
+/// DCS ship-position step.
+const KINEMATIC_SPEED_WINDOW_S: f64 = 1.0;
+/// An eventless arrest (no `Land`/`RunwayTouch` at all, `Recovered` established purely from deck
+/// kinematics) keeps recording this long after the aircraft first went slow, so the hook
+/// transient can recover and the hold can be measured, then stops. Mirrors the live recorder's
+/// 10 s post-touchdown window and replaces the unreachable `held_s >= 8 s` exit of the original
+/// implementation (review finding F04).
+const POST_ARREST_EVIDENCE_WINDOW_S: f64 = 10.0;
+/// `WireEstimateEvidence::reason` when the estimate came from the hook transient; the only reason
+/// that also counts as arrest evidence (`arrest_evidence == "hook_transient"`).
+const HOOK_TRANSIENT_ESTIMATE_REASON: &str = "hook_deflection_correlated_with_wire_crossing";
+
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Datum {
     /// Legacy display time; equal to corrected aircraft DCS time.
@@ -382,6 +446,14 @@ pub struct WireEstimateEvidence {
     pub wire: Option<u8>,
     pub confidence: &'static str,
     pub reason: &'static str,
+    /// DCS time of the sharp hook deflection that started the completed arrestment transient
+    /// (see `HOOK_DEFLECTED_MAX`), when one was found near the touchdown reference.
+    pub hook_deflection_time_dcs: Option<f64>,
+    /// DCS time at which the deflected hook returned to its stable down band.
+    pub hook_recovered_time_dcs: Option<f64>,
+    /// `hook_deflection_time_dcs` minus the selected crossing time, when the estimate was
+    /// anchored on the hook transient.
+    pub correlation_lag_ms: Option<f64>,
     pub crossings: Vec<WireCrossingEvidence>,
     /// Diagnostic only, never used for grading: the DCS simulation time at which a sustained
     /// post-arrest horizontal deceleration was first detected (see
@@ -420,6 +492,52 @@ pub struct ArrestKinematicEvidence {
     pub maximum_on_deck_hook_height_m: f64,
 }
 
+/// Carrier-relative post-contact deck kinematics used to confirm an arrest without a DCS wire
+/// (see the `DECK_ARREST_*` constants). Never identifies the wire.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct DeckArrestKinematicsEvidence {
+    pub confirmed: bool,
+    pub reason: &'static str,
+    /// Touchdown event time, or the deck-threshold crossing when no event exists.
+    pub reference_time_dcs: Option<f64>,
+    pub slow_since_dcs: Option<f64>,
+    pub held_s: Option<f64>,
+    pub min_relative_speed_mps: Option<f64>,
+    pub x_at_slow_m: Option<f64>,
+    pub samples: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeckKinematicSample {
+    time: f64,
+    /// Aircraft position relative to the *raw* carrier position (world frame). DCS steps ship
+    /// positions every ~1.4 s, so instantaneous velocities and smoothed positions both produce
+    /// spikes; a displacement over `KINEMATIC_SPEED_WINDOW_S` is stable for an aircraft carried
+    /// by the deck.
+    relative_position: DVec3,
+    x: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WindowedDeckSample {
+    time: f64,
+    relative_speed_mps: f64,
+    x: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CompletedHookDeflection {
+    deflected_at_dcs: f64,
+    recovered_at_dcs: f64,
+}
+
+/// What proved (or failed to prove) that an arrested-carrier contact was an arrest.
+///
+/// `source` is one of `dcs_lqm` (a parsed `WIRE#`), `hook_transient` (a completed hook
+/// deflection correlated with a finite pendant crossing), `kinematic` (deck kinematics show the
+/// aircraft stopped relative to the ship), `kinematic_diagnostic` (only the velocity-based
+/// signature below accepted; it remains diagnostic) or `unconfirmed`. The first three make the
+/// pass gradable; the last two leave it `unconfirmed_arrest`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ArrestConfirmationEvidence {
     pub source: &'static str,
@@ -428,7 +546,10 @@ pub struct ArrestConfirmationEvidence {
     pub dcs_wire: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub missing_dcs_lqm_reason: Option<&'static str>,
+    /// Velocity-based signature (live path only; diagnostic, never confirms on its own).
     pub kinematic: ArrestKinematicEvidence,
+    /// Displacement-based signature (live and replay); the confirming kinematic evidence.
+    pub deck_kinematics: DeckArrestKinematicsEvidence,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -577,11 +698,25 @@ impl Default for CaseIGrooveDetector {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CalibratedHookState {
+/// Pilot-commanded arresting-hook position, latched from the pre-contact baseline of the
+/// module's validated external draw argument (see `calibrated_hook_state`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookState {
     Up,
     Down,
+    #[default]
     Unknown,
+}
+
+impl HookState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
@@ -762,6 +897,13 @@ pub struct Track {
     /// mistaken for "hook up" (confirmed live 5 September 2026: this contamination would have
     /// invented a `TouchAndGo` on a real trap without the DCS LQM as a safety net).
     first_hook_ground_contact_time: Option<f64>,
+    /// DCS time of the first inbound crossing of the ideal touchdown point while in the groove.
+    /// Contact reference for the deck-kinematics arrest confirmation and the hook baseline
+    /// guard when no `Land`/`RunwayTouch` event was correlated.
+    deck_crossing_time: Option<f64>,
+    /// Carrier-relative positions recorded from `DECK_KINEMATICS_START_X_M` inbound, for
+    /// `evaluate_deck_arrest_kinematics`.
+    deck_kinematics: Vec<DeckKinematicSample>,
     telemetry_quality: TelemetryQuality,
     /// Valid buffered captures used only as real temporal bounds for source-side errors. No
     /// position is reconstructed from these anchors.
@@ -1663,6 +1805,11 @@ pub struct TrackResult {
     pub hook_observation: HookObservation,
     pub wire_estimation: WireEstimateEvidence,
     pub arrest_confirmation: ArrestConfirmationEvidence,
+    /// Commanded hook state used for the bolter / touch-and-go decision.
+    pub hook_state: HookState,
+    /// What proved the arrest: `dcs_wire`, `hook_transient`, `kinematic`, `unconfirmed` for an
+    /// arrested-carrier contact nothing confirmed, or `none` for non-arrest outcomes and V/STOL.
+    pub arrest_evidence: &'static str,
     /// Whether a wind reference (see `WindReference`) was established for this recovery, i.e.
     /// whether `datums[].aoa`/`pattern_datums[].aoa` are wind-corrected or fell back to the raw
     /// geometric approximation for the whole recovery (query failure, or the aircraft never
@@ -1744,6 +1891,8 @@ impl Track {
             crossed_deck_threshold: false,
             deck_crossing_confirmed_contact: false,
             first_hook_ground_contact_time: None,
+            deck_crossing_time: None,
+            deck_kinematics: Vec::new(),
             telemetry_quality: TelemetryQuality::default(),
             source_capture_anchors: Vec::new(),
             events: Vec::new(),
@@ -2072,6 +2221,23 @@ impl Track {
                 let hook_altitude_m = plane.alt - self.carrier_info.deck_altitude
                     + self.plane_info.hook.rotated_by(plane.rotation).y;
                 self.observe_arrest_kinematics(sample, carrier, plane, hook_altitude_m);
+                // Carrier-relative deck kinematics for the displacement-based arrest
+                // confirmation (see `evaluate_deck_arrest_kinematics`). Relative to the *raw*
+                // carrier position on purpose: the smoothed one lags every ship-position step.
+                if self.entered_groove && self.deck_kinematics.len() < MAX_DECK_KINEMATIC_SAMPLES {
+                    let x = self.deck_axis_x(carrier, ray_from_plane_to_carrier);
+                    let relative_position = plane.position - sample.carrier_raw.position;
+                    if x <= DECK_KINEMATICS_START_X_M
+                        && relative_position.x.is_finite()
+                        && relative_position.z.is_finite()
+                    {
+                        self.deck_kinematics.push(DeckKinematicSample {
+                            time: plane.time,
+                            relative_position,
+                            x,
+                        });
+                    }
+                }
             }
         }
 
@@ -2094,7 +2260,16 @@ impl Track {
                         });
                         return false;
                     }
-                    if self.calibrated_hook_state() == CalibratedHookState::Up {
+                    // A kinematically confirmed arrest cannot become a bolter or a touch-and-go:
+                    // the aircraft is simply taxiing / moving with the deck after the trap.
+                    if self.evaluate_deck_arrest_kinematics().confirmed {
+                        tracing::debug!(
+                            distance_in_m = distance,
+                            "arrested aircraft moving with the deck; stop tracking"
+                        );
+                        return false;
+                    }
+                    if self.calibrated_hook_state() == HookState::Up {
                         let cable_estimated = match self.grading.as_ref() {
                             Some(Grading::Recovered {
                                 cable_estimated, ..
@@ -2129,7 +2304,7 @@ impl Track {
                     // Hook draw arguments are retained as raw evidence but not interpreted until
                     // polarity is validated for the deployed modules.
                     if self.crossed_deck_threshold && self.min_distance_state.is_some() {
-                        if self.calibrated_hook_state() == CalibratedHookState::Up {
+                        if self.calibrated_hook_state() == HookState::Up {
                             tracing::debug!("qualification touch-and-go detected");
                             // `cable_estimated` is reconciled once in `finish()` from
                             // `wire_estimation`, against the complete wire-crossing history
@@ -2172,6 +2347,39 @@ impl Track {
                         distance_in_m = distance,
                         "pattern: plane moving away, resetting distance tracker"
                     );
+                }
+            }
+        }
+
+        if is_arrested_recovery && self.entered_groove && self.crossed_deck_threshold {
+            // Arrest confirmed purely from deck kinematics (no `Land`/`RunwayTouch` at all, e.g.
+            // missing DCS events): establish the outcome instead of letting the parked aircraft
+            // read `ApproachOnly`, or `Bolter` once it taxis.
+            if self.grading.is_none() {
+                let kinematics = self.evaluate_deck_arrest_kinematics();
+                if kinematics.confirmed {
+                    tracing::debug!(?kinematics, "arrest confirmed from deck kinematics");
+                    self.grading = Some(Grading::Recovered {
+                        cable: None,
+                        cable_estimated: None,
+                    });
+                    return true;
+                }
+            }
+            // Eventless arrest: nothing else will ever end this track (the aircraft is stationary
+            // relative to the ship), so stop after a bounded evidence window measured from the
+            // moment it first went slow.
+            if matches!(self.grading, Some(Grading::Recovered { .. }))
+                && self.landing_time.is_none()
+            {
+                let kinematics = self.evaluate_deck_arrest_kinematics();
+                if kinematics.confirmed
+                    && kinematics
+                        .slow_since_dcs
+                        .is_some_and(|slow| plane.time - slow >= POST_ARREST_EVIDENCE_WINDOW_S)
+                {
+                    tracing::debug!("kinematic arrest evidence window elapsed; stop tracking");
+                    return false;
                 }
             }
         }
@@ -2260,6 +2468,9 @@ impl Track {
         {
             self.crossed_deck_threshold = true;
             self.deck_crossing_confirmed_contact = alt <= DECK_CONTACT_CONFIRMATION_ALT_M;
+            if self.entered_groove {
+                self.deck_crossing_time.get_or_insert(plane.time);
+            }
         }
 
         if x > 0.0 {
@@ -2272,6 +2483,8 @@ impl Track {
                 self.crossed_deck_threshold = false;
                 self.deck_crossing_confirmed_contact = false;
                 self.first_hook_ground_contact_time = None;
+                self.deck_crossing_time = None;
+                self.deck_kinematics.clear();
             }
             if x > GATE_HALF_NM {
                 self.gate_deviations.at_half_nm = None;
@@ -2647,6 +2860,8 @@ impl Track {
         self.deceleration_run_start_time = None;
         self.arrest_deceleration_onset_time = None;
         self.arrest_kinematic_state = ArrestKinematicState::default();
+        self.deck_crossing_time = None;
+        self.deck_kinematics.clear();
     }
 
     pub fn finish(mut self) -> TrackResult {
@@ -2704,13 +2919,29 @@ impl Track {
         // decision history. This does not change the second, independent half of the fix: a wire
         // estimate can still no longer read "high" confidence without a DCS-confirmed arrest.
         let dcs_wire = self.dcs_grading.as_deref().and_then(parse_dcs_wire);
-        let wire_estimation = self.wire_estimate_at(
-            self.landing_time
-                .or_else(|| self.datums.last().map(|datum| datum.time))
-                .unwrap_or_default(),
-            dcs_wire.is_some(),
+        let is_arrested = matches!(self.carrier_info.recovery, CarrierRecovery::Arrested);
+        let touchdown_reference = self
+            .landing_time
+            .or(self.deck_crossing_time)
+            .or_else(|| self.datums.last().map(|datum| datum.time))
+            .unwrap_or_default();
+        let wire_estimation = self.wire_estimate_at(touchdown_reference, dcs_wire.is_some());
+        let deck_kinematics = if is_arrested {
+            self.evaluate_deck_arrest_kinematics()
+        } else {
+            DeckArrestKinematicsEvidence::default()
+        };
+        let hook_state = if is_arrested {
+            self.calibrated_hook_state()
+        } else {
+            HookState::Unknown
+        };
+        self.hook_observation.interpreted_state = hook_state.as_str();
+        let arrest_confirmation = self.arrest_confirmation_evidence_with(
+            dcs_wire,
+            wire_estimation.reason == HOOK_TRANSIENT_ESTIMATE_REASON,
+            deck_kinematics,
         );
-        let arrest_confirmation = self.arrest_confirmation_evidence(dcs_wire);
 
         // If DCS grading is set, use its reported wire for arrested recoveries only.
         let grading = if matches!(&self.carrier_info.recovery, CarrierRecovery::Arrested) {
@@ -2859,12 +3090,45 @@ impl Track {
             self.telemetry_quality
                 .add_unavailability_cause(Completeness::InsufficientGates);
         }
-        if matches!(self.carrier_info.recovery, CarrierRecovery::Arrested)
-            && matches!(grading, Grading::Recovered { cable: None, .. })
-        {
-            // RunwayTouch/Land prove contact, not an arrest. Until sustained
-            // kinematics or a DCS wire/LQM confirms the trap, the pass cannot
-            // receive a favourable grade.
+        // A deck contact flown with the hook commanded up cannot be an arrest. When nothing
+        // confirms one (no DCS wire, no hook transient, no deck-kinematics stop), classify it as
+        // a qualification touch-and-go here too: the live moving-away decision in `next_sample`
+        // never fires when the recording ends right after the contact (confirmed on the
+        // F-14B(U) hook-up live fixtures, whose ACMI stops ~2 s after `Land`).
+        let grading = match grading {
+            Grading::Recovered {
+                cable: None,
+                cable_estimated,
+            } if is_arrested
+                && hook_state == HookState::Up
+                && !arrest_confirmation.deck_kinematics.confirmed
+                && arrest_confirmation.source != "hook_transient" =>
+            {
+                tracing::debug!("hook-up deck contact without arrest evidence: touch-and-go");
+                Grading::TouchAndGo { cable_estimated }
+            }
+            other => other,
+        };
+
+        // RunwayTouch/Land prove contact, not an arrest. A DCS wire, a completed hook-deflection
+        // transient correlated with a pendant crossing, or the deck kinematics (aircraft stopped
+        // relative to the carrier) confirm the trap; without any of them the pass cannot receive
+        // a favourable grade. Precedence is strict and mirrors `arrest_confirmation.source`.
+        let arrest_evidence = match &grading {
+            Grading::Recovered { cable: Some(_), .. } if is_arrested => "dcs_wire",
+            Grading::Recovered {
+                cable_estimated: Some(_),
+                ..
+            } if is_arrested && arrest_confirmation.source == "hook_transient" => "hook_transient",
+            Grading::Recovered { .. }
+                if is_arrested && arrest_confirmation.deck_kinematics.confirmed =>
+            {
+                "kinematic"
+            }
+            Grading::Recovered { .. } if is_arrested => "unconfirmed",
+            _ => "none",
+        };
+        if arrest_evidence == "unconfirmed" {
             self.telemetry_quality
                 .add_unavailability_cause(Completeness::UnconfirmedArrest);
         }
@@ -2937,6 +3201,8 @@ impl Track {
             hook_observation: self.hook_observation,
             wire_estimation,
             arrest_confirmation,
+            hook_state,
+            arrest_evidence,
             wind_reference_established: self.wind_reference.is_some(),
             wind_reference_probes: self.wind_reference_probes,
         }
@@ -2995,6 +3261,25 @@ impl Track {
         for (index, (wire, pendants)) in cables.into_iter().enumerate() {
             let left = carrier.position + pendants.0.rotated_by(carrier.rotation);
             let right = carrier.position + pendants.1.rotated_by(carrier.rotation);
+            // Finite pendant: the hook must be between the two end points and physically near
+            // the wire (`MAX_WIRE_VERTICAL_SEPARATION_M`), otherwise the sample does not bracket
+            // a crossing at all. Confirmed on the F-14B(U) wire-4 live fixture, where an early
+            // infinite-plane crossing used to suppress the real deck crossing.
+            let across_wire = right - left;
+            let across_wire_length_sq = across_wire.mag_sq();
+            if across_wire_length_sq <= f64::EPSILON {
+                self.previous_wire_plane[index] = None;
+                continue;
+            }
+            let across_fraction = (hook - left).dot(across_wire) / across_wire_length_sq;
+            let nearest_wire_point = left + across_wire * across_fraction.clamp(0.0, 1.0);
+            let vertical_separation = (hook.y - nearest_wire_point.y).abs();
+            if !(0.0..=1.0).contains(&across_fraction)
+                || vertical_separation > MAX_WIRE_VERTICAL_SEPARATION_M
+            {
+                self.previous_wire_plane[index] = None;
+                continue;
+            }
             let midpoint = (left + right) / 2.0;
             let signed_distance = (hook - midpoint).dot(forward);
             if let Some((previous_distance, previous_time)) = self.previous_wire_plane[index] {
@@ -3012,12 +3297,278 @@ impl Track {
                         wire,
                         timestamp_dcs: previous_time + (plane.time - previous_time) * ratio,
                         bracket_gap_ms,
-                        method: "hook_plane_crossing",
+                        method: "finite_hook_plane_crossing",
                     });
                 }
             }
             self.previous_wire_plane[index] = Some((signed_distance, plane.time));
         }
+    }
+
+    /// Distance along the angled-deck axis from the aircraft to the ideal touchdown point
+    /// (`x > 0` short of it, `x < 0` beyond it), the same axis the gates and datums use.
+    fn deck_axis_x(&self, carrier: &Transform, ray_from_plane_to_carrier: DVec3) -> f64 {
+        let fb_rot = DRotor3::from_rotation_xz(
+            (carrier.heading - self.carrier_info.deck_angle)
+                .neg()
+                .to_radians(),
+        );
+        ray_from_plane_to_carrier.dot(DVec3::unit_z().rotated_by(fb_rot))
+    }
+
+    /// Earliest evidence of deck contact: the touchdown event, else the first inbound crossing of
+    /// the ideal touchdown point while in the groove.
+    fn contact_reference_time(&self) -> Option<f64> {
+        [self.landing_time, self.deck_crossing_time]
+            .into_iter()
+            .flatten()
+            .reduce(f64::min)
+    }
+
+    /// Confirms an arrest from carrier-relative deck kinematics. See the `DECK_ARREST_*`
+    /// constants for the PROJECT-DERIVED thresholds. Pure: the confirmation is a property of the
+    /// samples recorded so far and never mutates the track.
+    fn evaluate_deck_arrest_kinematics(&self) -> DeckArrestKinematicsEvidence {
+        let samples_total = self.deck_kinematics.len() as u32;
+        let Some(reference) = self.contact_reference_time() else {
+            return DeckArrestKinematicsEvidence {
+                reason: "no_contact_reference",
+                samples: samples_total,
+                ..DeckArrestKinematicsEvidence::default()
+            };
+        };
+        // Windowed carrier-relative horizontal speed per sample at or after the reference;
+        // samples without a window partner are skipped.
+        let samples = self
+            .deck_kinematics
+            .iter()
+            .enumerate()
+            .filter(|(_, sample)| sample.time >= reference)
+            .filter_map(|(index, sample)| {
+                let earlier = self.deck_kinematics[..index]
+                    .iter()
+                    .rev()
+                    .find(|past| sample.time - past.time >= KINEMATIC_SPEED_WINDOW_S)?;
+                let delta = sample.relative_position - earlier.relative_position;
+                let horizontal = (delta.x * delta.x + delta.z * delta.z).sqrt();
+                let speed = horizontal / (sample.time - earlier.time);
+                speed.is_finite().then_some(WindowedDeckSample {
+                    time: sample.time,
+                    relative_speed_mps: speed,
+                    x: sample.x,
+                })
+            })
+            .collect::<Vec<_>>();
+        if samples.is_empty() {
+            return DeckArrestKinematicsEvidence {
+                reason: "no_deck_samples_after_reference",
+                reference_time_dcs: Some(reference),
+                samples: samples_total,
+                ..DeckArrestKinematicsEvidence::default()
+            };
+        }
+        let min_relative_speed_mps = samples
+            .iter()
+            .map(|sample| sample.relative_speed_mps)
+            .fold(f64::INFINITY, f64::min);
+
+        // Earliest run of consecutive slow samples (no gap, inside the run-out band) that lasts
+        // `DECK_ARREST_HOLD_S` and starts within the detection window. The arresting cable pulls
+        // the aircraft back at 10-15 m/s for ~1.5 s after the run-out, so an earlier short slow
+        // spell followed by that pull-back must not end the search.
+        let mut run_start: Option<&WindowedDeckSample> = None;
+        let mut previous_time = None;
+        let mut gap_seen = false;
+        let mut best_held = 0.0_f64;
+        let mut best_start: Option<&WindowedDeckSample> = None;
+        for sample in &samples {
+            let gap_ms =
+                previous_time.map_or(0.0, |previous: f64| (sample.time - previous) * 1_000.0);
+            previous_time = Some(sample.time);
+            let slow = sample.relative_speed_mps <= DECK_ARREST_HOLD_MAX_RELATIVE_SPEED_MPS
+                && (DECK_ARREST_MIN_X_M..=DECK_ARREST_MAX_X_M).contains(&sample.x);
+            if gap_ms > DECK_ARREST_MAX_SAMPLE_GAP_MS {
+                gap_seen = true;
+                run_start = None;
+            }
+            if !slow {
+                run_start = None;
+                continue;
+            }
+            let start = match run_start {
+                Some(start) => start,
+                None => {
+                    // A run must begin with a genuinely slow sample.
+                    if sample.relative_speed_mps > DECK_ARREST_MAX_RELATIVE_SPEED_MPS {
+                        continue;
+                    }
+                    run_start = Some(sample);
+                    sample
+                }
+            };
+            let held = sample.time - start.time;
+            if held > best_held {
+                best_held = held;
+                best_start = Some(start);
+            }
+            if held >= DECK_ARREST_HOLD_S
+                && start.time - reference <= DECK_ARREST_DETECTION_WINDOW_S
+            {
+                return DeckArrestKinematicsEvidence {
+                    confirmed: true,
+                    reason: "confirmed",
+                    reference_time_dcs: Some(reference),
+                    slow_since_dcs: Some(start.time),
+                    held_s: Some(held),
+                    min_relative_speed_mps: Some(min_relative_speed_mps),
+                    x_at_slow_m: Some(start.x),
+                    samples: samples_total,
+                };
+            }
+        }
+        DeckArrestKinematicsEvidence {
+            confirmed: false,
+            reason: match best_start {
+                None => "never_slow_within_window",
+                Some(_) if gap_seen => "telemetry_gap_in_arrest_window",
+                Some(_) => "slow_but_not_held",
+            },
+            reference_time_dcs: Some(reference),
+            slow_since_dcs: best_start.map(|start| start.time),
+            held_s: best_start.map(|_| best_held),
+            min_relative_speed_mps: Some(min_relative_speed_mps),
+            x_at_slow_m: best_start.map(|start| start.x),
+            samples: samples_total,
+        }
+    }
+
+    /// The hook-transient wire estimate: a completed arrestment deflection of the animated hook
+    /// near `event_time`, correlated with the last finite pendant crossing no more than
+    /// `MAX_HOOK_DEFLECTION_WIRE_LAG_MS` before it. `None` when no complete transient exists,
+    /// so the caller can fall back to the deceleration-onset / last-crossing selection.
+    fn wire_estimate_from_hook_transient(&self, event_time: f64) -> Option<WireEstimateEvidence> {
+        let deflection = self.completed_hook_deflection_near(event_time)?;
+        let mut eligible = self
+            .wire_crossings
+            .iter()
+            .filter(|crossing| {
+                crossing.timestamp_dcs <= deflection.deflected_at_dcs
+                    && crossing.bracket_gap_ms <= SAMPLE_GAP_WARNING_MS
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        eligible.sort_by(|left, right| left.timestamp_dcs.total_cmp(&right.timestamp_dcs));
+        tracing::debug!(
+            event_time,
+            ?deflection,
+            crossings = ?eligible,
+            "wire crossing evidence at hook deflection"
+        );
+        let Some(last) = eligible.last() else {
+            return Some(WireEstimateEvidence {
+                wire: None,
+                confidence: "insufficient",
+                reason: "hook_deflection_not_correlated_with_wire_crossing",
+                hook_deflection_time_dcs: Some(deflection.deflected_at_dcs),
+                hook_recovered_time_dcs: Some(deflection.recovered_at_dcs),
+                correlation_lag_ms: None,
+                crossings: self.wire_crossings.clone(),
+                arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
+            });
+        };
+        let correlation_lag_ms = (deflection.deflected_at_dcs - last.timestamp_dcs) * 1_000.0;
+        if !(0.0..=MAX_HOOK_DEFLECTION_WIRE_LAG_MS).contains(&correlation_lag_ms) {
+            return Some(WireEstimateEvidence {
+                wire: None,
+                confidence: "insufficient",
+                reason: "hook_deflection_not_correlated_with_wire_crossing",
+                hook_deflection_time_dcs: Some(deflection.deflected_at_dcs),
+                hook_recovered_time_dcs: Some(deflection.recovered_at_dcs),
+                correlation_lag_ms: Some(correlation_lag_ms),
+                crossings: self.wire_crossings.clone(),
+                arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
+            });
+        }
+        Some(WireEstimateEvidence {
+            wire: Some(last.wire),
+            // The completed transient is itself arrest evidence, so unlike the deceleration-onset
+            // path below "high" does not additionally require a DCS wire.
+            confidence: if last.bracket_gap_ms <= 150.0 && correlation_lag_ms <= 150.0 {
+                "high"
+            } else {
+                "medium"
+            },
+            reason: HOOK_TRANSIENT_ESTIMATE_REASON,
+            hook_deflection_time_dcs: Some(deflection.deflected_at_dcs),
+            hook_recovered_time_dcs: Some(deflection.recovered_at_dcs),
+            correlation_lag_ms: Some(correlation_lag_ms),
+            crossings: self.wire_crossings.clone(),
+            arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
+        })
+    }
+
+    /// Find a complete arrestment transient of the animated hook near `event_time`: a stable
+    /// hook-down value for at least `MIN_HOOK_DOWN_STABLE_S`, then a sharp deflection on the very
+    /// next sample within `MAX_HOOK_DEFLECTION_TOUCH_OFFSET_S` of the event, then a return to the
+    /// down band within `MAX_HOOK_DEFLECTION_RECOVERY_S`.
+    fn completed_hook_deflection_near(&self, event_time: f64) -> Option<CompletedHookDeflection> {
+        let samples = self
+            .hook_observation
+            .timeline
+            .iter()
+            .filter(|sample| {
+                sample.status == HookSampleStatus::Success
+                    && sample.in_final_window
+                    && sample.raw.is_some_and(f64::is_finite)
+            })
+            .collect::<Vec<_>>();
+
+        for deflected_index in 1..samples.len() {
+            let before = samples[deflected_index - 1];
+            let deflected = samples[deflected_index];
+            let (Some(before_raw), Some(deflected_raw)) = (before.raw, deflected.raw) else {
+                continue;
+            };
+            let transition_gap_ms =
+                (deflected.associated_time_dcs - before.associated_time_dcs) * 1_000.0;
+            if before_raw < HOOK_DOWN_STABLE_MIN
+                || deflected_raw > HOOK_DEFLECTED_MAX
+                || !(0.0..=SAMPLE_GAP_WARNING_MS).contains(&transition_gap_ms)
+                || (deflected.associated_time_dcs - event_time).abs()
+                    > MAX_HOOK_DEFLECTION_TOUCH_OFFSET_S
+            {
+                continue;
+            }
+
+            let mut stable_start_dcs = before.associated_time_dcs;
+            let mut newer_time_dcs = before.associated_time_dcs;
+            for sample in samples[..deflected_index - 1].iter().rev() {
+                let gap_ms = (newer_time_dcs - sample.associated_time_dcs) * 1_000.0;
+                if sample.raw.is_none_or(|raw| raw < HOOK_DOWN_STABLE_MIN)
+                    || !(0.0..=SAMPLE_GAP_WARNING_MS).contains(&gap_ms)
+                {
+                    break;
+                }
+                stable_start_dcs = sample.associated_time_dcs;
+                newer_time_dcs = sample.associated_time_dcs;
+            }
+            if before.associated_time_dcs - stable_start_dcs < MIN_HOOK_DOWN_STABLE_S {
+                continue;
+            }
+
+            let recovered = samples[deflected_index + 1..].iter().find(|sample| {
+                let elapsed = sample.associated_time_dcs - deflected.associated_time_dcs;
+                (0.0..=MAX_HOOK_DEFLECTION_RECOVERY_S).contains(&elapsed)
+                    && sample.raw.is_some_and(|raw| raw >= HOOK_DOWN_STABLE_MIN)
+            });
+            if let Some(recovered) = recovered {
+                return Some(CompletedHookDeflection {
+                    deflected_at_dcs: deflected.associated_time_dcs,
+                    recovered_at_dcs: recovered.associated_time_dcs,
+                });
+            }
+        }
+        None
     }
 
     fn observe_arrest_kinematics(
@@ -3078,7 +3629,23 @@ impl Track {
         }
     }
 
+    /// Velocity-signature-only view, kept for the diagnostic unit tests: no hook transient, and
+    /// whatever deck kinematics the track has observed so far.
+    #[cfg(test)]
     fn arrest_confirmation_evidence(&self, dcs_wire: Option<u8>) -> ArrestConfirmationEvidence {
+        self.arrest_confirmation_evidence_with(
+            dcs_wire,
+            false,
+            self.evaluate_deck_arrest_kinematics(),
+        )
+    }
+
+    fn arrest_confirmation_evidence_with(
+        &self,
+        dcs_wire: Option<u8>,
+        hook_transient: bool,
+        deck_kinematics: DeckArrestKinematicsEvidence,
+    ) -> ArrestConfirmationEvidence {
         let contact_time_dcs = self.landing_time;
         let onset_delta_ms = self
             .arrest_deceleration_onset_time
@@ -3161,29 +3728,37 @@ impl Track {
         } else {
             Some("landing_quality_mark_absent")
         };
+        // Policy (see primer.md, "Le verdict", and tasking-roadmap.md, P0): a DCS wire is
+        // authoritative; a completed hook transient or a deck-kinematics stop confirms the arrest
+        // at medium confidence without inventing a wire number; the velocity-based signature
+        // alone stays diagnostic.
+        let (source, confidence, verdict_effect) = if dcs_wire.is_some() {
+            ("dcs_lqm", "high", "authoritative_dcs_confirmation")
+        } else if hook_transient {
+            (
+                "hook_transient",
+                "medium",
+                "confirmed_arrest_medium_confidence",
+            )
+        } else if deck_kinematics.confirmed {
+            ("kinematic", "medium", "confirmed_arrest_medium_confidence")
+        } else if accepted {
+            (
+                "kinematic_diagnostic",
+                "medium",
+                "diagnostic_only_no_grading_change",
+            )
+        } else {
+            ("unconfirmed", "insufficient", "no_confirmation")
+        };
         ArrestConfirmationEvidence {
-            source: if dcs_wire.is_some() {
-                "dcs_lqm"
-            } else if accepted {
-                "kinematic_diagnostic"
-            } else {
-                "unconfirmed"
-            },
-            confidence: if dcs_wire.is_some() {
-                "high"
-            } else if accepted {
-                "medium"
-            } else {
-                "insufficient"
-            },
-            verdict_effect: if dcs_wire.is_some() {
-                "authoritative_dcs_confirmation"
-            } else {
-                "diagnostic_only_no_grading_change"
-            },
+            source,
+            confidence,
+            verdict_effect,
             dcs_wire,
             missing_dcs_lqm_reason,
             kinematic,
+            deck_kinematics,
         }
     }
 
@@ -3246,6 +3821,13 @@ impl Track {
     }
 
     fn wire_estimate_at(&self, event_time: f64, arrest_confirmed: bool) -> WireEstimateEvidence {
+        // A completed hook transient is the strongest independent evidence of which wire was
+        // caught (validated on the 2026-09 live corpus); the deceleration-onset / last-crossing
+        // selection below is the fallback when the hook timeline does not contain one (no hook
+        // sampler, batch-delayed hook timestamps, or simply no arrest).
+        if let Some(estimate) = self.wire_estimate_from_hook_transient(event_time) {
+            return estimate;
+        }
         let mut eligible = self
             .wire_crossings
             .iter()
@@ -3266,6 +3848,9 @@ impl Track {
                 wire: None,
                 confidence: "insufficient",
                 reason: "no_fresh_hook_plane_crossing",
+                hook_deflection_time_dcs: None,
+                hook_recovered_time_dcs: None,
+                correlation_lag_ms: None,
                 crossings: self.wire_crossings.clone(),
                 arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
             };
@@ -3296,6 +3881,9 @@ impl Track {
                 wire: None,
                 confidence: "insufficient",
                 reason: "wire_crossing_not_time_correlated_with_event",
+                hook_deflection_time_dcs: None,
+                hook_recovered_time_dcs: None,
+                correlation_lag_ms: None,
                 crossings: self.wire_crossings.clone(),
                 arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
             };
@@ -3340,6 +3928,9 @@ impl Track {
             wire: Some(selected.wire),
             confidence,
             reason: "continuous_hook_plane_crossing",
+            hook_deflection_time_dcs: None,
+            hook_recovered_time_dcs: None,
+            correlation_lag_ms: None,
             crossings: self.wire_crossings.clone(),
             arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
         }
@@ -3458,13 +4049,13 @@ impl Track {
             .back()
             .map(|sample| sample.associated_time_dcs);
         self.hook_observation.interpreted_state = match self.calibrated_hook_state() {
-            CalibratedHookState::Up => "up",
-            CalibratedHookState::Down => "down",
-            CalibratedHookState::Unknown => "unknown",
+            HookState::Up => "up",
+            HookState::Down => "down",
+            HookState::Unknown => "unknown",
         };
     }
 
-    fn calibrated_hook_state(&self) -> CalibratedHookState {
+    fn calibrated_hook_state(&self) -> HookState {
         // Only a type with a known hook draw-argument index (`AirplaneInfo::hook_draw_argument`)
         // is ever interpreted; every other type (or a future type added without one) stays
         // `Unknown`, never inferred. The up/down thresholds below (`<= 0.2`/`>= 0.8`) were only
@@ -3472,34 +4063,59 @@ impl Track {
         // `HookObservation::polarity` (`Track::new`) for which F-14 variants remain an unverified
         // assumption of the same convention.
         if self.plane_info.hook_draw_argument.is_none() {
-            return CalibratedHookState::Unknown;
+            return HookState::Unknown;
         }
-        let valid = self
+        // Preferred baseline: in-groove samples that end `HOOK_BASELINE_GUARD_S` before the
+        // earliest contact evidence, so the arrestment excursion of the animated hook (up to
+        // ~1.4 s before the DCS touchdown event on the 2026-09 T-45/F-14B(U) corpus) is excluded
+        // and a real trap keeps reading `Down`. When no sample predates that guard (short
+        // timelines, unit tests), fall back to the older freeze at first contact.
+        let guard_end = [
+            self.landing_time,
+            self.deck_crossing_time,
+            self.first_hook_ground_contact_time,
+        ]
+        .into_iter()
+        .flatten()
+        .reduce(f64::min)
+        .map(|contact| contact - HOOK_BASELINE_GUARD_S);
+        let in_groove_success = |sample: &&HookSampleEvidence| {
+            sample.status == HookSampleStatus::Success
+                && sample.in_groove
+                && sample.raw.is_some_and(f64::is_finite)
+        };
+        let mut valid = self
             .hook_observation
             .timeline
             .iter()
-            .filter(|sample| {
-                sample.status == HookSampleStatus::Success
-                    && sample.in_final_window
-                    && sample.before_touchdown
-            })
+            .filter(in_groove_success)
+            .filter(|sample| guard_end.is_some_and(|end| sample.associated_time_dcs <= end))
             .collect::<Vec<_>>();
+        if valid.is_empty() {
+            valid = self
+                .hook_observation
+                .timeline
+                .iter()
+                .filter(in_groove_success)
+                .filter(|sample| sample.before_touchdown)
+                .collect::<Vec<_>>();
+        }
         let Some(latest) = valid.last() else {
-            return CalibratedHookState::Unknown;
+            return HookState::Unknown;
         };
         let latest_state = match latest.raw {
-            Some(raw) if raw <= 0.2 => CalibratedHookState::Up,
-            Some(raw) if raw >= 0.8 => CalibratedHookState::Down,
-            _ => return CalibratedHookState::Unknown,
+            Some(raw) if raw <= 0.2 => HookState::Up,
+            Some(raw) if raw >= 0.8 => HookState::Down,
+            _ => return HookState::Unknown,
         };
-        let recent_start = latest.associated_time_dcs - 3.0;
+        let recent_start = latest.associated_time_dcs - HOOK_BASELINE_WINDOW_S;
         let stable = valid
             .iter()
             .rev()
             .take_while(|sample| sample.associated_time_dcs >= recent_start)
             .take_while(|sample| match (latest_state, sample.raw) {
-                (CalibratedHookState::Up, Some(raw)) => raw <= 0.2,
-                (CalibratedHookState::Down, Some(raw)) => raw >= 0.8,
+                (HookState::Up, Some(raw)) => raw <= 0.2,
+                (HookState::Down, Some(raw)) => raw >= 0.8,
                 _ => false,
             })
             .collect::<Vec<_>>();
@@ -3507,13 +4123,9 @@ impl Track {
             latest.associated_time_dcs - first.associated_time_dcs
         });
         match latest_state {
-            CalibratedHookState::Down if stable.len() >= 2 && duration >= 0.2 => {
-                CalibratedHookState::Down
-            }
-            CalibratedHookState::Up if stable.len() >= 3 && duration >= 0.4 => {
-                CalibratedHookState::Up
-            }
-            _ => CalibratedHookState::Unknown,
+            HookState::Down if stable.len() >= 2 && duration >= 0.2 => HookState::Down,
+            HookState::Up if stable.len() >= 3 && duration >= 0.4 => HookState::Up,
+            _ => HookState::Unknown,
         }
     }
 
@@ -7686,7 +8298,7 @@ mod tests {
                 HookSampleStatus::Success,
             );
         }
-        assert_eq!(track.calibrated_hook_state(), CalibratedHookState::Down);
+        assert_eq!(track.calibrated_hook_state(), HookState::Down);
 
         // Geometric contact fires here -- before any DCS event ever correlates a touchdown.
         track.first_hook_ground_contact_time = Some(20.8);
@@ -7703,7 +8315,7 @@ mod tests {
         }
         assert_eq!(
             track.calibrated_hook_state(),
-            CalibratedHookState::Down,
+            HookState::Down,
             "post-contact samples must not rewrite the pre-contact evidence"
         );
     }
@@ -7755,10 +8367,7 @@ mod tests {
                 HookSampleStatus::Success,
             );
         }
-        assert_eq!(
-            touch_and_go.calibrated_hook_state(),
-            CalibratedHookState::Up
-        );
+        assert_eq!(touch_and_go.calibrated_hook_state(), HookState::Up);
         touch_and_go.landing_time = Some(11.0);
         for index in 0..3 {
             touch_and_go.observe_hook_sample(
@@ -7771,7 +8380,7 @@ mod tests {
         }
         assert_eq!(
             touch_and_go.calibrated_hook_state(),
-            CalibratedHookState::Up,
+            HookState::Up,
             "post-touch samples must not rewrite the pre-touch CQ evidence"
         );
 
@@ -7787,7 +8396,7 @@ mod tests {
                 HookSampleStatus::Success,
             );
         }
-        assert_eq!(arrested.calibrated_hook_state(), CalibratedHookState::Down);
+        assert_eq!(arrested.calibrated_hook_state(), HookState::Down);
     }
 
     #[test]
@@ -7813,7 +8422,7 @@ mod tests {
                 HookSampleStatus::Success,
             );
         }
-        assert_eq!(track.calibrated_hook_state(), CalibratedHookState::Up);
+        assert_eq!(track.calibrated_hook_state(), HookState::Up);
     }
 
     #[test]
@@ -7851,6 +8460,6 @@ mod tests {
                 HookSampleStatus::Success,
             );
         }
-        assert_eq!(track.calibrated_hook_state(), CalibratedHookState::Unknown);
+        assert_eq!(track.calibrated_hook_state(), HookState::Unknown);
     }
 }

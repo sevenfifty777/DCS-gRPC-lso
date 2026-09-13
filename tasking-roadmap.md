@@ -30,13 +30,31 @@ points si sa couverture est complète ; un faux départ sans groove, gate 1/2 ou
 d'issue reste absent des surfaces pilote. Ces changements et les observations source invalides
 doivent encore être revalidés en mission DCS avant clôture globale du chantier.
 
+Fait le 13 septembre 2026 (lignée d'intégration, porté depuis `astra-review`) :
+
+- **Phase B de la preuve d'arrêt sans `WIRE#`.** Politique arrêtée : *une arrestation confirmée par
+  une transitoire de crosse complète corrélée à un franchissement de câble, ou par la cinématique
+  pont (arrêt relatif au bateau tenu deux secondes), donne un `Recovered` notable à confiance
+  `medium`, sans jamais inventer de numéro de brin que la preuve ne porte pas.* Le corpus exigé
+  existe désormais : les quatorze passes réelles de `tests/recordings/live_2026-09/` (T-45 et
+  F-14B(U), sept traps étiquetés `WIRE#`, un bolter crosse basse, six touch-and-go crosse haute)
+  sont rejouées trois fois chacune — telles quelles, sans le message DCS, puis sans le message ni
+  les échantillons de crosse. Les sept traps ressortent avec le bon brin par la transitoire de
+  crosse, puis `kinematic` sans brin ; aucun bolter ni touch-and-go n'est promu. La signature
+  cinématique par vitesse instantanée (`arrest_confirmation.kinematic`) reste diagnostique. Un
+  grade DCS sans `WIRE#` reste un fallback d'affichage, jamais des points.
+
 Reste à développer :
 
-1. **Phase B de la preuve cinématique d'arrêt.** Ne permettre à une signature cinématique de lever
-   `unconfirmed_arrest` qu’après un corpus live avec vérité indépendante couvrant trap, bolter,
-   T&G, waveoff, rebond, disparition et unité gelée. Même promue, elle resterait de confiance
-   `medium`, sans brin certain ni bonus de câble. Un grade DCS sans `WIRE#` peut être affiché comme
-   fallback DCS, jamais transformé en grade ou points `project-derived-v7`.
+1. **Revalider la transitoire de crosse en direct bufferisé.** Les timestamps de crosse drainés par
+   lots arrivent avec la latence de livraison (p95 ~700 ms observé), ce qui peut faire échouer la
+   corrélation à 200 ms avec le franchissement de câble ; la cinématique pont, fondée sur les
+   positions, prend alors le relais. Mesurer sur une session humaine la part de traps confirmés par
+   chaque source (`arrest_evidence`), et faire passer les échantillons de crosse par le moteur
+   bufferisé si la transitoire échoue systématiquement.
+2. **Arrêt sans aucun événement DCS.** Le `Recovered` établi par cinématique seule (ni `Land` ni
+   `RunwayTouch`) et sa fenêtre de preuve bornée de 10 s (`POST_ARREST_EVIDENCE_WINDOW_S`) n'ont
+   pas encore de fixture live : les quatorze passes portent toutes un `Land`. À couvrir en session.
 
 Contraintes communes : ne pas relever les seuils 300/1 000 ms, ne pas interpoler une longue
 coupure, ne pas assimiler les évictions internes du ring à une perte lecteur, et n’accorder aucun
@@ -83,6 +101,13 @@ rendu une note indisponible sur un autre run.
 
 ### Bugs confirmés restant à corriger
 
+- **Roll-out Case I armé sur un passage bas à grande vitesse.** Sur la fixture live
+  `f14bu_hookup_3`, le détecteur de groove a latché une entrée à 1 095 m, lineup 18°, pendant un
+  passage au-dessus du bateau à ~185 m/s (360 kt) et 215 ft, 150 s avant la vraie approche ; la
+  tentative s'est fermée en `WaveoffUnknown` au franchissement de l'axe. En direct un nouveau
+  recorder reprend l'approche réelle (le rejeu fait de même depuis le 13 septembre), mais ce faux
+  rapport de tentative est publié. Ajouter au roll-out une garde de vitesse sol / d'altitude et
+  vérifier les treize autres fixtures, sans toucher aux seuils de notation.
 - **`baseline_manifest` perdu.** Un manifeste valide est accepté au démarrage mais ressort
   entièrement `null` dans `RecoveryReport`. Corriger sa propagation depuis `run.rs`. Décider aussi
   s’il doit être horodaté ou rechargé à chaque nouvelle session DCS pour suivre un changement de

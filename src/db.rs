@@ -70,6 +70,10 @@ pub struct DbPass {
     pub missing_coverage_json: String,
     pub points_eligible: bool,
     pub fallback_source: String,
+    /// `dcs_wire`, `hook_transient`, `kinematic`, `unconfirmed` or `none`.
+    pub arrest_evidence: String,
+    /// Commanded hook state: `up`, `down` or `unknown`.
+    pub hook_state: String,
 }
 
 /// Pass record as read back from the database. Since 0.5.0 only the migration
@@ -133,6 +137,8 @@ pub struct StoredPass {
     pub missing_coverage: Vec<String>,
     pub points_eligible: Option<bool>,
     pub fallback_source: Option<String>,
+    pub arrest_evidence: Option<String>,
+    pub hook_state: Option<String>,
 }
 
 impl RecoveryDb {
@@ -218,6 +224,11 @@ impl RecoveryDb {
             ("missing_coverage_json", "TEXT NOT NULL DEFAULT '[]'"),
             ("points_eligible", "INTEGER NOT NULL DEFAULT 0"),
             ("fallback_source", "TEXT"),
+            // Migration 7 (integration lineage; `astra-review` shipped the same two columns as
+            // its migration 6, which this lineage had already used for the graduated
+            // assessment): arrest confirmation source and commanded hook state.
+            ("arrest_evidence", "TEXT"),
+            ("hook_state", "TEXT"),
         ] {
             ensure_column(&conn, "passes", name, definition)?;
         }
@@ -228,7 +239,8 @@ impl RecoveryDb {
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (3);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -250,10 +262,11 @@ impl RecoveryDb {
                  recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                  confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
                  max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
-                 assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source) \
+                 assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
+                 arrest_evidence, hook_state) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                      ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42,
-                     ?43, ?44, ?45, ?46, ?47)",
+                     ?43, ?44, ?45, ?46, ?47, ?48, ?49)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -302,6 +315,8 @@ impl RecoveryDb {
                 &pass.missing_coverage_json,
                 pass.points_eligible,
                 &pass.fallback_source,
+                &pass.arrest_evidence,
+                &pass.hook_state,
             ],
         )?;
         Ok(inserted == 1)
@@ -318,7 +333,8 @@ impl RecoveryDb {
                     recovery_mode, session_id, generation, completeness, max_sample_gap_ms, max_skew_ms, wire_estimated, wire_dcs, wire_divergent,
                     confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
                     max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
-                    assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source \
+                    assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
+                    arrest_evidence, hook_state \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -383,6 +399,8 @@ impl RecoveryDb {
                     .unwrap_or_default(),
                 points_eligible: row.get(46)?,
                 fallback_source: row.get(47)?,
+                arrest_evidence: row.get(48)?,
+                hook_state: row.get(49)?,
             })
         })?;
         rows.collect()
@@ -462,6 +480,8 @@ mod tests {
             missing_coverage_json: "[]".to_string(),
             points_eligible: true,
             fallback_source: "project".to_string(),
+            arrest_evidence: "dcs_wire".to_string(),
+            hook_state: "down".to_string(),
         };
         assert!(db.insert(&entry).expect("insert pass"));
         assert!(!db.insert(&entry).expect("duplicate is idempotent"));
@@ -470,6 +490,8 @@ mod tests {
 
         assert_eq!(passes.len(), 1);
         assert_eq!(passes[0].outcome, "Approach only — outcome unknown");
+        assert_eq!(passes[0].arrest_evidence.as_deref(), Some("dcs_wire"));
+        assert_eq!(passes[0].hook_state.as_deref(), Some("down"));
         assert_eq!(
             passes[0].grading_availability.as_deref(),
             Some("available_approach_only")
@@ -554,6 +576,8 @@ mod tests {
         assert_eq!(passes[0].points_awarded, Some(true));
         assert_eq!(passes[0].intended_spot, None);
         assert_eq!(passes[0].actual_nearest_spot, None);
+        assert_eq!(passes[0].arrest_evidence, None);
+        assert_eq!(passes[0].hook_state, None);
         drop(db);
         std::fs::remove_file(path).expect("remove isolated migration fixture");
     }

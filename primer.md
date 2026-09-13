@@ -367,10 +367,27 @@ l'étape 3, le programme détermine l'issue :
   de détection, sans groove, porte significative ni événement d'issue, ne produit aucun rapport
   pilote.
 
-- **Posé/arrêté ("Recovered")** : un contact `Land`/`RunwayTouch` prouve le toucher, mais seul un
-  message DCS `WIRE#` confirme aujourd'hui l'arrestation pour rendre la passe notable. Sans ce
-  message, le verdict reste techniquement indisponible plutôt que de transformer un simple
-  ralentissement en trap certain. Le programme calcule aussi, de façon indépendante, **quel brin** en regardant
+- **Posé/arrêté ("Recovered")** : un contact `Land`/`RunwayTouch` prouve le toucher, pas
+  l'arrestation. Trois preuves peuvent confirmer le trap, dans cet ordre de priorité :
+  1. le message DCS `WIRE#` (confiance « haute », le brin est celui de DCS) ;
+  2. la **transitoire de la crosse** : la crosse animée, stable en position basse, se déforme
+     brusquement au moment du contact puis revient en position basse dans les huit secondes,
+     et ce mouvement coïncide (à 200 ms près) avec le passage géométrique de la crosse sur un
+     câble — c'est alors ce câble qui est estimé (confiance « moyenne ») ;
+  3. la **cinématique pont** : l'avion, mesuré par rapport à la position brute du bateau, passe
+     sous 6 m/s dans les huit secondes qui suivent le contact et y reste deux secondes sans
+     rebond ni redécollage (confiance « moyenne », **aucun numéro de brin inventé**).
+
+  **Politique LSO humain (13 septembre 2026)** : quand un LSO humain tient le pattern et que DCS
+  n'émet pas de `WIRE#`, une arrestation confirmée par la transitoire de crosse ou par la
+  cinématique pont donne un `Recovered` notable à confiance « moyenne », sans jamais inventer de
+  numéro de brin que la preuve ne porte pas. Cette politique a été validée en rejeu sur les
+  quatorze passes réelles de septembre 2026 (`tests/recordings/live_2026-09/`) : les sept traps
+  étiquetés par DCS sont retrouvés avec le bon brin par la transitoire de crosse, puis à nouveau
+  sans aucune donnée de crosse par la cinématique seule ; aucun bolter ni touch-and-go crosse
+  haute n'est promu en trap. Sans aucune de ces trois preuves, le verdict reste
+  `unconfirmed_arrest`, sans points, plutôt que de transformer un simple ralentissement en trap
+  certain. Le programme calcule aussi, de façon indépendante, **quel brin** en regardant
   géométriquement où passe la crosse par rapport aux quatre câbles — un peu comme s'il
   chronométrait lui-même à quel endroit exact la crosse a "accroché". Cette estimation est
   ensuite comparée au texte que DCS a envoyé (`WIRE# 3` dans notre exemple), mais **c'est
@@ -382,11 +399,11 @@ l'étape 3, le programme détermine l'issue :
   s'il fallait choisir entre deux versions. L'estimation Rust ne devient "affichable seule" que
   dans le cas contraire, quand DCS n'a lui-même rien annoncé.
 
-  Le JSON mène en parallèle une enquête cinématique : contact corrélé, début de décélération,
-  vitesse de l'avion par rapport au bateau qui tombe près de zéro et y reste, absence de rebond ou
-  de nouveau départ. Cette preuve affiche ses mesures et ses raisons, mais reste volontairement
-  diagnostique pour l'instant. Même convaincante, elle vaut confiance « moyenne », n'invente pas de
-  numéro de brin et ne rend pas encore une passe notable sans confirmation DCS.
+  Le JSON garde aussi, dans `arrest_confirmation.kinematic`, l'ancienne enquête cinématique fondée
+  sur la vitesse instantanée (contact corrélé, début de décélération, vitesse relative qui tombe
+  près de zéro, absence de rebond). Elle n'existe qu'en direct (le rejeu ACMI n'a pas de vitesse)
+  et reste volontairement diagnostique : c'est `arrest_confirmation.deck_kinematics`, la mesure par
+  déplacement décrite au point 3, qui confirme.
 - **Bolter** : le train a touché le pont mais l'avion a continué et a redécollé sans s'arrêter
   (aucun brin accroché).
 - **Touch-and-go** : comme un bolter en apparence, mais la crosse était en position "up" par

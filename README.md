@@ -20,6 +20,10 @@ the DCS Web Dashboard or Discord.
   source ring, and read incrementally by sequence. CATOBAR hook state remains an independent 4 Hz
   sampler with a 300 ms timeout. Stale or unknown hook data is never reused as certainty.
 - Separate outcome, grade, points, cause, confidence, completeness, rule version and wire provenance.
+- Arrest confirmation without a DCS `WIRE#` (human LSO): a completed hook-deflection transient
+  correlated with a pendant crossing, or the aircraft stopping relative to the deck, grades the
+  trap at medium confidence without inventing a wire number (`arrest_evidence` in JSON/SQLite).
+  Validated in replay on 14 live T-45/F-14B(U) passes with hook sidecars.
 - Event correlation and positional completeness are independent: an event-stream outage is reported
   as `event_stream_unavailable` and cannot manufacture a positional gap or a favourable outcome.
 - Per-recovery source-capture gap, delivery-age, reader-sequence-loss and source-ring-churn

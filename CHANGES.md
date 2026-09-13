@@ -32,6 +32,35 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Added
 
+- Arrest confirmation without a DCS `WIRE#` (human-LSO policy, ported from `astra-review`): a
+  completed hook-deflection transient correlated with a finite pendant crossing, or the
+  displacement-based deck kinematics (aircraft stopped relative to the raw carrier position
+  within 8 s of contact and held 2 s), now confirm an arrested-carrier contact as `Recovered`
+  at medium confidence instead of leaving it `unconfirmed_arrest`. No wire number is invented:
+  the hook transient names the crossed wire, the kinematic path leaves `cable_estimated` to the
+  independent estimate or `None`. The velocity-based signature (`arrest_confirmation.kinematic`)
+  stays diagnostic. JSON adds `hook_state`, `arrest_evidence` (`dcs_wire`, `hook_transient`,
+  `kinematic`, `unconfirmed`, `none`), `arrest_confirmation.deck_kinematics` and
+  `wire_estimation.hook_deflection_time_dcs`/`hook_recovered_time_dcs`/`correlation_lag_ms`;
+  SQLite migration 7 adds `arrest_evidence` and `hook_state`; `cause` gains
+  `hook_transient_arrest_without_dcs_wire` and `kinematic_arrest_without_wire` (`src/track.rs`,
+  `src/tasks/record_recovery.rs`, `src/db.rs`).
+- Wire-plane crossings require the hook to be between the two pendant end points and within 3 m
+  of the wire (`finite_hook_plane_crossing`), and the hook-transient estimate takes precedence
+  over the deceleration-onset selection when a complete transient exists. The commanded hook
+  state is latched from the in-groove baseline ending 1.5 s before the earliest contact evidence,
+  falling back to the pre-contact freeze; a hook-up deck contact that nothing confirms as an arrest
+  finalises as a touch-and-go (`src/track.rs`).
+- An arrest with no `Land`/`RunwayTouch` at all is established from deck kinematics once the
+  aircraft crossed the touchdown point, and the track ends after a bounded 10 s evidence window
+  from the moment it went slow (review finding F04).
+- Fourteen live regression fixtures (T-45 and F-14B(U), 2 and 3 September 2026) with hook
+  draw-argument sidecars in `tests/recordings/live_2026-09/`, each replayed as recorded, without
+  the DCS LSO message, and without any hook data. Offline replay (`lso file`, `extract_recoveries_with_hook`)
+  reads an `LSOHook` ACMI property when present, accepts sidecar samples with their own
+  timestamps, keeps feeding 10 s after touchdown, and restarts a fresh track after an attempt that
+  ended without touchdown instead of stopping at the first one (`src/commands/file.rs`,
+  `src/tests.rs`).
 - Additive schema-v3 `grading_episodes` audit trail records CASE I CATOBAR axis, timing, duration,
   most severe zone and weight, raw/corrected/effective severity, peak, evolution, return to a lower
   band, oscillations, correction quality and whether the episode affected the grade. Unreliable
