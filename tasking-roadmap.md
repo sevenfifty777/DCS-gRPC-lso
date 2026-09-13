@@ -101,6 +101,12 @@ rendu une note indisponible sur un autre run.
 
 ### Bugs confirmés restant à corriger
 
+- **Fin de génération sans jointure des recorders.** Depuis le 13 septembre, Ctrl-C ferme le
+  flux fusionné du recorder, finalise la passe en cours et `lso run` attend jusqu'à 30 s les
+  tâches actives. En revanche une fin de génération sur erreur fatale (perte du stream, retry de
+  `run`) appelle toujours `abort_all` sur le registre sans attendre : une passe en cours à cet
+  instant est perdue. Remplacer l'abort par une fin de flux + jointure bornée comme pour Ctrl-C
+  (finding F01, seconde moitié).
 - **Roll-out Case I armé sur un passage bas à grande vitesse.** Sur la fixture live
   `f14bu_hookup_3`, le détecteur de groove a latché une entrée à 1 095 m, lineup 18°, pendant un
   passage au-dessus du bateau à ~185 m/s (360 kt) et 215 ft, 150 s avant la vraie approche ; la

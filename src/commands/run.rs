@@ -14,7 +14,7 @@ use crate::tasks::{
 };
 use crate::utils::shutdown::ShutdownHandle;
 use backoff::ExponentialBackoff;
-use futures_util::future::select;
+use futures_util::future::{join_all, select};
 use futures_util::{StreamExt, TryFutureExt};
 use stubs::coalition::v0::coalition_service_client::CoalitionServiceClient;
 use stubs::common::v0::{Coalition, GroupCategory};
@@ -97,7 +97,18 @@ impl RecoveryTaskRegistry {
             task.handle.abort();
         }
     }
+
+    /// Hand over every registered task handle without aborting it, so the caller can wait for
+    /// the tasks to finish on their own (shutdown finalisation).
+    fn drain_handles(&mut self) -> Vec<JoinHandle<()>> {
+        self.tasks.drain().map(|(_, task)| task.handle).collect()
+    }
 }
+
+/// Upper bound on how long `execute` waits, after Ctrl-C, for the recorders still tracking an
+/// aircraft to finalise (stop the buffered source, 2 s event grace, wind query, JSON, SQLite,
+/// PNG, Discord). Long enough for a slow webhook, short enough that an operator is never stuck.
+const SHUTDOWN_FINALISATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(clap::Parser)]
 pub struct Opts {
@@ -149,6 +160,11 @@ pub struct Opts {
     #[clap(long, value_enum, default_value_t = crate::tasks::PositionSource::Buffered)]
     position_source: crate::tasks::PositionSource,
 
+    /// Process-wide budget for buffered ReadRecoveryTelemetry calls, shared by every concurrent
+    /// recovery. Keep it below the server's recoveryTelemetry.readsPerSecond (default 20).
+    #[clap(long, default_value_t = crate::tasks::position_collector::DEFAULT_READ_BUDGET_PER_SECOND)]
+    buffered_read_budget_per_second: f64,
+
     /// Suspend redundant detectors for an aircraft while that aircraft is being collected.
     #[clap(long)]
     suspend_detectors_during_recovery: bool,
@@ -186,6 +202,13 @@ pub async fn execute(
     shutdown_handle: ShutdownHandle,
 ) -> Result<(), crate::error::Error> {
     reject_removed_web_flags(&opts)?;
+    if !(1.0..=100.0).contains(&opts.buffered_read_budget_per_second) {
+        return Err(crate::error::Error::InvalidConfiguration(format!(
+            "--buffered-read-budget-per-second must be between 1 and 100, got {}",
+            opts.buffered_read_budget_per_second
+        )));
+    }
+    crate::tasks::position_collector::configure_read_budget(opts.buffered_read_budget_per_second);
     if !opts.positions_only && opts.discord_webhook.is_some() {
         tracing::info!("Discord integration enabled.");
     }
@@ -214,6 +237,9 @@ pub async fn execute(
     let session_log: SessionLog = Arc::new(Mutex::new(Vec::new()));
     let db = open_recovery_db(&opts.out_dir, opts.positions_only)?;
     let generation_counter = Arc::new(AtomicU64::new(0));
+    // Lives here rather than in `run` so the tasks still tracking an aircraft when Ctrl-C
+    // arrives can be waited for below, after the generation future has been dropped.
+    let active_tasks: RecoveryTaskMap = Arc::new(Mutex::new(RecoveryTaskRegistry::default()));
     let metrics_started = Instant::now();
     let metrics_shutdown = shutdown_handle.clone();
     let metrics_handle = tokio::spawn(async move {
@@ -238,6 +264,7 @@ pub async fn execute(
                     db.clone(),
                     baseline_manifest.clone(),
                     generation,
+                    active_tasks.clone(),
                 )
                 .await
                 .map_err(backoff::Error::transient)
@@ -255,6 +282,27 @@ pub async fn execute(
     )
     .await;
     metrics_handle.abort();
+
+    // Ctrl-C: the recorders have seen the same signal and are finalising the passes in flight
+    // (see `record_recovery`); returning now would drop the runtime and lose them. Each registered
+    // task is a detector that awaits its recorder inline, so joining it covers finalisation.
+    let outstanding = active_tasks
+        .lock()
+        .map(|mut registry| registry.drain_handles())
+        .unwrap_or_default();
+    if !outstanding.is_empty() {
+        tracing::info!(
+            tasks = outstanding.len(),
+            timeout_secs = SHUTDOWN_FINALISATION_TIMEOUT.as_secs(),
+            "waiting for active recovery tasks to finalise"
+        );
+        match tokio::time::timeout(SHUTDOWN_FINALISATION_TIMEOUT, join_all(outstanding)).await {
+            Ok(_) => tracing::info!("active recovery tasks finalised"),
+            Err(_) => tracing::warn!(
+                "recovery tasks did not finalise before the shutdown timeout; some passes may be lost"
+            ),
+        }
+    }
 
     if !opts.positions_only {
         print_greenie_board(&session_log);
@@ -282,6 +330,7 @@ async fn load_discord_users(opts: &Opts) -> Result<HashMap<String, u64>, crate::
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     opts: &Opts,
     users: Arc<HashMap<String, u64>>,
@@ -290,6 +339,7 @@ async fn run(
     db: Option<SharedDb>,
     baseline_manifest: Arc<BaselineManifest>,
     generation: u64,
+    active_tasks: RecoveryTaskMap,
 ) -> Result<(), crate::error::Error> {
     let out_dir = opts.out_dir.clone();
     let raw_channel = Endpoint::from(opts.uri.clone())
@@ -445,10 +495,9 @@ async fn run(
 
     let (tx, mut rx) = mpsc::channel(16);
 
-    // Tracks the active detect_recovery_attempt task for each (plane_id, carrier_id) pair.
-    // When a Birth event re-spawns a known unit the old task is aborted before a new one starts,
-    // preventing duplicate recordings.
-    let active_tasks: RecoveryTaskMap = Arc::new(Mutex::new(RecoveryTaskRegistry::default()));
+    // `active_tasks` tracks the active detect_recovery_attempt task for each (plane_id,
+    // carrier_id) pair. When a Birth event re-spawns a known unit the old task is aborted before
+    // a new one starts, preventing duplicate recordings.
     let active_priority_planes = Arc::new(ActivePriorityPlanes::default());
     let event_hub = Arc::new(crate::tasks::event_hub::SessionEventHub::default());
 

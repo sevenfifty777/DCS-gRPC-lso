@@ -6,6 +6,29 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ## Unreleased
 
+### Fixed
+
+- Ctrl-C now reaches finalisation: the recorder's merged tick/event stream ends on shutdown
+  (the event half never ended on its own, parking the loop), the recording is finalised with the
+  evidence in hand and a `shutdown` event, and `lso run` waits up to 30 s for the recoveries still
+  in flight before returning instead of dropping the runtime under them (review finding F01,
+  Ctrl-C half; `src/tasks/record_recovery.rs`, `src/commands/run.rs`).
+- Buffered `ReadRecoveryTelemetry` calls are paced by a process-wide token bucket shared by every
+  concurrent recovery, `--buffered-read-budget-per-second` (default 16, i.e. 80 % of the server's
+  `recoveryTelemetry.readsPerSecond` default of 20). Three or more simultaneous recoveries no
+  longer exceed the server quota and storm `RESOURCE_EXHAUSTED` retries until the watchdog;
+  a remaining quota refusal is logged with the two knobs to adjust. The JSON `recovery_telemetry`
+  block adds `read_budget_per_second`, `read_budget_waits` and `read_budget_wait_total_ms`
+  (review finding F08; `src/tasks/position_collector.rs`).
+- The 10 s post-touchdown cutoff is evaluated once per tick, outside the per-sample loop, so a
+  unit that vanished right after touchdown in buffered mode (empty or invalid batches only) is
+  finalised after 10 s instead of waiting for the 29 s watchdog and being downgraded to
+  `telemetry_gap` (review finding F02, buffered half; `src/tasks/record_recovery.rs`).
+- A buffered `id_mismatch` observation (the aircraft or carrier name now resolves to another unit
+  incarnation) ends the attempt with a typed `unit_identity_mismatch` event and finalises the
+  evidence recorded so far, instead of polling the new incarnation until the watchdog (review
+  finding F14; `src/tasks/record_recovery.rs`, `src/tasks/position_collector.rs`).
+
 ### Removed
 
 - The embedded loopback web greenie board (`src/web.rs`, `--web-port`, `/api/passes`) and the

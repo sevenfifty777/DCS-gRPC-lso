@@ -80,6 +80,9 @@ Common examples:
 # Explicit rollback/control run using the former paired unary polling source
 .\lso.exe run -o C:\LSO\recordings --position-source unary
 
+# Share a smaller buffered read budget (server default quota is 20 reads/s per client label)
+.\lso.exe run -o C:\LSO\recordings --buffered-read-budget-per-second 12
+
 # Keep normal outputs but suspend redundant same-aircraft detector transforms during collection
 .\lso.exe run -o C:\LSO\recordings --suspend-detectors-during-recovery
 
@@ -109,7 +112,11 @@ be discovered and recorded concurrently.
 The default `--position-source buffered` lifecycle is idempotent `StartRecoveryTelemetry`, ordered
 `ReadRecoveryTelemetry` batches with an exclusive sequence cursor, then best-effort
 `StopRecoveryTelemetry`. Epoch changes, sequence-contract violations, invalid unit observations and
-source retention/capacity loss remain explicit technical evidence in the schema-v9 report. Invalid
+source retention/capacity loss remain explicit technical evidence in the schema-v9 report. All
+concurrent recoveries share one client-side read budget (`--buffered-read-budget-per-second`,
+default 16) kept below the server's `recoveryTelemetry.readsPerSecond`; an `id_mismatch`
+observation ends the attempt with a typed event. Ctrl-C finalises the passes in flight (up to
+30 s) before `lso run` returns. Invalid
 source observations retain their source timestamp/entity/status and are attributed at finalization;
 receipt time is never substituted for missing source time. `groove-ab` reuses persisted geometry
 exactly, but cannot reconstruct unpersisted RPC timing, events, UTC anchors or velocities.

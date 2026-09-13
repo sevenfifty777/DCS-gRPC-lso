@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::Either;
 use futures_util::stream::{select, BoxStream};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use once_cell::sync::Lazy;
 use serenity::builder::{CreateAttachment, CreateEmbed, ExecuteWebhook};
 use serenity::http::Http;
@@ -579,7 +579,8 @@ pub async fn record_recovery(
     )
     .await?;
     let mut mission = (!params.positions_only).then(|| MissionClient::new(params.ch.clone()));
-    let interval = crate::utils::interval::interval(Duration::from_millis(100), params.shutdown);
+    let interval =
+        crate::utils::interval::interval(Duration::from_millis(100), params.shutdown.clone());
 
     let mut acmi = Cursor::new(Vec::new());
     let mut recording = if params.record_acmi {
@@ -714,7 +715,14 @@ pub async fn record_recovery(
     // never repeated for the rest of the recovery. See docs/GRADING_REFERENCE.md, "AoA".
     let mut wind_reference_queried = false;
 
-    let mut stream = select(interval.map(Either::Left), events.map(Either::Right));
+    // The whole merged stream ends on shutdown, not only the tick half of it: the event half
+    // never ends on its own (every recorder holds the hub alive), so without this wrapper a
+    // Ctrl-C parked the loop on `events` forever and finalization below was never reached
+    // (review finding F01).
+    let mut stream = params.shutdown.wrap_stream(select(
+        interval.map(Either::Left),
+        events.map(Either::Right),
+    ));
 
     'recording: while let Some(next) = stream.next().await {
         match next {
@@ -739,7 +747,16 @@ pub async fn record_recovery(
                     Err(status) => {
                         position_collector.reset();
                         let silent_for = last_telemetry_success.elapsed();
-                        tracing::warn!(?status, ?silent_for, "transform polling failed");
+                        if status.code() == tonic::Code::ResourceExhausted {
+                            tracing::warn!(
+                                ?status,
+                                ?silent_for,
+                                "server read quota exceeded despite the client budget; lower \
+                                 --buffered-read-budget-per-second or raise recoveryTelemetry.readsPerSecond"
+                            );
+                        } else {
+                            tracing::warn!(?status, ?silent_for, "transform polling failed");
+                        }
                         if silent_for >= position_collector.recovery_watchdog() {
                             datums.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
                             break 'recording;
@@ -754,6 +771,8 @@ pub async fn record_recovery(
                     );
                     datums.mark_source_buffer_loss(batch.lost_snapshots);
                 }
+                let identity_mismatch =
+                    super::position_collector::identity_mismatch(&batch.invalid_observations);
                 if batch.invalid_snapshots > 0 {
                     datums.record_invalid_source_observations(batch.invalid_observations);
                     pending_invalid_batches = pending_invalid_batches.saturating_add(1);
@@ -772,6 +791,30 @@ pub async fn record_recovery(
                         pending_invalid_batches = 0;
                         pending_invalid_snapshots = 0;
                     }
+                }
+                if let Some((entity, capture_time_dcs)) = identity_mismatch {
+                    // The name now resolves to another unit incarnation (slot re-occupied,
+                    // respawn): everything recorded so far belongs to the previous one, and
+                    // nothing that follows does. End the attempt with that typed reason and
+                    // finalise the evidence in hand (review finding F14).
+                    let entity_name = match entity {
+                        crate::telemetry::SourceObservationEntity::Aircraft => "aircraft",
+                        crate::telemetry::SourceObservationEntity::Carrier => "carrier",
+                    };
+                    tracing::warn!(
+                        entity = entity_name,
+                        ?capture_time_dcs,
+                        "source telemetry reports a different unit incarnation; ending the attempt"
+                    );
+                    datums.record_event(
+                        "unit_identity_mismatch",
+                        capture_time_dcs
+                            .or_else(|| datums.last_observed_time_dcs())
+                            .unwrap_or_default(),
+                        false,
+                        format!("source_reports_{entity_name}_id_mismatch"),
+                    );
+                    break 'recording;
                 }
                 let buffered_source = position_collector.is_buffered();
                 let sample_count = batch.samples.len();
@@ -977,12 +1020,14 @@ pub async fn record_recovery(
                     if !keep_tracking {
                         break 'recording;
                     }
-
-                    if let Some(track_stopped) = track_stopped {
-                        if track_stopped.elapsed() > Duration::from_secs(10) {
-                            break 'recording;
-                        }
-                    }
+                }
+                // Evaluated once per tick, outside the per-sample loop: a unit that vanished
+                // right after touchdown only ever produces empty or invalid buffered batches, and
+                // the cutoff used to sit inside that loop where it was never reached (review
+                // finding F02, buffered half).
+                if post_touchdown_window_elapsed(track_stopped) {
+                    tracing::debug!("post-touchdown window elapsed; finalising the recording");
+                    break 'recording;
                 }
                 if sample_count == 0
                     && last_telemetry_success.elapsed() >= position_collector.recovery_watchdog()
@@ -1220,6 +1265,16 @@ pub async fn record_recovery(
                 _ => {}
             },
         }
+    }
+
+    if params.shutdown.signal().now_or_never().is_some() {
+        tracing::info!("shutdown requested; finalising the recording with the evidence so far");
+        datums.record_event(
+            "shutdown",
+            datums.last_observed_time_dcs().unwrap_or_default(),
+            false,
+            "recording_finalised_on_shutdown",
+        );
     }
 
     if let Err(status) = position_collector.stop().await {
@@ -2133,12 +2188,34 @@ fn changed_precision(a: Option<f64>, b: Option<f64>, theta: f64) -> bool {
     }
 }
 
+/// How long the recorder keeps sampling after an accepted touchdown so the hook transient can
+/// recover and the deck kinematics can settle (see `Track`'s `POST_ARREST_EVIDENCE_WINDOW_S` and
+/// the replay's `REPLAY_POST_LANDING_S`, both 10 s).
+const POST_TOUCHDOWN_WINDOW: Duration = Duration::from_secs(10);
+
+/// Whether an accepted touchdown happened more than `POST_TOUCHDOWN_WINDOW` ago. Pure, so it can
+/// be evaluated on every tick regardless of whether the tick carried any sample.
+fn post_touchdown_window_elapsed(track_stopped: Option<Instant>) -> bool {
+    track_stopped.is_some_and(|stopped| stopped.elapsed() > POST_TOUCHDOWN_WINDOW)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        correlate_late_event, drain_hook_samples, grpc_code_name, recovery_id, recovery_outcome,
-        HookPoll,
+        correlate_late_event, drain_hook_samples, grpc_code_name, post_touchdown_window_elapsed,
+        recovery_id, recovery_outcome, HookPoll, POST_TOUCHDOWN_WINDOW,
     };
+    use std::time::Instant;
+
+    #[test]
+    fn post_touchdown_window_is_evaluated_without_samples() {
+        assert!(!post_touchdown_window_elapsed(None));
+        assert!(!post_touchdown_window_elapsed(Some(Instant::now())));
+        let long_ago = Instant::now()
+            .checked_sub(POST_TOUCHDOWN_WINDOW + std::time::Duration::from_secs(1))
+            .expect("instant arithmetic");
+        assert!(post_touchdown_window_elapsed(Some(long_ago)));
+    }
     use crate::data::{AirplaneInfo, CarrierInfo};
     use crate::tasks::event_correlator::transform_from_event_unit;
     use crate::track::{Grading, HookSampleStatus, Track};

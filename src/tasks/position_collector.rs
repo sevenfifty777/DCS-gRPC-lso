@@ -4,6 +4,7 @@
 //! The unary implementation is retained as an explicit diagnostic rollback.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,99 @@ use crate::transform::Transform;
 use super::PositionSource;
 
 static HANDLE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Default process-wide budget for `ReadRecoveryTelemetry` calls, in reads per second. The
+/// server enforces `recoveryTelemetry.readsPerSecond` (default 20) per authenticated client
+/// label with a token bucket; every recorder in this process shares that one label, so without a
+/// client-side budget three concurrent 10 Hz recorders already exceed it and each refusal is
+/// retried as a transient error until the watchdog fires. 80 % of the server default leaves
+/// headroom for the start/stop calls and for a second LSO process on the same label.
+pub const DEFAULT_READ_BUDGET_PER_SECOND: f64 = 16.0;
+/// How many reads may be issued back-to-back before pacing kicks in. Kept small so the client
+/// never bursts past the server's own two-second bucket.
+const READ_BUDGET_BURST: f64 = 2.0;
+
+static READ_BUDGET: OnceLock<ReadBudget> = OnceLock::new();
+
+/// Set the process-wide buffered read budget. Returns `false` when a budget was already fixed
+/// (the first configuration wins; the default applies if nothing was configured before the
+/// first buffered read).
+pub fn configure_read_budget(reads_per_second: f64) -> bool {
+    READ_BUDGET.set(ReadBudget::new(reads_per_second)).is_ok()
+}
+
+fn read_budget() -> &'static ReadBudget {
+    READ_BUDGET.get_or_init(|| ReadBudget::new(DEFAULT_READ_BUDGET_PER_SECOND))
+}
+
+/// Token bucket shared by every buffered position collector in the process (see
+/// `DEFAULT_READ_BUDGET_PER_SECOND`). Waiting is cheap for a buffered source: snapshots keep
+/// accumulating in the DCS-side ring and are read in a bigger batch on the next call.
+pub struct ReadBudget {
+    reads_per_second: f64,
+    state: tokio::sync::Mutex<ReadBudgetState>,
+}
+
+struct ReadBudgetState {
+    tokens: f64,
+    updated_at: tokio::time::Instant,
+}
+
+impl ReadBudget {
+    pub fn new(reads_per_second: f64) -> Self {
+        let reads_per_second = if reads_per_second.is_finite() && reads_per_second > 0.0 {
+            reads_per_second
+        } else {
+            DEFAULT_READ_BUDGET_PER_SECOND
+        };
+        Self {
+            reads_per_second,
+            state: tokio::sync::Mutex::new(ReadBudgetState {
+                tokens: READ_BUDGET_BURST,
+                updated_at: tokio::time::Instant::now(),
+            }),
+        }
+    }
+
+    pub fn reads_per_second(&self) -> f64 {
+        self.reads_per_second
+    }
+
+    /// Wait until one read may be issued. Returns how long the caller waited.
+    pub async fn acquire(&self) -> Duration {
+        let started = tokio::time::Instant::now();
+        loop {
+            let wait = {
+                let mut state = self.state.lock().await;
+                let now = tokio::time::Instant::now();
+                let refill =
+                    now.duration_since(state.updated_at).as_secs_f64() * self.reads_per_second;
+                state.tokens = (state.tokens + refill).min(READ_BUDGET_BURST);
+                state.updated_at = now;
+                if state.tokens >= 1.0 {
+                    state.tokens -= 1.0;
+                    return started.elapsed();
+                }
+                Duration::from_secs_f64((1.0 - state.tokens) / self.reads_per_second)
+            };
+            tokio::time::sleep(wait).await;
+        }
+    }
+}
+
+/// Whether the source reports that the aircraft or the carrier now resolves to a different unit
+/// incarnation than the one this attempt started with (`UnitObservationStatus::IdMismatch`).
+/// Returns the entity and the DCS capture time of the first such observation. A mismatch is not
+/// a transient read error: the slot was re-occupied or the unit respawned, so the attempt must
+/// end with that typed reason rather than keep polling a stranger.
+pub fn identity_mismatch(
+    observations: &[InvalidSourceObservation],
+) -> Option<(SourceObservationEntity, Option<f64>)> {
+    observations
+        .iter()
+        .find(|observation| observation.status_code == UnitObservationStatus::IdMismatch as i32)
+        .map(|observation| (observation.entity, observation.capture_time_dcs))
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct BufferedCollectionDiagnostics {
@@ -52,6 +146,11 @@ pub struct BufferedCollectionDiagnostics {
     pub configured_period_ms: f64,
     pub retention_seconds: f64,
     pub capacity: u32,
+    /// Client-side pacing of `ReadRecoveryTelemetry` (see `DEFAULT_READ_BUDGET_PER_SECOND`):
+    /// how many reads had to wait for the shared budget, and for how long in total.
+    pub read_budget_per_second: f64,
+    pub read_budget_waits: u64,
+    pub read_budget_wait_total_ms: f64,
 }
 
 #[derive(Debug, Default)]
@@ -133,6 +232,7 @@ impl PositionCollector {
                     retention_seconds: started.retention_seconds,
                     capacity: started.capacity,
                     reader_sequence_contiguous: true,
+                    read_budget_per_second: read_budget().reads_per_second(),
                     ..BufferedCollectionDiagnostics::default()
                 };
                 tracing::info!(
@@ -194,6 +294,11 @@ impl PositionCollector {
                 diagnostics,
                 ..
             } => {
+                let waited = read_budget().acquire().await;
+                if !waited.is_zero() {
+                    diagnostics.read_budget_waits = diagnostics.read_budget_waits.saturating_add(1);
+                    diagnostics.read_budget_wait_total_ms += waited.as_secs_f64() * 1_000.0;
+                }
                 read_buffered(
                     svc,
                     handle,
@@ -657,6 +762,108 @@ mod tests {
     use super::*;
     use stubs::common::v0::{Orientation, Position, Vector, Velocity};
     use stubs::recovery::v0::RecoveryUnitObservation;
+
+    #[tokio::test(start_paused = true)]
+    async fn read_budget_paces_reads_at_the_configured_rate() {
+        // 10 reads/s with a burst of two: the first two are free, every further read waits 100 ms.
+        let budget = ReadBudget::new(10.0);
+        let started = tokio::time::Instant::now();
+        for _ in 0..2 {
+            assert!(budget.acquire().await.is_zero());
+        }
+        for _ in 0..5 {
+            budget.acquire().await;
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            (Duration::from_millis(490)..=Duration::from_millis(520)).contains(&elapsed),
+            "{elapsed:?}"
+        );
+        // Three concurrent readers share the same budget: 12 reads at 10/s with a burst of two
+        // take about one second in total, i.e. 4 reads/s each, never 30/s combined.
+        let budget = std::sync::Arc::new(ReadBudget::new(10.0));
+        let started = tokio::time::Instant::now();
+        let readers = (0..3).map(|_| {
+            let budget = budget.clone();
+            tokio::spawn(async move {
+                for _ in 0..4 {
+                    budget.acquire().await;
+                }
+            })
+        });
+        for reader in readers {
+            reader.await.unwrap();
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            (Duration::from_millis(990)..=Duration::from_millis(1_050)).contains(&elapsed),
+            "{elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn read_budget_rejects_a_degenerate_rate() {
+        assert_eq!(
+            ReadBudget::new(0.0).reads_per_second(),
+            DEFAULT_READ_BUDGET_PER_SECOND
+        );
+        assert_eq!(
+            ReadBudget::new(f64::NAN).reads_per_second(),
+            DEFAULT_READ_BUDGET_PER_SECOND
+        );
+        assert_eq!(ReadBudget::new(8.0).reads_per_second(), 8.0);
+    }
+
+    #[test]
+    fn identity_mismatch_names_the_first_mismatching_entity() {
+        let invalid = |entity: SourceObservationEntity, status: UnitObservationStatus, time| {
+            InvalidSourceObservation {
+                sequence: 1,
+                capture_tick: 1,
+                capture_time_dcs: time,
+                entity,
+                status_code: status as i32,
+                status: unit_observation_status_name(status as i32),
+                reason: String::new(),
+                source_read_time_dcs: None,
+                received_unix_ms: 0,
+                attribution: ScoringSegmentAttribution::IndeterminateMissingSourceTime,
+                attribution_basis: SourceTimeAttributionBasis::Unresolved,
+                source_time_lower_bound_dcs: None,
+                source_time_upper_bound_dcs: None,
+                coverage_gap_ms: None,
+                previous_valid_sequence: None,
+                next_valid_sequence: None,
+                verdict_effect: InvalidSourceVerdictEffect::BlockingIndeterminateMissingSourceTime,
+                affects_scoring: false,
+            }
+        };
+        assert_eq!(identity_mismatch(&[]), None);
+        assert_eq!(
+            identity_mismatch(&[invalid(
+                SourceObservationEntity::Carrier,
+                UnitObservationStatus::ReadError,
+                Some(10.0)
+            )]),
+            None,
+            "a read error is transient, not an identity change"
+        );
+        assert_eq!(
+            identity_mismatch(&[
+                invalid(
+                    SourceObservationEntity::Carrier,
+                    UnitObservationStatus::NotFound,
+                    Some(10.0)
+                ),
+                invalid(
+                    SourceObservationEntity::Aircraft,
+                    UnitObservationStatus::IdMismatch,
+                    Some(10.5)
+                ),
+            ]),
+            Some((SourceObservationEntity::Aircraft, Some(10.5)))
+        );
+    }
 
     fn observation() -> RecoveryUnitObservation {
         RecoveryUnitObservation {
