@@ -101,6 +101,14 @@ rendu une note indisponible sur un autre run.
 
 ### Bugs confirmés restant à corriger
 
+Corrigés le 13 septembre 2026 (findings F03, F05 et F17 de la revue du 12 septembre) : le
+doublon `Land` V/STOL est rejeté avant toute mutation de la preuve de spot ; les valeurs non
+finies sont rejetées à chaque frontière d'acquisition (`non_finite_value`) et un échantillon
+invalide n'alimente plus que la qualité télémétrie, jamais la géométrie ni le verdict ; un AoA
+inconnu est peint en gris neutre et non plus en « Slow ». Deux tests de simulation qui faisaient
+avancer le verdict avec des échantillons invalides (horloge porte-avions figée à zéro) ont été
+corrigés en conséquence.
+
 - **Fin de génération sans jointure des recorders.** Depuis le 13 septembre, Ctrl-C ferme le
   flux fusionné du recorder, finalise la passe en cours et `lso run` attend jusqu'à 30 s les
   tâches actives. En revanche une fin de génération sur erreur fatale (perte du stream, retry de

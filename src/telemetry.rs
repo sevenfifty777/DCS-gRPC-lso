@@ -27,6 +27,10 @@ pub enum AlignmentMethod {
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryInvalidReason {
     NonFiniteTimestamp,
+    /// A position, altitude, orientation or velocity component is `NaN`/infinite (see
+    /// `Transform::has_finite_geometry`). Checked on every acquisition path, so the tracker
+    /// never has to defend against it.
+    NonFiniteValue,
     TimeWentBackwards,
     MissingHistory,
     ExcessiveSkew,
@@ -140,6 +144,8 @@ impl TelemetrySample {
         let skew_ms = (carrier.time - plane.time).abs() * 1_000.0;
         let invalid_reason = if !carrier.time.is_finite() || !plane.time.is_finite() {
             Some(TelemetryInvalidReason::NonFiniteTimestamp)
+        } else if !carrier.has_finite_geometry() || !plane.has_finite_geometry() {
+            Some(TelemetryInvalidReason::NonFiniteValue)
         } else if skew_ms > MAX_EXTRAPOLATION_MS {
             Some(TelemetryInvalidReason::ExcessiveSkew)
         } else if sample_gap_ms > SAMPLE_GAP_INCOMPLETE_MS {
@@ -183,6 +189,8 @@ impl TelemetrySample {
         let invalid_reason =
             if !carrier.time.is_finite() || !plane.time.is_finite() || !source_age_ms.is_finite() {
                 Some(TelemetryInvalidReason::NonFiniteTimestamp)
+            } else if !carrier.has_finite_geometry() || !plane.has_finite_geometry() {
+                Some(TelemetryInvalidReason::NonFiniteValue)
             } else if previous_time.is_some_and(|previous| carrier.time.max(plane.time) < previous)
             {
                 Some(TelemetryInvalidReason::TimeWentBackwards)
@@ -262,6 +270,7 @@ impl TelemetryAligner {
             && source_age_ms <= SAMPLE_GAP_WARNING_MS;
 
         let timestamps_finite = carrier_raw.time.is_finite() && plane_raw.time.is_finite();
+        let geometry_finite = carrier_raw.has_finite_geometry() && plane_raw.has_finite_geometry();
         let time_went_backwards = self
             .previous_carrier
             .as_ref()
@@ -277,6 +286,13 @@ impl TelemetryAligner {
             (
                 AlignmentMethod::Invalid,
                 Some(TelemetryInvalidReason::NonFiniteTimestamp),
+            )
+        } else if !geometry_finite {
+            // Checked before any extrapolation: a NaN velocity would otherwise be folded into
+            // the corrected position of an otherwise plausible sample.
+            (
+                AlignmentMethod::Invalid,
+                Some(TelemetryInvalidReason::NonFiniteValue),
             )
         } else if time_went_backwards {
             (
@@ -391,6 +407,73 @@ fn extrapolate_position(transform: &mut Transform, seconds: f64) {
 mod tests {
     use super::*;
     use ultraviolet::DVec3;
+
+    #[test]
+    fn non_finite_geometry_is_rejected_on_every_acquisition_path() {
+        let good = Transform {
+            time: 10.0,
+            position: DVec3::new(1.0, 2.0, 3.0),
+            ..Transform::default()
+        };
+        let nan_position = Transform {
+            position: DVec3::new(f64::NAN, 2.0, 3.0),
+            ..good.clone()
+        };
+        let infinite_velocity = Transform {
+            velocity: DVec3::new(0.0, f64::INFINITY, 0.0),
+            ..good.clone()
+        };
+        // AoA alone may legitimately be NaN (zero velocity) and must not invalidate a sample.
+        let nan_aoa = Transform {
+            aoa: f64::NAN,
+            ..good.clone()
+        };
+
+        assert_eq!(
+            TelemetrySample::from_replay(good.clone(), nan_position.clone(), None).invalid_reason,
+            Some(TelemetryInvalidReason::NonFiniteValue)
+        );
+        assert_eq!(
+            TelemetrySample::from_source_pair(infinite_velocity.clone(), good.clone(), None, 0.0)
+                .invalid_reason,
+            Some(TelemetryInvalidReason::NonFiniteValue)
+        );
+        assert_eq!(
+            TelemetrySample::from_replay(good.clone(), nan_aoa, None).invalid_reason,
+            None
+        );
+
+        let mut aligner = TelemetryAligner::new();
+        let sample = aligner.align(
+            ObservedTransform::now(good.clone()),
+            ObservedTransform::now(nan_position),
+        );
+        assert_eq!(
+            sample.invalid_reason,
+            Some(TelemetryInvalidReason::NonFiniteValue)
+        );
+        assert_eq!(sample.method, AlignmentMethod::Invalid);
+        // A skewed pair with a NaN velocity must be rejected before extrapolation is attempted.
+        let mut aligner = TelemetryAligner::new();
+        aligner.align(
+            ObservedTransform::now(good.clone()),
+            ObservedTransform::now(good.clone()),
+        );
+        let skewed_plane = Transform {
+            time: 10.15,
+            velocity: DVec3::new(f64::NAN, 0.0, 0.0),
+            ..good.clone()
+        };
+        let sample = aligner.align(
+            ObservedTransform::now(good),
+            ObservedTransform::now(skewed_plane),
+        );
+        assert_eq!(
+            sample.invalid_reason,
+            Some(TelemetryInvalidReason::NonFiniteValue)
+        );
+        assert!(sample.plane.position.x.is_finite());
+    }
 
     fn observed(time: f64, velocity_x: f64) -> ObservedTransform {
         let value = Transform {

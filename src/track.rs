@@ -2108,12 +2108,23 @@ impl Track {
         }
 
         // ---------------------------------------------------------------
+        // Invalid-sample boundary. Everything above this line is telemetry-quality accounting,
+        // which an invalid sample must contribute to (its gap, its reason, its health effect).
+        // Everything below that mutates geometric state -- pattern datums, the carrier
+        // smoothing, the exit-zone test, hook evidence, the distance minima and the outcome
+        // decision, deck contact -- is gated on `sample_valid`. Gate windows, the roll-out
+        // detector and the datum record carry the validity flag themselves and still see the
+        // sample, so gap attribution and chart gaps keep working (review finding F05).
+        // ---------------------------------------------------------------
+        let sample_valid = sample.is_valid();
+
+        // ---------------------------------------------------------------
         // Pattern datum — BRC frame, recorded every frame.
         // Origin = carrier position. x_chart = -port_m, y_chart = -astern_m
         // so the circuit appears with port on the left and the carrier at the
         // top of the overview PNG.
         // ---------------------------------------------------------------
-        {
+        if sample_valid {
             let brc_rot = DRotor3::from_rotation_xz(carrier.heading.neg().to_radians());
             let brc_fwd = DVec3::unit_z().rotated_by(brc_rot); // BRC forward
             let brc_stbd = DVec3::unit_x().rotated_by(brc_rot); // starboard
@@ -2163,16 +2174,19 @@ impl Track {
         // between updates, the same stale position is returned.  EMA blends the
         // raw position toward the smoothed estimate each frame, producing a
         // steady progression instead of a stairstep.
-        let smoothed_pos = match self.smoothed_carrier_pos {
-            Some(prev) => {
+        let smoothed_pos = match (self.smoothed_carrier_pos, sample_valid) {
+            (Some(prev), true) => {
                 let s = prev + (carrier.position - prev) * CARRIER_POS_SMOOTH_ALPHA;
                 self.smoothed_carrier_pos = Some(s);
                 s
             }
-            None => {
+            // An invalid sample neither advances nor seeds the smoothing.
+            (Some(prev), false) => prev,
+            (None, true) => {
                 self.smoothed_carrier_pos = Some(carrier.position);
                 carrier.position
             }
+            (None, false) => carrier.position,
         };
 
         let landing_pos_offset = self
@@ -2195,7 +2209,7 @@ impl Track {
         // Stop once the plane leaves the wide pattern detection zone (RTB or go-around).
         // This prevents a recording from running forever when no landing is made.
         let carrier_distance = (smoothed_pos - plane.position).mag();
-        if m_to_nm(carrier_distance) > 3.5 || m_to_ft(plane.alt) > 1100.0 {
+        if sample_valid && (m_to_nm(carrier_distance) > 3.5 || m_to_ft(plane.alt) > 1100.0) {
             tracing::debug!("stop: plane exited pattern detection zone");
             return false;
         }
@@ -2205,7 +2219,7 @@ impl Track {
             self.observe_vstol_spot_zone(carrier, plane);
         }
         let is_arrested_recovery = matches!(&self.carrier_info.recovery, CarrierRecovery::Arrested);
-        if is_arrested_recovery {
+        if is_arrested_recovery && sample_valid {
             if let Some(raw) = hook_state.filter(|raw| raw.is_finite()) {
                 self.observe_hook_sample(
                     plane.time,
@@ -2241,13 +2255,14 @@ impl Track {
             }
         }
 
-        // Track the minimum distance to the touchdown point.
-        if distance < self.previous_distance {
+        // Track the minimum distance to the touchdown point. Only a valid sample may move the
+        // floor or decide that the aircraft is leaving.
+        if sample_valid && distance < self.previous_distance {
             self.previous_distance = distance;
             if is_arrested_recovery {
                 self.min_distance_state = Some((carrier.clone(), plane.clone()));
             }
-        } else if distance - self.previous_distance > 150.0 {
+        } else if sample_valid && distance - self.previous_distance > 150.0 {
             match &self.grading {
                 Some(Grading::Recovered { .. }) => {
                     if self.carrier_info.is_vstol() {
@@ -2351,7 +2366,11 @@ impl Track {
             }
         }
 
-        if is_arrested_recovery && self.entered_groove && self.crossed_deck_threshold {
+        if sample_valid
+            && is_arrested_recovery
+            && self.entered_groove
+            && self.crossed_deck_threshold
+        {
             // Arrest confirmed purely from deck kinematics (no `Land`/`RunwayTouch` at all, e.g.
             // missing DCS events): establish the outcome instead of letting the parked aircraft
             // read `ApproachOnly`, or `Bolter` once it taxis.
@@ -2421,7 +2440,8 @@ impl Track {
             }
         };
 
-        if matches!(self.carrier_info.recovery, CarrierRecovery::Arrested)
+        if sample_valid
+            && matches!(self.carrier_info.recovery, CarrierRecovery::Arrested)
             && self.first_hook_ground_contact_time.is_none()
             && alt <= 0.0
         {
@@ -2713,25 +2733,52 @@ impl Track {
         true
     }
 
+    /// Admissibility is decided before anything is mutated (review finding F03): a duplicate
+    /// `Land`/`RunwayTouch` (DCS delivers two for one V/STOL landing) or an event whose geometry
+    /// does not belong to this pair must leave the spot evidence, the terminal datum and the
+    /// outcome exactly as the first accepted event left them.
     pub fn landed(&mut self, carrier: &Transform, plane: &Transform) -> bool {
-        let plane_reference = plane.position
-            + match self.carrier_info.recovery {
-                CarrierRecovery::Arrested => self.plane_info.hook.rotated_by(plane.rotation),
-                CarrierRecovery::Vstol { .. } => {
-                    self.plane_info.landing_reference.rotated_by(plane.rotation)
-                }
-            };
-        let carrier_reference = carrier.position
-            + self
-                .carrier_info
-                .approach_reference_offset(self.plane_info)
-                .rotated_by(carrier.rotation);
-        let horizontal_distance = DVec3::new(
-            plane_reference.x - carrier_reference.x,
-            0.0,
-            plane_reference.z - carrier_reference.z,
-        )
-        .mag();
+        if matches!(self.grading, Some(Grading::Recovered { .. })) {
+            tracing::warn!(at = plane.time, "duplicate touchdown ignored");
+            return false;
+        }
+        if !carrier.has_finite_geometry() || !plane.has_finite_geometry() {
+            tracing::warn!(
+                at = plane.time,
+                "touchdown event rejected: non-finite transform"
+            );
+            return false;
+        }
+        // Arrested: the hook must be near the ideal touchdown point. V/STOL: the pilot-ground
+        // reference must be near the *nearest active spot*, not the approach reference (which is
+        // an axis one wingspan outside the port deck edge), so a legitimate landing on another
+        // spot of the same ship is never rejected as foreign geometry.
+        let horizontal_distance = match &self.carrier_info.recovery {
+            CarrierRecovery::Arrested => {
+                let plane_reference =
+                    plane.position + self.plane_info.hook.rotated_by(plane.rotation);
+                let carrier_reference = carrier.position
+                    + self
+                        .carrier_info
+                        .approach_reference_offset(self.plane_info)
+                        .rotated_by(carrier.rotation);
+                DVec3::new(
+                    plane_reference.x - carrier_reference.x,
+                    0.0,
+                    plane_reference.z - carrier_reference.z,
+                )
+                .mag()
+            }
+            CarrierRecovery::Vstol { .. } => {
+                let spot_ref_world =
+                    plane.position + self.plane_info.landing_reference.rotated_by(plane.rotation);
+                let spot_ref_local =
+                    (spot_ref_world - carrier.position).rotated_by(carrier.rotation.reversed());
+                self.carrier_info
+                    .nearest_active_vstol_spot(spot_ref_local)
+                    .map_or(f64::INFINITY, |(_, distance)| distance)
+            }
+        };
         if !horizontal_distance.is_finite() || horizontal_distance > 200.0 {
             tracing::warn!(horizontal_distance, "touchdown event rejected by geometry");
             return false;
@@ -2823,26 +2870,21 @@ impl Track {
             }
         }
 
-        if !matches!(self.grading, Some(Grading::Recovered { .. })) {
-            self.grading = Some(Grading::Recovered {
-                cable: None,
-                // Left unset here on purpose: reconciled once in `finish()` from
-                // `wire_estimation`, against the complete wire-crossing history, rather than
-                // computed here against whatever crossings the position-tick path has managed
-                // to observe by the time this event-correlated `Land` fires. The two paths are
-                // independent and can race, which previously let this diverge from
-                // `wire_estimation.wire` in the same report.
-                cable_estimated: None,
-            });
-            self.landing_time = Some(plane.time);
-            self.touchdown_horizontal_speed_mps = Some(
-                (plane.velocity.x * plane.velocity.x + plane.velocity.z * plane.velocity.z).sqrt(),
-            );
-            tracing::debug!("first correlated touchdown recorded");
-        } else {
-            tracing::warn!(at = plane.time, "duplicate touchdown ignored");
-            return false;
-        }
+        self.grading = Some(Grading::Recovered {
+            cable: None,
+            // Left unset here on purpose: reconciled once in `finish()` from
+            // `wire_estimation`, against the complete wire-crossing history, rather than
+            // computed here against whatever crossings the position-tick path has managed
+            // to observe by the time this event-correlated `Land` fires. The two paths are
+            // independent and can race, which previously let this diverge from
+            // `wire_estimation.wire` in the same report.
+            cable_estimated: None,
+        });
+        self.landing_time = Some(plane.time);
+        self.touchdown_horizontal_speed_mps = Some(
+            (plane.velocity.x * plane.velocity.x + plane.velocity.z * plane.velocity.z).sqrt(),
+        );
+        tracing::debug!("first correlated touchdown recorded");
         true
     }
 
@@ -7426,6 +7468,109 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_vstol_touchdown_never_rewrites_the_accepted_spot_evidence() {
+        // Review finding F03: DCS delivers two `Land` events for one V/STOL landing. The second
+        // one, arriving after the aircraft has rolled a few metres, used to overwrite the spot
+        // distance measured at the first, accepted, contact.
+        let carrier_info = CarrierInfo::by_type("LHA_Tarawa").unwrap();
+        let plane_info = AirplaneInfo::by_type("AV8BNA").unwrap();
+        let carrier = Transform::default();
+        let spot = match &carrier_info.recovery {
+            CarrierRecovery::Vstol { landing_point, .. } => *landing_point,
+            CarrierRecovery::Arrested => unreachable!(),
+        };
+        let at_spot = Transform {
+            time: 10.0,
+            position: spot - plane_info.landing_reference,
+            ..Transform::default()
+        };
+        let rolled_12_m = Transform {
+            time: 10.2,
+            position: spot - plane_info.landing_reference + DVec3::new(0.0, 0.0, 12.0),
+            ..Transform::default()
+        };
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        assert!(track.landed(&carrier, &at_spot));
+        let accepted_distance = track.spot_distance_m.expect("spot distance measured");
+        assert!(accepted_distance < 0.01, "{accepted_distance}");
+        let datums_after_first = track.datums.len();
+
+        assert!(!track.landed(&carrier, &rolled_12_m));
+        assert_eq!(track.spot_distance_m, Some(accepted_distance));
+        assert_eq!(track.landing_time, Some(10.0));
+        assert_eq!(track.datums.len(), datums_after_first);
+    }
+
+    #[test]
+    fn non_finite_touchdown_transform_is_rejected_before_any_mutation() {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        let poisoned = Transform {
+            time: 10.0,
+            position: DVec3::new(f64::NAN, 0.0, 0.0),
+            ..Transform::default()
+        };
+        assert!(!track.landed(&Transform::default(), &poisoned));
+        assert_eq!(track.grading, None);
+        assert_eq!(track.landing_time, None);
+    }
+
+    #[test]
+    fn invalid_sample_only_feeds_telemetry_quality_never_geometry() {
+        // Review finding F05: a sample the boundary marked invalid must still count towards the
+        // quality accounting, but must not move the carrier smoothing, the pattern trace, the
+        // distance floor or any outcome.
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        let carrier = Transform {
+            time: 10.0,
+            ..Transform::default()
+        };
+        let plane = Transform {
+            time: 10.0,
+            position: DVec3::new(0.0, 100.0, 1_500.0),
+            alt: 100.0,
+            ..Transform::default()
+        };
+        assert!(track.next(&carrier, &plane, None));
+        let smoothed = track.smoothed_carrier_pos;
+        let pattern_datums = track.pattern_datums.len();
+        let previous_distance = track.previous_distance;
+        let invalid_samples = track.telemetry_quality.invalid_samples;
+
+        let poisoned_carrier = Transform {
+            time: 10.1,
+            position: DVec3::new(f64::NAN, 0.0, 0.0),
+            ..Transform::default()
+        };
+        let poisoned_plane = Transform {
+            time: 10.1,
+            position: DVec3::new(f64::NAN, f64::NAN, f64::NAN),
+            alt: f64::NAN,
+            ..plane.clone()
+        };
+        let sample = TelemetrySample::from_replay(poisoned_carrier, poisoned_plane, Some(10.0));
+        assert_eq!(
+            sample.invalid_reason,
+            Some(TelemetryInvalidReason::NonFiniteValue)
+        );
+        assert!(track.next_sample(&sample, Some(1.0)));
+
+        assert_eq!(track.smoothed_carrier_pos, smoothed);
+        assert_eq!(track.pattern_datums.len(), pattern_datums);
+        assert_eq!(track.previous_distance, previous_distance);
+        assert_eq!(track.grading, None);
+        assert_eq!(track.hook_observation.timeline.len(), 0);
+        assert_eq!(track.telemetry_quality.invalid_samples, invalid_samples + 1);
+        assert!(track
+            .telemetry_quality
+            .reasons
+            .contains(&TelemetryInvalidReason::NonFiniteValue));
+    }
+
+    #[test]
     fn simulated_vl_and_rvl_keep_raw_speed_without_inventing_a_threshold() {
         let carrier = CarrierInfo::by_type("LHA_Tarawa").unwrap();
         let plane_info = AirplaneInfo::by_type("AV8BNA").unwrap();
@@ -7447,20 +7592,25 @@ mod tests {
         // Robustness simulation only; it does not prove real Tarawa event order.
         let carrier_info = CarrierInfo::by_type("LHA_Tarawa").unwrap();
         let plane_info = AirplaneInfo::by_type("AV8BNA").unwrap();
-        let carrier = Transform::default();
+        // The carrier clock must follow the aircraft clock: a carrier frozen at t=0 makes every
+        // sample an `ExcessiveSkew` invalid sample, which no longer drives any outcome.
+        let carrier_at = |time: f64| Transform {
+            time,
+            ..Transform::default()
+        };
         let contact = Transform {
             time: 1.0,
             ..Transform::default()
         };
         let mut track = Track::new("pilot", carrier_info, plane_info);
-        assert!(track.next(&carrier, &contact, None));
-        assert!(track.landed(&carrier, &contact));
+        assert!(track.next(&carrier_at(1.0), &contact, None));
+        assert!(track.landed(&carrier_at(1.0), &contact));
         let departure = Transform {
             time: 2.0,
             position: DVec3::new(0.0, 0.0, 300.0),
             ..Transform::default()
         };
-        assert!(!track.next(&carrier, &departure, None));
+        assert!(!track.next(&carrier_at(2.0), &departure, None));
         assert_eq!(track.finish().grading, Grading::WaveoffUnknown);
     }
 
@@ -8232,7 +8382,10 @@ mod tests {
         // the ordinary >150 m departure guard must close it.
         let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
         let plane_info = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
-        let carrier = Transform {
+        // The carrier clock must follow the aircraft clock (see
+        // `simulated_vstol_touch_and_go_is_neutral_not_a_bolter`).
+        let carrier_at = |time: f64| Transform {
+            time,
             forward: DVec3::unit_z(),
             ..Transform::default()
         };
@@ -8248,7 +8401,7 @@ mod tests {
             alt: 50.0,
             ..Transform::default()
         };
-        assert!(track.next(&carrier, &inbound, None));
+        assert!(track.next(&carrier_at(1.0), &inbound, None));
         assert!(track.set_dcs_grading("LSO: GRADE:WO _LULIM_ _LULIC_ WO(AFU)IC [BC]".to_string()));
 
         let departure = Transform {
@@ -8257,7 +8410,7 @@ mod tests {
             alt: 50.0,
             ..Transform::default()
         };
-        assert!(!track.next(&carrier, &departure, None));
+        assert!(!track.next(&carrier_at(2.0), &departure, None));
         assert_eq!(track.finish().grading, Grading::WaveoffUnknown);
     }
 

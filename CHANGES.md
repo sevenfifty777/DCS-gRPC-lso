@@ -8,6 +8,20 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Fixed
 
+- A duplicate `Land`/`RunwayTouch` (DCS sends two for one V/STOL landing) is rejected before any
+  mutation, so the spot distance, nearest spot and terminal datum measured at the first accepted
+  contact are never overwritten by the second event a few metres further on. The V/STOL
+  admissibility check now measures to the nearest active spot instead of the approach axis, so a
+  legitimate landing on another spot of the same ship is not rejected as foreign geometry
+  (review finding F03; `src/track.rs`).
+- Non-finite positions, altitudes, orientations or velocities are rejected on every acquisition
+  path with the new `non_finite_value` invalid reason (unary aligner, replay, buffered pair), and
+  the tracker has one invalid-sample boundary: an invalid sample still feeds the telemetry-quality
+  accounting but no longer moves the carrier smoothing, the pattern trace, the distance floor,
+  hook evidence, deck contact or the outcome decision (review finding F05; `src/telemetry.rs`,
+  `src/transform.rs`, `src/track.rs`).
+- A datum whose AoA is unknown (`NaN`) is painted neutral grey on the charts instead of falling
+  through every module's threshold chain to the Slow colour (review finding F17; `src/draw.rs`).
 - Ctrl-C now reaches finalisation: the recorder's merged tick/event stream ends on shutdown
   (the event half never ended on its own, parking the loop), the recording is finalised with the
   evidence in hand and a `shutdown` event, and `lso run` waits up to 30 s for the recoveries still

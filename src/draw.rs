@@ -29,6 +29,9 @@ const THEME_AOA_SLIGHTLY_FAST: RGBColor = RGBColor(239, 165, 68); // EFA544
 const THEME_AOA_ON_SPEED: RGBColor = RGBColor(254, 240, 138); // FEF08A
 const THEME_AOA_SLIGHTLY_SLOW: RGBColor = RGBColor(170, 197, 34); // AAC522
 const THEME_AOA_SLOW: RGBColor = RGBColor(34, 197, 94); // 22C55E
+/// Neutral grey for a datum whose AoA is unknown (`NaN`: zero velocity, or no wind reference
+/// and no usable geometry). It must never borrow a real band's colour.
+const THEME_AOA_UNKNOWN: RGBColor = RGBColor(148, 163, 184); // 94A3B8
 
 const WIDTH: u32 = 1000;
 const X_LABEL_AREA_SIZE: u32 = 30;
@@ -1165,6 +1168,12 @@ fn select_catobar_display_runs(datums: &[Datum]) -> Vec<Vec<Datum>> {
 }
 
 fn aoa_color(aoa: f64, plane_info: &'static AirplaneInfo) -> RGBColor {
+    // Every module's rating table is a chain of `<=`/`<` comparisons, all of which are false for
+    // NaN, so an unknown AoA used to fall through to the last arm and be painted as Slow
+    // (review finding F17). Grading already skips non-finite AoA; the chart must too.
+    if !aoa.is_finite() {
+        return THEME_AOA_UNKNOWN;
+    }
     match (plane_info.aoa_rating)(aoa) {
         Aoa::Fast => THEME_AOA_FAST,
         Aoa::SlightlyFast => THEME_AOA_SLIGHTLY_FAST,
@@ -1214,10 +1223,24 @@ impl ValueFormatter<f64> for CustomRange {
 #[cfg(test)]
 mod layout_tests {
     use super::{
-        chart_layout, pattern_branch_diagnostic, select_catobar_display_runs,
+        aoa_color, chart_layout, pattern_branch_diagnostic, select_catobar_display_runs,
         select_catobar_final_datums, select_pattern_branches, select_vstol_final_datums, Datum,
-        PatternDatum, PANEL_GAP,
+        PatternDatum, PANEL_GAP, THEME_AOA_SLOW, THEME_AOA_UNKNOWN,
     };
+
+    #[test]
+    fn unknown_aoa_is_painted_neutral_not_slow() {
+        for aircraft in ["FA-18C_hornet", "F-14B", "T-45", "AV8BNA"] {
+            let plane = crate::data::AirplaneInfo::by_type(aircraft).unwrap();
+            assert_eq!(aoa_color(f64::NAN, plane), THEME_AOA_UNKNOWN, "{aircraft}");
+            assert_eq!(
+                aoa_color(f64::INFINITY, plane),
+                THEME_AOA_UNKNOWN,
+                "{aircraft}"
+            );
+            assert_eq!(aoa_color(40.0, plane), THEME_AOA_SLOW, "{aircraft}");
+        }
+    }
 
     fn two_complete_final_approach_runs() -> Vec<Datum> {
         let mut datums = Vec::new();
