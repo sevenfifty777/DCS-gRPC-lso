@@ -55,7 +55,9 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.21.2 --locked
+        # 0.21.x cannot parse the CVSS 4.0 scores the RustSec database publishes since
+        # September 2026 ("unsupported CVSS version: 4.0"); 0.22 is the first line that does.
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Audit dependencies
         # cargo-audit automatically loads the reviewed ignore list from .cargo/audit.toml.

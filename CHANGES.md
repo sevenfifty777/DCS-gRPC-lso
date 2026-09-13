@@ -8,6 +8,9 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Fixed
 
+- CI pins `cargo-audit` 0.22.2: 0.21.2 failed on every run since the RustSec database started
+  publishing CVSS 4.0 scores ("unsupported CVSS version: 4.0"). The reviewed ignore list gains
+  the `ttf-parser` unmaintained notice (`.github/workflows/ci.yml`, `.cargo/audit.toml`).
 - JSON files saved with a UTF-8 byte-order mark (Windows PowerShell 5.1's default) now load: the
   baseline manifest downloaded from the live server started with one and would have been
   rejected as invalid JSON at line 1, column 1 (`src/commands/run.rs`).
