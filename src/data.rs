@@ -150,6 +150,9 @@ static FA18C: AirplaneInfo = AirplaneInfo {
     },
     glide_slope: 3.5,
     hook_draw_argument: Some(25),
+    // Documented external band, no live contradiction observed so far (no Hornet pass in the
+    // September 2026 corpus); left grading until the same cockpit check is flown for it.
+    aoa_grading_calibrated: true,
     aoa_rating: |aoa: f64| -> Aoa {
         // https://forums.vrsimulations.com/support/index.php/Navigation_Tutorial_Flight#Angle_of_Attack_Bracket
         if aoa <= 6.9 {
@@ -225,6 +228,9 @@ static F14A: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
+    // See `aoa_grading_calibrated`: computed AoA reads 3-4 deg below this band on every F-14B(U)
+    // pass recorded in September 2026.
+    aoa_grading_calibrated: false,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -234,6 +240,9 @@ static F14B: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
+    // See `aoa_grading_calibrated`: computed AoA reads 3-4 deg below this band on every F-14B(U)
+    // pass recorded in September 2026.
+    aoa_grading_calibrated: false,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -243,6 +252,9 @@ static F14BU: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
+    // See `aoa_grading_calibrated`: computed AoA reads 3-4 deg below this band on every F-14B(U)
+    // pass recorded in September 2026.
+    aoa_grading_calibrated: false,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -262,6 +274,9 @@ static T45: AirplaneInfo = AirplaneInfo {
     // Same draw-argument index as the F/A-18C (25), confirmed by the user. Polarity likewise
     // assumed, not independently confirmed for the T-45 -- see `hook_draw_argument`.
     hook_draw_argument: Some(25),
+    // See `aoa_grading_calibrated`: the "degrees = UNITS_AOA - 10" mapping below is a commented
+    // reference in the module, never checked against the HUD readout in flight.
+    aoa_grading_calibrated: false,
     aoa_rating: |aoa: f64| -> Aoa {
         // Thresholds derived from VNAO T-45 v1.0.2 DEU (DisplayElectronicsUnit.lua).
         // The cockpit AOA indexer uses UNITS_AOA (set by the EFM DLL). A commented reference
@@ -306,6 +321,8 @@ static AV8B: AirplaneInfo = AirplaneInfo {
     // reference path terminates at 120 ft above the water abeam spot 7.5.
     glide_slope: 3.0,
     hook_draw_argument: None,
+    // V/STOL AoA never grades (see `compute_vstol_approach_grade_points`); the flag is moot.
+    aoa_grading_calibrated: false,
     // AV-8B target approach AOA: 10-12 degrees.  This rating is used only
     // for the trace colour / AOA indication; it does NOT change the V/STOL
     // approach grade, which remains based on GS + LU at the three gates.
@@ -546,6 +563,14 @@ pub struct AirplaneInfo {
     /// confirmed against a test corpus for the F/A-18C — reused unverified for every other type
     /// below (see `HookObservation::polarity` in `Track::new`, `src/track.rs`).
     pub hook_draw_argument: Option<u32>,
+    /// PROTOTYPE (branch `feature/ramp-aoa-grading-prototype`): whether this type's computed AoA
+    /// has been checked against its own cockpit indexer, so the AoA axis may change a grade.
+    /// `false` keeps AoA episodes in the report as diagnostics only, under
+    /// `CatobarGradingPolicy::aoa_requires_calibrated_type` (`src/grading.rs`). Set from the
+    /// 13 September 2026 review (docs/LIVE_SESSION_REVIEW_2026-09-13.md, F1): every F-14B(U)
+    /// pass recorded so far reads 3-4 deg below its on-speed band while DCS's own LSO called one
+    /// of them slow, and the T-45 band rests on an unverified "degrees = units - 10" mapping.
+    pub aoa_grading_calibrated: bool,
 }
 
 impl PartialEq for AirplaneInfo {

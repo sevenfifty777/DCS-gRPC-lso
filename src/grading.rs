@@ -157,7 +157,7 @@ impl ApproachZone {
         }
     }
 
-    const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Start => "START",
             Self::Middle => "MIDDLE",
@@ -243,6 +243,49 @@ pub struct CatobarEvidence<'a> {
     pub aoa_reliable: bool,
     pub groove_time_secs: Option<f64>,
     pub groove_entry_time: Option<f64>,
+}
+
+/// PROTOTYPE (branch `feature/ramp-aoa-grading-prototype`). Three grading-policy switches under
+/// evaluation against the 13 September 2026 reports and the live fixtures; see
+/// docs/LIVE_SESSION_REVIEW_2026-09-13.md, findings F1-F3, for the evidence behind each one.
+/// `BASELINE` (also `Default`) reproduces the production grader at commit `664fe5b` exactly, and
+/// every production entry point below keeps using it until a decision is taken (step 8 of the
+/// plan). `PROTOTYPE` is the candidate. `lso grade-ab` re-grades recorded reports under both, plus
+/// the two intermediate steps, so the effect of each switch can be read pass by pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CatobarGradingPolicy {
+    /// When an episode is still open at the last trajectory sample, i.e. the aircraft touched
+    /// down before the correction could be observed, keep the measured severity instead of adding
+    /// the "poor correction" level. Only the two "could not observe" reasons are affected
+    /// (`ramp_correction_not_stabilized_before_trajectory_end`, `no_real_post_peak_improvement`);
+    /// reversals and re-aggravation are observable and still count as poor.
+    pub touchdown_ends_correction_assessment: bool,
+    /// Minimum duration (seconds) of an AoA episode before it may affect the grade. Shorter AoA
+    /// excursions stay in the report as diagnostics (`affects_grade: false`). `0.0` keeps the
+    /// two-sample persistence guard shared with glideslope and lineup.
+    pub aoa_min_episode_duration_s: f64,
+    /// Let the AoA axis affect the grade only for a type whose `AirplaneInfo::aoa_grading_calibrated`
+    /// is `true`.
+    pub aoa_requires_calibrated_type: bool,
+}
+
+impl CatobarGradingPolicy {
+    pub const BASELINE: Self = Self {
+        touchdown_ends_correction_assessment: false,
+        aoa_min_episode_duration_s: 0.0,
+        aoa_requires_calibrated_type: false,
+    };
+    pub const PROTOTYPE: Self = Self {
+        touchdown_ends_correction_assessment: true,
+        aoa_min_episode_duration_s: 1.0,
+        aoa_requires_calibrated_type: true,
+    };
+}
+
+impl Default for CatobarGradingPolicy {
+    fn default() -> Self {
+        Self::BASELINE
+    }
 }
 
 /// `_OK_` ("Okay underline", NAVAIR 00-80T-104 §11.4.1, `OFFICIAL` symbol meaning "Perfect
@@ -508,6 +551,39 @@ pub fn compute_pass_grade_with_reason(
     groove_time_secs: Option<f64>,
     groove_entry_time: Option<f64>,
 ) -> (PassGrade, String) {
+    compute_pass_grade_with_reason_and_policy(
+        grading,
+        gates,
+        trajectory,
+        groove_time_secs,
+        groove_entry_time,
+        &CatobarGradingPolicy::BASELINE,
+    )
+}
+
+/// `compute_pass_grade_with_reason` under an explicit `CatobarGradingPolicy` (PROTOTYPE, see the
+/// policy's doc comment).
+pub fn compute_pass_grade_with_reason_and_policy(
+    grading: &Grading,
+    gates: &GateDeviations,
+    trajectory: &[TrajectoryDeviation],
+    groove_time_secs: Option<f64>,
+    groove_entry_time: Option<f64>,
+    policy: &CatobarGradingPolicy,
+) -> (PassGrade, String) {
+    let grade_from_gates_with_reason =
+        |gates: &GateDeviations,
+         trajectory: &[TrajectoryDeviation],
+         groove_time_secs: Option<f64>,
+         groove_entry_time: Option<f64>| {
+            grade_from_gates_with_reason_and_policy(
+                gates,
+                trajectory,
+                groove_time_secs,
+                groove_entry_time,
+                policy,
+            )
+        };
     match grading {
         Grading::Unknown => (
             PassGrade::Incomplete,
@@ -601,6 +677,15 @@ pub fn compute_vstol_approach_grade_points(
 /// episodes; callers without trustworthy wind-referenced AoA should pass `false`, which keeps the
 /// episodes auditable while forcing `affects_grade = false` and zero effective severity.
 pub fn compute_catobar_assessment(evidence: CatobarEvidence<'_>) -> CatobarAssessment {
+    compute_catobar_assessment_with_policy(evidence, &CatobarGradingPolicy::BASELINE)
+}
+
+/// `compute_catobar_assessment` under an explicit `CatobarGradingPolicy` (PROTOTYPE, see the
+/// policy's doc comment). Production keeps calling the baseline wrapper above.
+pub fn compute_catobar_assessment_with_policy(
+    evidence: CatobarEvidence<'_>,
+    policy: &CatobarGradingPolicy,
+) -> CatobarAssessment {
     let CatobarEvidence {
         grading,
         gates,
@@ -611,14 +696,16 @@ pub fn compute_catobar_assessment(evidence: CatobarEvidence<'_>) -> CatobarAsses
         groove_time_secs,
         groove_entry_time,
     } = evidence;
-    let (base_grade, base_reason) = compute_pass_grade_with_reason(
+    let (base_grade, base_reason) = compute_pass_grade_with_reason_and_policy(
         grading,
         gates,
         trajectory,
         groove_time_secs,
         groove_entry_time,
+        policy,
     );
-    let episodes = classify_catobar_episodes(trajectory, datums, Some(plane_info), aoa_reliable);
+    let episodes =
+        classify_catobar_episodes(trajectory, datums, Some(plane_info), aoa_reliable, policy);
     let eligible = !trajectory.is_empty()
         && gates.all_valid(groove_entry_time)
         && matches!(
@@ -848,6 +935,7 @@ fn build_axis_episodes(
     observations: &[AxisObservation],
     affects_grade: bool,
     diagnostic: Option<&'static str>,
+    policy: &CatobarGradingPolicy,
 ) -> Vec<GradingEpisode> {
     let mut episodes = Vec::new();
     let mut start = 0;
@@ -966,14 +1054,52 @@ fn build_axis_episodes(
             } else {
                 EpisodeEvolution::Stagnant
             };
+            // PROTOTYPE: an episode still open at the last sample of the series ended because
+            // the trajectory ended (touchdown), not because the pilot stopped correcting. Under
+            // `touchdown_ends_correction_assessment` the two "could not observe a correction"
+            // verdicts below keep the measured severity instead of adding a level.
+            let ends_at_series_end = end + 1 == observations.len();
+            let correction_unobservable =
+                policy.touchdown_ends_correction_assessment && ends_at_series_end;
+            // PROTOTYPE: an AoA excursion shorter than the policy's persistence window is
+            // recorded but never grades (AoA is noisy in ground effect and through the last
+            // power correction; a 0.85 s blip 0.07 deg over the slow threshold decided a pass on
+            // 13 September 2026).
+            let (affects_grade, diagnostic) = if axis == GradingAxis::Aoa
+                && affects_grade
+                && duration_s < policy.aoa_min_episode_duration_s
+            {
+                (
+                    false,
+                    Some("aoa_excursion_shorter_than_persistence_window_no_grade_effect"),
+                )
+            } else {
+                (affects_grade, diagnostic)
+            };
             let (correction, correction_reason) = if !affects_grade {
-                (CorrectionQuality::NotAssessed, "aoa_reference_unreliable")
+                (
+                    CorrectionQuality::NotAssessed,
+                    diagnostic.unwrap_or("aoa_reference_unreliable"),
+                )
             } else if reversals >= OSCILLATION_MIN_REVERSALS {
                 (CorrectionQuality::Poor, "repeated_significant_inversions")
             } else if post_correction_aggravation {
                 (CorrectionQuality::Poor, "aggravation_after_improvement")
+            } else if !improved && correction_unobservable {
+                (
+                    CorrectionQuality::Average,
+                    "trajectory_ended_before_correction_could_be_assessed",
+                )
             } else if !improved {
                 (CorrectionQuality::Poor, "no_real_post_peak_improvement")
+            } else if peak_zone == ApproachZone::Ramp
+                && stabilization_samples < EPISODE_STABLE_SAMPLES
+                && correction_unobservable
+            {
+                (
+                    CorrectionQuality::Average,
+                    "trajectory_ended_before_correction_could_be_assessed",
+                )
             } else if peak_zone == ApproachZone::Ramp
                 && stabilization_samples < EPISODE_STABLE_SAMPLES
             {
@@ -1045,6 +1171,7 @@ fn classify_catobar_episodes(
     datums: &[Datum],
     plane_info: Option<&AirplaneInfo>,
     aoa_reliable: bool,
+    policy: &CatobarGradingPolicy,
 ) -> Vec<GradingEpisode> {
     let gs = trajectory
         .iter()
@@ -1078,17 +1205,30 @@ fn classify_catobar_episodes(
             },
         })
         .collect::<Vec<_>>();
-    let mut episodes = build_axis_episodes(GradingAxis::Glideslope, &gs, true, None);
+    let mut episodes = build_axis_episodes(GradingAxis::Glideslope, &gs, true, None, policy);
     episodes.extend(build_axis_episodes(
         GradingAxis::Lineup,
         &lineup,
         true,
         None,
+        policy,
     ));
 
     if let (Some(plane), Some(first), Some(last)) =
         (plane_info, trajectory.first(), trajectory.last())
     {
+        // PROTOTYPE: under `aoa_requires_calibrated_type` the AoA axis grades only a type whose
+        // computed AoA has been checked against its cockpit indexer (`aoa_grading_calibrated`).
+        let (aoa_reliable, aoa_diagnostic) = if !aoa_reliable {
+            (false, Some("aoa_reference_unavailable_no_grade_effect"))
+        } else if policy.aoa_requires_calibrated_type && !plane.aoa_grading_calibrated {
+            (
+                false,
+                Some("aoa_reference_not_calibrated_for_type_no_grade_effect"),
+            )
+        } else {
+            (true, None)
+        };
         let aoa = datums
             .iter()
             .filter(|sample| {
@@ -1119,7 +1259,8 @@ fn classify_catobar_episodes(
             GradingAxis::Aoa,
             &aoa,
             aoa_reliable,
-            (!aoa_reliable).then_some("aoa_reference_unavailable_no_grade_effect"),
+            aoa_diagnostic,
+            policy,
         ));
     }
     episodes.sort_by(|left, right| left.started_at_dcs.total_cmp(&right.started_at_dcs));
@@ -1165,6 +1306,23 @@ pub(crate) fn grade_from_gates_with_reason(
     groove_time_secs: Option<f64>,
     groove_entry_time: Option<f64>,
 ) -> (PassGrade, String) {
+    grade_from_gates_with_reason_and_policy(
+        gates,
+        trajectory,
+        groove_time_secs,
+        groove_entry_time,
+        &CatobarGradingPolicy::BASELINE,
+    )
+}
+
+/// `grade_from_gates_with_reason` under an explicit `CatobarGradingPolicy` (PROTOTYPE).
+pub(crate) fn grade_from_gates_with_reason_and_policy(
+    gates: &GateDeviations,
+    trajectory: &[TrajectoryDeviation],
+    groove_time_secs: Option<f64>,
+    groove_entry_time: Option<f64>,
+    policy: &CatobarGradingPolicy,
+) -> (PassGrade, String) {
     // Dangerously low at the 1/4-nm gate → Cut pass. GS_CUT_LOW_DEG is negative, so this
     // triggers when the hook is well below the ideal glide path at close range. Also checked
     // at every continuous sample inside the 1/4-nm gate distance, not only at the exact gate
@@ -1200,7 +1358,7 @@ pub(crate) fn grade_from_gates_with_reason(
         return (PassGrade::Cut, reason);
     }
 
-    let episodes = classify_catobar_episodes(trajectory, &[], None, false);
+    let episodes = classify_catobar_episodes(trajectory, &[], None, false, policy);
     let (tier, reason) = if trajectory.is_empty() {
         // Legacy/offline fallback for schema-v3 reports that contain gates but no continuous
         // samples. Live CASE I CATOBAR tracks always use the episode classifier below.
@@ -2836,7 +2994,13 @@ mod tests {
                 &[(0.0, distance, 0.6), (1.0, distance - 1.0, 0.6)],
                 gs_severity,
             );
-            let episodes = build_axis_episodes(GradingAxis::Glideslope, &samples, true, None);
+            let episodes = build_axis_episodes(
+                GradingAxis::Glideslope,
+                &samples,
+                true,
+                None,
+                &CatobarGradingPolicy::BASELINE,
+            );
             assert_eq!(episodes.len(), 1);
             assert_eq!(episodes[0].most_severe_zone, zone);
             assert!((episodes[0].effective_severity - effective).abs() < 1e-9);
@@ -2872,7 +3036,14 @@ mod tests {
             gs_severity,
         );
         let episode = |samples: &[AxisObservation]| {
-            build_axis_episodes(GradingAxis::Glideslope, samples, true, None).remove(0)
+            build_axis_episodes(
+                GradingAxis::Glideslope,
+                samples,
+                true,
+                None,
+                &CatobarGradingPolicy::BASELINE,
+            )
+            .remove(0)
         };
         let good = episode(&good);
         let average = episode(&average);
@@ -2907,8 +3078,14 @@ mod tests {
             ),
         ];
         for samples in cases {
-            let episode =
-                build_axis_episodes(GradingAxis::Glideslope, &samples, true, None).remove(0);
+            let episode = build_axis_episodes(
+                GradingAxis::Glideslope,
+                &samples,
+                true,
+                None,
+                &CatobarGradingPolicy::BASELINE,
+            )
+            .remove(0);
             assert_eq!(episode.correction, CorrectionQuality::Poor);
         }
     }
@@ -2916,12 +3093,31 @@ mod tests {
     #[test]
     fn isolated_noise_is_ignored_and_multiple_axes_are_not_summed() {
         let isolated = observations(&[(0.0, 1_200.0, 1.2)], gs_severity);
-        assert!(build_axis_episodes(GradingAxis::Glideslope, &isolated, true, None).is_empty());
+        assert!(build_axis_episodes(
+            GradingAxis::Glideslope,
+            &isolated,
+            true,
+            None,
+            &CatobarGradingPolicy::BASELINE
+        )
+        .is_empty());
 
         let gs = observations(&[(0.0, 1_200.0, 0.6), (1.0, 1_100.0, 0.6)], gs_severity);
         let lu = observations(&[(0.0, 1_200.0, 1.2), (1.0, 1_100.0, 1.2)], lineup_severity);
-        let mut episodes = build_axis_episodes(GradingAxis::Glideslope, &gs, true, None);
-        episodes.extend(build_axis_episodes(GradingAxis::Lineup, &lu, true, None));
+        let mut episodes = build_axis_episodes(
+            GradingAxis::Glideslope,
+            &gs,
+            true,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        );
+        episodes.extend(build_axis_episodes(
+            GradingAxis::Lineup,
+            &lu,
+            true,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        ));
         assert_eq!(
             grade_from_episode_set(&episodes).0,
             PassGrade::OkParentheses
@@ -2950,7 +3146,13 @@ mod tests {
                 },
             ];
             let plane = AirplaneInfo::by_type(aircraft).unwrap();
-            let episodes = classify_catobar_episodes(&trajectory, &datums, Some(plane), true);
+            let episodes = classify_catobar_episodes(
+                &trajectory,
+                &datums,
+                Some(plane),
+                true,
+                &CatobarGradingPolicy::BASELINE,
+            );
             let aoa_episode = episodes
                 .iter()
                 .find(|episode| episode.axis == GradingAxis::Aoa)
@@ -2958,7 +3160,13 @@ mod tests {
             assert_eq!(aoa_episode.maximum_severity, EpisodeSeverity::Small);
             assert!(aoa_episode.affects_grade);
 
-            let diagnostic = classify_catobar_episodes(&trajectory, &datums, Some(plane), false);
+            let diagnostic = classify_catobar_episodes(
+                &trajectory,
+                &datums,
+                Some(plane),
+                false,
+                &CatobarGradingPolicy::BASELINE,
+            );
             let aoa_episode = diagnostic
                 .iter()
                 .find(|episode| episode.axis == GradingAxis::Aoa)
@@ -3031,7 +3239,14 @@ mod tests {
     #[test]
     fn episode_json_is_additive_and_auditable() {
         let samples = observations(&[(0.0, 700.0, 1.2), (0.1, 690.0, 1.2)], gs_severity);
-        let episode = build_axis_episodes(GradingAxis::Glideslope, &samples, true, None).remove(0);
+        let episode = build_axis_episodes(
+            GradingAxis::Glideslope,
+            &samples,
+            true,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        )
+        .remove(0);
         let json = serde_json::to_value(episode).unwrap();
         assert_eq!(json["axis"], "glideslope");
         assert_eq!(json["most_severe_zone"], "middle");
@@ -3058,7 +3273,14 @@ mod tests {
             ],
             gs_severity,
         );
-        let episode = build_axis_episodes(GradingAxis::Glideslope, &samples, true, None).remove(0);
+        let episode = build_axis_episodes(
+            GradingAxis::Glideslope,
+            &samples,
+            true,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        )
+        .remove(0);
         assert_eq!(episode.peak_at_dcs, 0.5);
         assert_eq!(episode.correction, CorrectionQuality::Good);
         assert_eq!(episode.first_durable_improvement_delay_s, Some(0.5));
@@ -3077,7 +3299,14 @@ mod tests {
                 gs_severity,
             );
             assert_eq!(
-                build_axis_episodes(GradingAxis::Glideslope, &good, true, None)[0].correction,
+                build_axis_episodes(
+                    GradingAxis::Glideslope,
+                    &good,
+                    true,
+                    None,
+                    &CatobarGradingPolicy::BASELINE
+                )[0]
+                .correction,
                 CorrectionQuality::Good
             );
             let late = observations(
@@ -3089,7 +3318,14 @@ mod tests {
                 gs_severity,
             );
             assert_eq!(
-                build_axis_episodes(GradingAxis::Glideslope, &late, true, None)[0].correction,
+                build_axis_episodes(
+                    GradingAxis::Glideslope,
+                    &late,
+                    true,
+                    None,
+                    &CatobarGradingPolicy::BASELINE
+                )[0]
+                .correction,
                 CorrectionQuality::Average
             );
         }
@@ -3101,9 +3337,14 @@ mod tests {
             &[(0.0, 500.0, 1.2), (0.5, 450.0, 0.8), (1.0, 400.0, 0.8)],
             gs_severity,
         );
-        let episode =
-            build_axis_episodes(GradingAxis::Glideslope, &corrected_across_zone, true, None)[0]
-                .clone();
+        let episode = build_axis_episodes(
+            GradingAxis::Glideslope,
+            &corrected_across_zone,
+            true,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        )[0]
+        .clone();
         assert_eq!(episode.peak_zone, ApproachZone::Middle);
         assert_eq!(episode.zone_weight, 1.2);
 
@@ -3112,7 +3353,14 @@ mod tests {
             gs_severity,
         );
         assert_eq!(
-            build_axis_episodes(GradingAxis::Glideslope, &later_peak, true, None)[0].peak_zone,
+            build_axis_episodes(
+                GradingAxis::Glideslope,
+                &later_peak,
+                true,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )[0]
+            .peak_zone,
             ApproachZone::InClose
         );
     }
@@ -3124,7 +3372,14 @@ mod tests {
             gs_severity,
         );
         assert_eq!(
-            build_axis_episodes(GradingAxis::Glideslope, &one, true, None)[0].correction,
+            build_axis_episodes(
+                GradingAxis::Glideslope,
+                &one,
+                true,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )[0]
+            .correction,
             CorrectionQuality::Average
         );
         let two = observations(
@@ -3136,7 +3391,13 @@ mod tests {
             ],
             gs_severity,
         );
-        let episode = &build_axis_episodes(GradingAxis::Glideslope, &two, true, None)[0];
+        let episode = &build_axis_episodes(
+            GradingAxis::Glideslope,
+            &two,
+            true,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        )[0];
         assert!(episode.oscillation_reversals >= 2);
         assert_eq!(episode.correction, CorrectionQuality::Poor);
     }
@@ -3145,7 +3406,14 @@ mod tests {
     fn ramp_requires_post_peak_stabilization_before_the_trajectory_ends() {
         let insufficient = observations(&[(0.0, 100.0, 1.2), (0.5, 80.0, 0.8)], gs_severity);
         assert_eq!(
-            build_axis_episodes(GradingAxis::Glideslope, &insufficient, true, None)[0].correction,
+            build_axis_episodes(
+                GradingAxis::Glideslope,
+                &insufficient,
+                true,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )[0]
+            .correction,
             CorrectionQuality::Poor
         );
         let complete = observations(
@@ -3153,7 +3421,14 @@ mod tests {
             gs_severity,
         );
         assert_eq!(
-            build_axis_episodes(GradingAxis::Glideslope, &complete, true, None)[0].correction,
+            build_axis_episodes(
+                GradingAxis::Glideslope,
+                &complete,
+                true,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )[0]
+            .correction,
             CorrectionQuality::Good
         );
     }

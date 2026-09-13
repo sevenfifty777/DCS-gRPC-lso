@@ -51,6 +51,11 @@ enum Command {
     /// Offline diagnostic: compare recorded groove entry with the current Case I roll-out detector.
     /// Reads schema-v3 JSON reports without modifying them.
     GrooveAb(commands::groove_ab::Opts),
+
+    /// PROTOTYPE offline diagnostic: re-grade recorded JSON reports under the candidate
+    /// CATOBAR grading policies (see `CatobarGradingPolicy`) and print a Markdown table.
+    /// Reads reports without modifying them; never affects live grading.
+    GradeAb(commands::grade_ab::Opts),
 }
 
 #[tokio::main]
@@ -83,6 +88,7 @@ async fn main() {
         Command::File(opts) => commands::file::execute(opts),
         Command::CadenceAb(opts) => commands::cadence_ab::execute(opts),
         Command::GrooveAb(opts) => commands::groove_ab::execute(opts),
+        Command::GradeAb(opts) => commands::grade_ab::execute(opts),
     };
     if let Err(err) = result {
         tracing::error!(error = %err, error_chain = ?err, "LSO terminated with an error");

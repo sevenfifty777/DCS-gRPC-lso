@@ -8598,6 +8598,7 @@ mod tests {
             },
             glide_slope: 3.5,
             hook_draw_argument: None,
+            aoa_grading_calibrated: false,
             aoa_rating: |_| crate::data::Aoa::OnSpeed,
         };
         let carrier = CarrierInfo::by_type("CVN_71").unwrap();

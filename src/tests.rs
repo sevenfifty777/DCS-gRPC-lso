@@ -292,6 +292,88 @@ mod live_2026_09 {
         }
     }
 
+    /// PROTOTYPE: prints the `grade-ab` policy table for every live fixture, so the candidate
+    /// grading policies can be read against recordings that also carry a DCS `WIRE#` label.
+    /// Replayed fixtures have no wind reference (no gRPC), so the AoA axis never grades here and
+    /// only the touchdown rule (P1) can move a row. Run with:
+    /// `cargo test live_2026_09::grading_policy_ab_table -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "prints a Markdown table; run with --ignored --nocapture"]
+    fn grading_policy_ab_table() {
+        use crate::commands::grade_ab::{episode_listing, policy_cells, table_header};
+        use crate::grading::{compute_catobar_assessment_with_policy, CatobarEvidence};
+
+        macro_rules! fixture {
+            ($name:ident) => {
+                (
+                    stringify!($name),
+                    &include_bytes!(concat!(
+                        "../tests/recordings/live_2026-09/",
+                        stringify!($name),
+                        ".zip.acmi"
+                    ))[..],
+                    include_str!(concat!(
+                        "../tests/recordings/live_2026-09/",
+                        stringify!($name),
+                        ".hook.json"
+                    )),
+                )
+            };
+        }
+        let fixtures = [
+            fixture!(t45_hookdown_wire1),
+            fixture!(t45_hookdown_wire3),
+            fixture!(t45_hookdown_wire4),
+            fixture!(t45_hookdown_bolter),
+            fixture!(t45_hookup_1),
+            fixture!(t45_hookup_2),
+            fixture!(t45_hookup_3),
+            fixture!(f14bu_hookdown_wire1),
+            fixture!(f14bu_hookdown_wire2),
+            fixture!(f14bu_hookdown_wire4),
+            fixture!(f14bu_hookup_1),
+            fixture!(f14bu_hookup_2_dcs_waveoff),
+            fixture!(f14bu_hookup_3),
+            fixture!(f14bu_hookup_4),
+        ];
+        println!("{}", table_header());
+        for (name, acmi, sidecar) in fixtures {
+            let (result, sidecar) = replay(acmi, sidecar);
+            // Set `LSO_GRADE_AB_EPISODES=1` to list every episode under every step, as
+            // `lso grade-ab --episodes` does for JSON reports.
+            let list_episodes = std::env::var_os("LSO_GRADE_AB_EPISODES").is_some();
+            let mut episode_lines = String::new();
+            let cells = policy_cells(|policy| {
+                let assessment = compute_catobar_assessment_with_policy(
+                    CatobarEvidence {
+                        grading: &result.grading,
+                        gates: &result.gate_deviations,
+                        trajectory: &result.trajectory_deviations,
+                        datums: &result.datums,
+                        plane_info: result.plane_info,
+                        aoa_reliable: result.wind_reference_established,
+                        groove_time_secs: result.groove_time_secs,
+                        groove_entry_time: result.groove_entry.as_ref().map(|e| e.timestamp_dcs),
+                    },
+                    policy,
+                );
+                if list_episodes {
+                    episode_lines.push_str(&episode_listing(policy, &assessment));
+                }
+                assessment
+            });
+            let dcs = sidecar
+                .dcs_wire
+                .map_or_else(|| "none".to_string(), |wire| format!("wire {wire}"));
+            println!(
+                "| {name} | {} | {} | {dcs} | `{}` |{cells}{episode_lines}",
+                sidecar.aircraft_type,
+                result.grading.pilot_facing_outcome(false),
+                result.pass_grade.label(),
+            );
+        }
+    }
+
     live_fixture!(t45_hookdown_bolter);
     live_fixture!(t45_hookdown_wire4);
     live_fixture!(t45_hookup_2);
