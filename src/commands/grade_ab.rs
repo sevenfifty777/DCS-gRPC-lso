@@ -1,6 +1,6 @@
 //! PROTOTYPE (branch `feature/ramp-aoa-grading-prototype`): read-only offline re-grading of
-//! recorded JSON reports under the four `CatobarGradingPolicy` steps (baseline, then each of the
-//! three candidate switches added cumulatively). Reuses persisted `datums` and the exact production
+//! recorded JSON reports under the `CatobarGradingPolicy` steps of `STEPS` (baseline, then each
+//! candidate switch added cumulatively). Reuses persisted `datums` and the exact production
 //! geometry helper, exactly like `groove-ab`; it never edits the input and never affects live
 //! grading. Output is a Markdown table so it can be pasted into a review document as-is.
 
@@ -196,8 +196,10 @@ fn default_true() -> bool {
     true
 }
 
-/// The four cumulative policy steps compared by this command, in column order.
-pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 4] = [
+/// The seven cumulative policy steps compared by this command, in column order. P3 is
+/// `CatobarGradingPolicy::PROTOTYPE` (the production default since 14 September 2026), P6 is
+/// `CatobarGradingPolicy::CONVENTION`.
+pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 7] = [
     ("P0 baseline", CatobarGradingPolicy::BASELINE),
     (
         "P1 +touchdown ends correction",
@@ -205,6 +207,9 @@ pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 4] = [
             touchdown_ends_correction_assessment: true,
             aoa_min_episode_duration_s: 0.0,
             aoa_requires_calibrated_type: false,
+            lso_convention_table: false,
+            aoa_large_error_deg: 0.0,
+            aoa_oscillation_min_swing_deg: 0.0,
         },
     ),
     (
@@ -213,11 +218,40 @@ pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 4] = [
             touchdown_ends_correction_assessment: true,
             aoa_min_episode_duration_s: 1.0,
             aoa_requires_calibrated_type: false,
+            lso_convention_table: false,
+            aoa_large_error_deg: 0.0,
+            aoa_oscillation_min_swing_deg: 0.0,
         },
     ),
     (
-        "P3 +AoA calibrated types only",
+        "P3 +AoA calibrated types only (PROTOTYPE)",
         CatobarGradingPolicy::PROTOTYPE,
+    ),
+    (
+        "P4 +LSO convention table",
+        CatobarGradingPolicy {
+            touchdown_ends_correction_assessment: true,
+            aoa_min_episode_duration_s: 1.0,
+            aoa_requires_calibrated_type: true,
+            lso_convention_table: true,
+            aoa_large_error_deg: 0.0,
+            aoa_oscillation_min_swing_deg: 0.0,
+        },
+    ),
+    (
+        "P5 +gross AoA tier 2 deg",
+        CatobarGradingPolicy {
+            touchdown_ends_correction_assessment: true,
+            aoa_min_episode_duration_s: 1.0,
+            aoa_requires_calibrated_type: true,
+            lso_convention_table: true,
+            aoa_large_error_deg: 2.0,
+            aoa_oscillation_min_swing_deg: 0.0,
+        },
+    ),
+    (
+        "P6 +AoA swing 1 deg (CONVENTION)",
+        CatobarGradingPolicy::CONVENTION,
     ),
 ];
 

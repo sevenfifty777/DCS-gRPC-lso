@@ -321,7 +321,7 @@ Nothing is committed. The recovery folder and the two CSV files are untracked an
     grading.rs:1314 in grade_from_gates_with_reason
     grading.rs:287 in impl Default for CatobarGradingPolicy
 2. **Fly one ordinary session** (donut held as usual, no chevron holding) and run `grade-ab` on it. That gives the grade distribution real flying produces under the calibrated bands.
-3. **Have a human LSO grade** that session, the 14 September traps and the 13 September set blind. The two open policy questions are then decided against a reference: the cost of a sustained fast or slow, and the fixed 4.0 for a medium excursion at the ramp.
+3. **Have a human LSO grade** that session, the 14 September traps and the 13 September set blind. The two open policy questions are then decided against a reference: the cost of a sustained fast or slow, and the fixed 4.0 for a medium excursion at the ramp. *Update, 15 September: with no human LSO available, both were settled against the written LSO grading convention instead; see `docs/GRADING_CONVENTION_PROTOTYPE_2026-09-15.md`.*
 4. **Calibrate the F/A-18C** the same way, one session.
 5. **Raise the read quota** before the next multi-pilot session, or the confidence flags of every pass flown with company will read orange.(done: `--buffered-read-budget-per-second` 40, `readsPerSecond` 50 on the server).
 6. **Keep the client recorder installed** on the two pilots' PCs. It costs nothing, and the next windy session will give the wind correction the test it has still not had.

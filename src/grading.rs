@@ -267,6 +267,23 @@ pub struct CatobarGradingPolicy {
     /// Let the AoA axis affect the grade only for a type whose `AirplaneInfo::aoa_grading_calibrated`
     /// is `true`.
     pub aoa_requires_calibrated_type: bool,
+    /// Score each episode from the written LSO grading convention (a little / moderate / gross
+    /// deviation, corrected or not, and where) through `convention_effective_severity`, instead
+    /// of "corrected severity level times zone weight". See `docs/GRADING_REFERENCE.md`,
+    /// "Episode grading". Introduced on 14 September 2026 as the reference to tune against while
+    /// no human LSO is available (`docs/GRADING_CONVENTION_PROTOTYPE_2026-09-14.md`).
+    pub lso_convention_table: bool,
+    /// An AoA sample further than this many degrees outside the on-speed band counts as a gross
+    /// (`Large`) deviation instead of the moderate (`Medium`) tier that every "fast" or "slow"
+    /// reading otherwise gets. `0.0` disables the tier. Without it the convention table would
+    /// grade "fast all the way, 4 degrees under the band" the same as "fast by a quarter degree".
+    pub aoa_large_error_deg: f64,
+    /// Minimum swing (degrees) for a leg of an AoA oscillation to count towards the "repeated
+    /// significant inversions" verdict. `0.0` keeps `OSCILLATION_MIN_SWING_DEG` (0.3, sized for
+    /// glideslope and lineup). The computed AoA carries about 0.8 degrees of spread (p10 to p90)
+    /// against the flight model (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`, section 3), so at
+    /// 0.3 the detector reads measurement noise as overcontrol on nearly every long AoA episode.
+    pub aoa_oscillation_min_swing_deg: f64,
 }
 
 impl CatobarGradingPolicy {
@@ -274,22 +291,115 @@ impl CatobarGradingPolicy {
         touchdown_ends_correction_assessment: false,
         aoa_min_episode_duration_s: 0.0,
         aoa_requires_calibrated_type: false,
+        lso_convention_table: false,
+        aoa_large_error_deg: 0.0,
+        aoa_oscillation_min_swing_deg: 0.0,
     };
     pub const PROTOTYPE: Self = Self {
         touchdown_ends_correction_assessment: true,
         aoa_min_episode_duration_s: 1.0,
         aoa_requires_calibrated_type: true,
+        lso_convention_table: false,
+        aoa_large_error_deg: 0.0,
+        aoa_oscillation_min_swing_deg: 0.0,
     };
+    /// `PROTOTYPE` plus the LSO convention table, the gross-AoA tier at 2 degrees outside the
+    /// band (PROJECT-DERIVED: about two indexer units on the F-14, two and a half on the T-45,
+    /// roughly 10 to 15 knots off speed on either) and an AoA oscillation swing of 1 degree,
+    /// just above the measured noise band.
+    pub const CONVENTION: Self = Self {
+        touchdown_ends_correction_assessment: true,
+        aoa_min_episode_duration_s: 1.0,
+        aoa_requires_calibrated_type: true,
+        lso_convention_table: true,
+        aoa_large_error_deg: 2.0,
+        aoa_oscillation_min_swing_deg: 1.0,
+    };
+}
+
+/// Effective severity of one graded episode under the written LSO convention, on the same scale
+/// `grade_from_episode_set` already reads (below 1.5 `OK`, below 3.0 `(OK)`, otherwise `--`):
+///
+/// | deviation | correction | START, MIDDLE | IN CLOSE, RAMP |
+/// |---|---|---|---|
+/// | a little (`Small`) | good | `OK` | `OK` |
+/// | a little | average | `OK` | `(OK)` |
+/// | a little | poor | `(OK)` | `(OK)` |
+/// | moderate (`Medium`) | good | `OK` | `(OK)` |
+/// | moderate | average | `(OK)` | `(OK)` |
+/// | moderate | poor | `--` | `--` |
+/// | gross (`Large`) | good | `(OK)` | `--` |
+/// | gross | average or poor | `--` | `--` |
+///
+/// "A little" never reaches `--`, a moderate deviation reaches it only when left uncorrected, and
+/// a gross one is `--` unless it was corrected early and well. "Good" here means the axis came
+/// back inside its target band (`returned_to_none`): a gross excursion that was quickly reduced
+/// to a moderate one and then held there for the rest of the groove is an average correction,
+/// not a good one (19:25 on 14 September 2026: fast for 100% of the groove, gross at the peak).
+/// The zone adds a tenth per step inside the band (START 0.0 to RAMP 0.3) so that, between two
+/// episodes of the same band, the later one is reported as the deciding episode; it never
+/// changes the band.
+fn convention_effective_severity(
+    severity: EpisodeSeverity,
+    correction: CorrectionQuality,
+    zone: ApproachZone,
+    returned_to_none: bool,
+) -> f64 {
+    const OK: f64 = 1.0;
+    const OK_PARENTHESES: f64 = 2.0;
+    const NO_GRADE: f64 = 3.0;
+    let correction = match correction {
+        CorrectionQuality::Good if !returned_to_none => CorrectionQuality::Average,
+        other => other,
+    };
+    let late = matches!(zone, ApproachZone::InClose | ApproachZone::Ramp);
+    let band = match (severity, correction) {
+        (EpisodeSeverity::None, _) => return 0.0,
+        (EpisodeSeverity::Small, CorrectionQuality::Good) => OK,
+        (EpisodeSeverity::Small, CorrectionQuality::Poor) => OK_PARENTHESES,
+        (EpisodeSeverity::Small, _) => {
+            if late {
+                OK_PARENTHESES
+            } else {
+                OK
+            }
+        }
+        (EpisodeSeverity::Medium, CorrectionQuality::Good) => {
+            if late {
+                OK_PARENTHESES
+            } else {
+                OK
+            }
+        }
+        (EpisodeSeverity::Medium, CorrectionQuality::Poor) => NO_GRADE,
+        (EpisodeSeverity::Medium, _) => OK_PARENTHESES,
+        (EpisodeSeverity::Large, CorrectionQuality::Good) => {
+            if late {
+                NO_GRADE
+            } else {
+                OK_PARENTHESES
+            }
+        }
+        (EpisodeSeverity::Large, _) => NO_GRADE,
+    };
+    let zone_step = match zone {
+        ApproachZone::Start => 0.0,
+        ApproachZone::Middle => 0.1,
+        ApproachZone::InClose => 0.2,
+        ApproachZone::Ramp => 0.3,
+    };
+    band + zone_step
 }
 
 /// The policy every production entry point uses (`compute_pass_grade_with_reason`,
 /// `compute_catobar_assessment`, `grade_from_gates_with_reason`). Switched from `BASELINE` to
 /// `PROTOTYPE` on 14 September 2026 after the AoA calibration flight
-/// (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`, section 11); this is the single place to flip it
-/// back.
+/// (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`, section 11), then to `CONVENTION` on 15
+/// September 2026 (`docs/GRADING_CONVENTION_PROTOTYPE_2026-09-15.md`); this is the single place
+/// to flip it back.
 impl Default for CatobarGradingPolicy {
     fn default() -> Self {
-        Self::PROTOTYPE
+        Self::CONVENTION
     }
 }
 
@@ -995,7 +1105,16 @@ fn build_axis_episodes(
             let peak_value = peak.value;
             let peak_zone = approach_zone(peak.distance_m);
             let post_peak = &slice[peak_index..];
-            let reversals = count_reversals(post_peak.iter().map(|sample| sample.normalized_error));
+            let min_swing_deg =
+                if axis == GradingAxis::Aoa && policy.aoa_oscillation_min_swing_deg > 0.0 {
+                    policy.aoa_oscillation_min_swing_deg
+                } else {
+                    OSCILLATION_MIN_SWING_DEG
+                };
+            let reversals = count_reversals_with_swing(
+                post_peak.iter().map(|sample| sample.normalized_error),
+                min_swing_deg,
+            );
             let max_level = maximum_severity.level();
             let duration_s = (slice[slice.len() - 1].time - slice[0].time).max(0.0);
             let trend_end = post_peak.last().unwrap_or(peak);
@@ -1132,10 +1251,17 @@ fn build_axis_episodes(
                 CorrectionQuality::Average | CorrectionQuality::NotAssessed => max_level,
                 CorrectionQuality::Poor => (max_level + 1).min(3),
             };
-            let effective_severity = if affects_grade {
-                f64::from(corrected_level) * peak_zone.weight()
-            } else {
+            let effective_severity = if !affects_grade {
                 0.0
+            } else if policy.lso_convention_table {
+                convention_effective_severity(
+                    maximum_severity,
+                    correction,
+                    peak_zone,
+                    return_to_none_s.is_some(),
+                )
+            } else {
+                f64::from(corrected_level) * peak_zone.weight()
             };
             episodes.push(GradingEpisode {
                 axis,
@@ -1244,12 +1370,22 @@ fn classify_catobar_episodes(
             })
             .filter_map(|sample| {
                 let rating = (plane.aoa_rating)(sample.aoa);
+                let normalized_error = normalized_aoa_error(plane, sample.aoa)?;
+                // The rating gives at most `Medium` ("fast"/"slow"); the gross tier is the
+                // distance outside the band, when the policy enables it.
+                let severity = if policy.aoa_large_error_deg > 0.0
+                    && normalized_error.abs() >= policy.aoa_large_error_deg
+                {
+                    EpisodeSeverity::Large
+                } else {
+                    aoa_severity(rating)
+                };
                 Some(AxisObservation {
                     time: sample.time,
                     distance_m: sample.x,
                     value: sample.aoa,
-                    normalized_error: normalized_aoa_error(plane, sample.aoa)?,
-                    severity: aoa_severity(rating),
+                    normalized_error,
+                    severity,
                     classification: match rating {
                         Aoa::Fast => "fast",
                         Aoa::SlightlyFast => "slightly_fast",
@@ -1701,6 +1837,12 @@ fn oscillation_detail(trajectory: &[TrajectoryDeviation]) -> Option<(&'static st
 /// point only advances on a significant move, so a run of sub-threshold jitter around the same
 /// spot cannot mask a real swing by repeatedly resetting the baseline.
 fn count_reversals(values: impl Iterator<Item = f64>) -> usize {
+    count_reversals_with_swing(values, OSCILLATION_MIN_SWING_DEG)
+}
+
+/// `count_reversals` with an explicit minimum swing, for the AoA axis under a policy that sets
+/// `aoa_oscillation_min_swing_deg` (the AoA series is noisier than glideslope and lineup).
+fn count_reversals_with_swing(values: impl Iterator<Item = f64>, min_swing_deg: f64) -> usize {
     let mut reference: Option<f64> = None;
     let mut last_sign: Option<f64> = None;
     let mut reversals = 0;
@@ -1710,7 +1852,7 @@ fn count_reversals(values: impl Iterator<Item = f64>) -> usize {
             continue;
         };
         let delta = value - previous;
-        if delta.abs() < OSCILLATION_MIN_SWING_DEG {
+        if delta.abs() < min_swing_deg {
             continue;
         }
         let sign = delta.signum();
@@ -2368,8 +2510,10 @@ mod tests {
 
     #[test]
     fn late_window_never_downgrades_a_pass_already_at_no_grade_or_worse() {
-        // A pass already at NoGrade from amplitude alone is not further affected; the
+        // Baseline: a pass already at NoGrade from amplitude alone is not further affected; the
         // late-window check only ever holds back Ok/(OK), like trend does for Ok alone.
+        // Production (CONVENTION): 1.2 deg is a moderate deviation, the series ends inside it,
+        // so the correction is average and the convention gives (OK) at the ramp.
         let g = gates_deg(1.2, 0.0, 0.0, 0.0, 0.0, 0.0);
         let trajectory = [
             trajectory_point(110.0, 1.2, 0.0),
@@ -2377,6 +2521,17 @@ mod tests {
         ];
         assert_eq!(
             grade_from_gates(&g, &trajectory, None, None),
+            PassGrade::OkParentheses
+        );
+        assert_eq!(
+            grade_from_gates_with_reason_and_policy(
+                &g,
+                &trajectory,
+                None,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )
+            .0,
             PassGrade::NoGrade
         );
     }
@@ -2982,7 +3137,20 @@ mod tests {
             trajectory_point_at(2.0, 260.0, 0.0, 1.2),
             trajectory_point_at(3.0, 240.0, 0.0, -1.2),
         ];
+        // Production (CONVENTION): "a little" lineup with a poor correction is (OK), never --.
         let (grade, reason) = grade_from_gates_with_reason(&g, &trajectory, None, None);
+        assert_eq!(grade, PassGrade::OkParentheses);
+        assert_eq!(
+            reason,
+            "(OK): lineup léger en IN CLOSE, sans retour stable vers la cible après le pic."
+        );
+        let (grade, reason) = grade_from_gates_with_reason_and_policy(
+            &g,
+            &trajectory,
+            None,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        );
         assert_eq!(grade, PassGrade::NoGrade);
         assert_eq!(
             reason,
@@ -3277,6 +3445,142 @@ mod tests {
             assert_eq!(aoa_episode.effective_severity, 0.0);
             assert_eq!(grade_from_episode_set(&diagnostic).0, PassGrade::Ok);
         }
+    }
+
+    #[test]
+    fn convention_table_matches_the_written_lso_grading_rules() {
+        use ApproachZone::{InClose, Middle, Ramp, Start};
+        use CorrectionQuality::{Average, Good, Poor};
+        use EpisodeSeverity::{Large, Medium, None as NoDev, Small};
+        let grade_of = |value: f64| {
+            if value < 1.5 {
+                PassGrade::Ok
+            } else if value < 3.0 {
+                PassGrade::OkParentheses
+            } else {
+                PassGrade::NoGrade
+            }
+        };
+        let cell = |severity, correction, zone| {
+            grade_of(convention_effective_severity(
+                severity, correction, zone, true,
+            ))
+        };
+        // A "good" verdict that never brought the axis back inside the band counts as average.
+        assert_eq!(
+            grade_of(convention_effective_severity(Large, Good, Middle, false)),
+            PassGrade::NoGrade
+        );
+        assert_eq!(
+            grade_of(convention_effective_severity(Medium, Good, Start, false)),
+            PassGrade::OkParentheses
+        );
+        // A little: never below (OK); OK unless late or uncorrected.
+        assert_eq!(cell(Small, Good, Ramp), PassGrade::Ok);
+        assert_eq!(cell(Small, Average, Middle), PassGrade::Ok);
+        assert_eq!(cell(Small, Average, InClose), PassGrade::OkParentheses);
+        assert_eq!(cell(Small, Poor, Ramp), PassGrade::OkParentheses);
+        // Moderate: OK when corrected early (not late), (OK) with an average correction anywhere,
+        // -- only when left uncorrected.
+        assert_eq!(cell(Medium, Good, Start), PassGrade::Ok);
+        assert_eq!(cell(Medium, Good, InClose), PassGrade::OkParentheses);
+        assert_eq!(cell(Medium, Average, InClose), PassGrade::OkParentheses);
+        assert_eq!(cell(Medium, Average, Ramp), PassGrade::OkParentheses);
+        assert_eq!(cell(Medium, Poor, Start), PassGrade::NoGrade);
+        // Gross: -- unless corrected early and well before the in-close zone.
+        assert_eq!(cell(Large, Good, Middle), PassGrade::OkParentheses);
+        assert_eq!(cell(Large, Good, InClose), PassGrade::NoGrade);
+        assert_eq!(cell(Large, Average, Start), PassGrade::NoGrade);
+        assert_eq!(convention_effective_severity(NoDev, Good, Ramp, true), 0.0);
+        // The zone step orders episodes inside a band without changing it.
+        assert!(
+            convention_effective_severity(Medium, Average, Ramp, true)
+                > convention_effective_severity(Medium, Average, Start, true)
+        );
+        assert_eq!(cell(Medium, Average, Ramp), cell(Medium, Average, Start));
+    }
+
+    #[test]
+    fn convention_table_keeps_a_moderate_deviation_in_close_at_ok_parentheses() {
+        // 1.2 deg high held to the end of the series at 300 m: a moderate deviation with an
+        // unobservable (average) correction. PROTOTYPE scores it 2 x 1.5 = 3.0, which is --;
+        // the convention says a moderate deviation with an average correction is (OK).
+        let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let trajectory = [
+            trajectory_point(300.0, 1.2, 0.0),
+            trajectory_point(290.0, 1.2, 0.0),
+        ];
+        let grade = |policy: &CatobarGradingPolicy| {
+            grade_from_gates_with_reason_and_policy(&g, &trajectory, None, None, policy).0
+        };
+        assert_eq!(grade(&CatobarGradingPolicy::PROTOTYPE), PassGrade::NoGrade);
+        assert_eq!(
+            grade(&CatobarGradingPolicy::CONVENTION),
+            PassGrade::OkParentheses
+        );
+    }
+
+    #[test]
+    fn aoa_oscillation_swing_threshold_ignores_measurement_noise() {
+        // 0.4 deg of jitter around a fast reading: at the default 0.3 deg swing every wobble is a
+        // leg (overcontrol, "repeated inversions"); at the CONVENTION policy's 1 deg it is noise.
+        let jitter = [1.0, 1.4, 1.0, 1.4, 1.0, 1.4, 1.0];
+        assert!(count_reversals(jitter.iter().copied()) >= OSCILLATION_MIN_REVERSALS);
+        assert_eq!(
+            count_reversals_with_swing(
+                jitter.iter().copied(),
+                CatobarGradingPolicy::CONVENTION.aoa_oscillation_min_swing_deg
+            ),
+            0
+        );
+        // A real hunt of 1.5 deg each way still counts.
+        let hunt = [1.0, 2.5, 1.0, 2.5, 1.0];
+        assert!(count_reversals_with_swing(hunt.iter().copied(), 1.0) >= OSCILLATION_MIN_REVERSALS);
+    }
+
+    #[test]
+    fn gross_aoa_tier_applies_only_beyond_the_policy_distance() {
+        // F-14 at 6.0 deg is 3.95 deg under the on-speed band: "fast" (Medium) for every policy,
+        // gross (Large) once `aoa_large_error_deg` is set. 9.3 deg is only 0.65 under the band
+        // and stays Medium under both.
+        let trajectory = [
+            trajectory_point_at(0.0, 1_200.0, 0.0, 0.0),
+            trajectory_point_at(2.0, 1_000.0, 0.0, 0.0),
+        ];
+        let plane = AirplaneInfo::by_type("F-14B").unwrap();
+        let severity_for = |aoa: f64, policy: &CatobarGradingPolicy| {
+            let datums = [
+                Datum {
+                    time: 0.0,
+                    x: 1_200.0,
+                    aoa,
+                    ..Datum::default()
+                },
+                Datum {
+                    time: 1.0,
+                    x: 1_100.0,
+                    aoa,
+                    ..Datum::default()
+                },
+            ];
+            classify_catobar_episodes(&trajectory, &datums, Some(plane), true, policy)
+                .into_iter()
+                .find(|episode| episode.axis == GradingAxis::Aoa)
+                .unwrap()
+                .maximum_severity
+        };
+        assert_eq!(
+            severity_for(6.0, &CatobarGradingPolicy::PROTOTYPE),
+            EpisodeSeverity::Medium
+        );
+        assert_eq!(
+            severity_for(6.0, &CatobarGradingPolicy::CONVENTION),
+            EpisodeSeverity::Large
+        );
+        assert_eq!(
+            severity_for(9.3, &CatobarGradingPolicy::CONVENTION),
+            EpisodeSeverity::Medium
+        );
     }
 
     #[test]

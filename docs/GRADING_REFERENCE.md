@@ -70,9 +70,63 @@ trap upgrades. A `WO` outcome does not require three valid gates; every other gr
 automatic rule emits it. The former local "wire 3 plus 15-18.99 seconds" Unicorn rule is disabled.
 Groove time and estimated wire cannot produce `_OK_`. A touch-and-go cannot receive `_OK_` or points.
 
-AoA is chart information only. No AoA table changes the grade. Trends, duration of deviations,
-continuous excursions, power, sink rate, wind, weight and LSO calls are not scored because no
-validated per-aircraft rule has been adopted.
+The three-gate table above is the historical model and still decides a pass that has no
+continuous trajectory. Since the episode grader (next section) a CATOBAR pass with a recorded
+groove is graded from its episodes, and AoA does grade the T-45C, the F-14 and the F/A-18C: the
+T-45C and F-14 bands were measured on the cockpit indexer on 14 September 2026
+(`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`), the F/A-18C band is documented but not yet verified.
+Power, wind, weight and LSO calls are still not scored.
+
+## Episode grading (CATOBAR, continuous trajectory)
+
+`PROJECT-DERIVED`. From groove entry to touchdown the glideslope, lineup and AoA series are cut
+into episodes: a run of samples outside the target band, at least two samples long, ended by two
+consecutive samples back inside it. Each episode carries a size, a zone and a correction verdict.
+
+| Size | Glideslope | Lineup | AoA | LSO shorthand |
+|---|---|---|---|---|
+| small | 0.5 to 1.0 deg | 1.0 to 2.0 deg | donut plus a chevron ("slightly") | `(X)`, a little |
+| medium | 1.0 to 1.5 deg | 2.0 to 3.0 deg | chevron alone ("fast", "slow") | `X`, moderate |
+| large | 1.5 deg and above | 3.0 deg and above | more than 2.0 deg outside the on-speed band (`aoa_large_error_deg`) | `_X_`, gross |
+
+Zones by distance to the landing point: START from groove entry to 926 m, MIDDLE to 463 m, IN CLOSE
+to 150 m, RAMP the last 150 m. The correction verdict looks at what happened after the peak: good
+(durable improvement within the zone's deadline, 3.0 s at the start down to 0.75 s at the ramp, and
+back inside the band), average (real but late or incomplete improvement, or a series that ended at
+touchdown before anything could be seen), poor (no improvement, worsening after an improvement, or
+two or more reversals larger than the swing threshold: 0.3 deg for glideslope and lineup, 1.0 deg
+for AoA under `CONVENTION`, because the computed AoA carries about 0.8 deg of spread). An AoA
+episode shorter than one second is written to the report but does not grade.
+
+Two scoring models exist behind `CatobarGradingPolicy` (`src/grading.rs`):
+
+- **Weighted ladder** (`BASELINE`, `PROTOTYPE`): effective severity = corrected level (size, minus
+  one for good, plus one for poor) times the zone weight (1.0 / 1.2 / 1.5 / 2.0). The pass grade
+  is `OK` below 1.5, `(OK)` below 3.0, `--` otherwise, from the worst episode.
+- **Convention table** (`CONVENTION`, the production default since 15 September 2026): the grade
+  band of each episode is read from the written LSO convention (NAVAIR 00-80T-104 grade
+  definitions, LSO NATOPS shorthand), on the same scale:
+
+  | Deviation | Correction | START, MIDDLE | IN CLOSE, RAMP |
+  |---|---|---|---|
+  | a little | good | `OK` | `OK` |
+  | a little | average | `OK` | `(OK)` |
+  | a little | poor | `(OK)` | `(OK)` |
+  | moderate | good | `OK` | `(OK)` |
+  | moderate | average | `(OK)` | `(OK)` |
+  | moderate | poor | `--` | `--` |
+  | gross | good | `(OK)` | `--` |
+  | gross | average or poor | `--` | `--` |
+
+  "Good" in this table also requires that the axis came back inside its band; a gross excursion
+  reduced to a moderate one and held there is an average correction. The three cells where the
+  weighted ladder disagreed with the convention were: moderate with average correction in close or
+  at the ramp (ladder `--`, convention `(OK)`), a little with poor correction in close or at the
+  ramp (ladder `--`, convention `(OK)`), and gross with good correction at the start or middle
+  (ladder `(OK)`, convention `--` unless back in the band).
+
+`lso grade-ab <reports>` prints both models and every intermediate step per recorded pass. The
+comparison on 44 recorded passes is in `docs/GRADING_CONVENTION_PROTOTYPE_2026-09-15.md`.
 
 ## Commanded hook state
 
