@@ -282,9 +282,14 @@ impl CatobarGradingPolicy {
     };
 }
 
+/// The policy every production entry point uses (`compute_pass_grade_with_reason`,
+/// `compute_catobar_assessment`, `grade_from_gates_with_reason`). Switched from `BASELINE` to
+/// `PROTOTYPE` on 14 September 2026 after the AoA calibration flight
+/// (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`, section 11); this is the single place to flip it
+/// back.
 impl Default for CatobarGradingPolicy {
     fn default() -> Self {
-        Self::BASELINE
+        Self::PROTOTYPE
     }
 }
 
@@ -557,7 +562,7 @@ pub fn compute_pass_grade_with_reason(
         trajectory,
         groove_time_secs,
         groove_entry_time,
-        &CatobarGradingPolicy::BASELINE,
+        &CatobarGradingPolicy::default(),
     )
 }
 
@@ -677,7 +682,7 @@ pub fn compute_vstol_approach_grade_points(
 /// episodes; callers without trustworthy wind-referenced AoA should pass `false`, which keeps the
 /// episodes auditable while forcing `affects_grade = false` and zero effective severity.
 pub fn compute_catobar_assessment(evidence: CatobarEvidence<'_>) -> CatobarAssessment {
-    compute_catobar_assessment_with_policy(evidence, &CatobarGradingPolicy::BASELINE)
+    compute_catobar_assessment_with_policy(evidence, &CatobarGradingPolicy::default())
 }
 
 /// `compute_catobar_assessment` under an explicit `CatobarGradingPolicy` (PROTOTYPE, see the
@@ -1311,7 +1316,7 @@ pub(crate) fn grade_from_gates_with_reason(
         trajectory,
         groove_time_secs,
         groove_entry_time,
-        &CatobarGradingPolicy::BASELINE,
+        &CatobarGradingPolicy::default(),
     )
 }
 
@@ -1928,6 +1933,11 @@ mod tests {
         // the pass, exactly as if a gate had landed on the spike. Two samples (not one) so the
         // A.1 persistence guard (see `continuous_single_frame_spike_is_not_a_false_positive`)
         // confirms this is a real excursion, not an aberrant single frame.
+        //
+        // The series ends inside the excursion, so no correction can be observed. The baseline
+        // grader adds a severity level for that ("poor correction"); the production policy
+        // (`PROTOTYPE`, `touchdown_ends_correction_assessment`) keeps the measured medium, which
+        // at the middle-zone weight is (OK).
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
         let trajectory = [
             trajectory_point(710.0, 1.2, 0.0),
@@ -1936,6 +1946,17 @@ mod tests {
         assert_eq!(grade_from_gates(&g, &[], None, None), PassGrade::Ok);
         assert_eq!(
             grade_from_gates(&g, &trajectory, None, None),
+            PassGrade::OkParentheses
+        );
+        assert_eq!(
+            grade_from_gates_with_reason_and_policy(
+                &g,
+                &trajectory,
+                None,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )
+            .0,
             PassGrade::NoGrade
         );
     }
@@ -1953,13 +1974,34 @@ mod tests {
 
     #[test]
     fn continuous_slight_lineup_excursion_is_not_missed() {
+        // A small lineup excursion in the middle zone is recorded as an episode either way. Under
+        // the production policy it stays small (1.0 x 1.2 = 1.2, still OK) because the series
+        // ending inside it is not held against the pilot; the baseline upgraded it to (OK).
         let g = gates_deg(0.1, 0.1, 0.1, 0.1, 0.1, 0.1);
         let trajectory = [
             trajectory_point(710.0, 0.0, 1.5),
             trajectory_point(700.0, 0.0, 1.5),
         ];
+        assert_eq!(grade_from_gates(&g, &trajectory, None, None), PassGrade::Ok);
+        let episodes = classify_catobar_episodes(
+            &trajectory,
+            &[],
+            None,
+            true,
+            &CatobarGradingPolicy::default(),
+        );
+        assert!(episodes
+            .iter()
+            .any(|episode| episode.axis == GradingAxis::Lineup && episode.affects_grade));
         assert_eq!(
-            grade_from_gates(&g, &trajectory, None, None),
+            grade_from_gates_with_reason_and_policy(
+                &g,
+                &trajectory,
+                None,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )
+            .0,
             PassGrade::OkParentheses
         );
     }
@@ -2216,7 +2258,9 @@ mod tests {
     fn late_window_gs_deviation_downgrades_an_otherwise_ok_grade_to_no_grade() {
         // 0.9 deg is above LATE_WINDOW_GS_DEG (0.8) but below GS_SIGNIFICANT (1.0), so amplitude
         // alone would only ever grant (OK) here. Happening at 100 m -- inside
-        // LATE_WINDOW_DISTANCE_M, with no room left to correct -- caps it at NoGrade instead.
+        // LATE_WINDOW_DISTANCE_M -- the ramp weight doubles it: (OK) with the production policy,
+        // and NoGrade under the baseline, which also added a level because the series ends
+        // before a correction could be seen (see `CatobarGradingPolicy`).
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let trajectory = [
             trajectory_point(110.0, 0.9, 0.0),
@@ -2224,6 +2268,17 @@ mod tests {
         ];
         assert_eq!(
             grade_from_gates(&g, &trajectory, None, None),
+            PassGrade::OkParentheses
+        );
+        assert_eq!(
+            grade_from_gates_with_reason_and_policy(
+                &g,
+                &trajectory,
+                None,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )
+            .0,
             PassGrade::NoGrade
         );
     }
@@ -2239,6 +2294,17 @@ mod tests {
         ];
         assert_eq!(
             grade_from_gates(&g, &trajectory, None, None),
+            PassGrade::OkParentheses
+        );
+        assert_eq!(
+            grade_from_gates_with_reason_and_policy(
+                &g,
+                &trajectory,
+                None,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )
+            .0,
             PassGrade::NoGrade
         );
     }
@@ -2249,14 +2315,24 @@ mod tests {
         // LATE_WINDOW_DISTANCE_M. This is exactly the "last moments matter more" effect A.3
         // adds: the same magnitude of error is graded differently depending on how much
         // distance is left to correct it. Two consecutive samples to satisfy the A.1
-        // persistence guard.
+        // persistence guard. Production policy: small x 1.2 = 1.2, still OK; baseline added a
+        // level for the unobservable correction and gave (OK). The ramp variant above is one
+        // grade lower under both policies.
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let trajectory = [
             trajectory_point(710.0, 0.9, 0.0),
             trajectory_point(700.0, 0.9, 0.0),
         ];
+        assert_eq!(grade_from_gates(&g, &trajectory, None, None), PassGrade::Ok);
         assert_eq!(
-            grade_from_gates(&g, &trajectory, None, None),
+            grade_from_gates_with_reason_and_policy(
+                &g,
+                &trajectory,
+                None,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )
+            .0,
             PassGrade::OkParentheses
         );
     }
@@ -2266,7 +2342,8 @@ mod tests {
         // 0.6 deg at 100 m crosses the general GS_SLIGHT_HIGH tier ((OK)) but not the stricter
         // LATE_WINDOW_GS_DEG (0.8) -- the late-window check must not fire on every deviation
         // found close to the ramp, only ones that cross its own, stricter threshold. Two
-        // consecutive samples to satisfy the A.1 persistence guard.
+        // consecutive samples to satisfy the A.1 persistence guard. Small x ramp weight 2.0 =
+        // 2.0, (OK) under the production policy; the baseline's extra level made it NoGrade.
         let g = gates_deg(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         let trajectory = [
             trajectory_point(110.0, 0.6, 0.0),
@@ -2274,6 +2351,17 @@ mod tests {
         ];
         assert_eq!(
             grade_from_gates(&g, &trajectory, None, None),
+            PassGrade::OkParentheses
+        );
+        assert_eq!(
+            grade_from_gates_with_reason_and_policy(
+                &g,
+                &trajectory,
+                None,
+                None,
+                &CatobarGradingPolicy::BASELINE
+            )
+            .0,
             PassGrade::NoGrade
         );
     }
@@ -2840,6 +2928,18 @@ mod tests {
             trajectory_point(100.0, 0.0, 1.6),
         ];
         let (grade, reason) = grade_from_gates_with_reason(&g, &trajectory, None, None);
+        assert_eq!(grade, PassGrade::OkParentheses);
+        assert_eq!(
+            reason,
+            "(OK): lineup léger en RAMP, correction réelle après le pic, mais tardive ou incomplète."
+        );
+        let (grade, reason) = grade_from_gates_with_reason_and_policy(
+            &g,
+            &trajectory,
+            None,
+            None,
+            &CatobarGradingPolicy::BASELINE,
+        );
         assert_eq!(grade, PassGrade::NoGrade);
         assert_eq!(
             reason,
@@ -3130,7 +3230,9 @@ mod tests {
             trajectory_point_at(0.0, 1_200.0, 0.0, 0.0),
             trajectory_point_at(2.0, 1_000.0, 0.0, 0.0),
         ];
-        for (aircraft, aoa) in [("FA-18C_hornet", 7.0), ("F-14B", 10.0), ("T-45", 6.2)] {
+        // One value inside each type's "slightly fast" band (donut plus fast chevron): F/A-18C
+        // 6.9 to 7.4, F-14 9.45 to 9.95, T-45 8.0 to 8.25 (`src/data.rs`).
+        for (aircraft, aoa) in [("FA-18C_hornet", 7.0), ("F-14B", 9.9), ("T-45", 8.2)] {
             let datums = [
                 Datum {
                     time: 0.0,

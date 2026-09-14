@@ -35,8 +35,23 @@ commit, and never half of the package:
 
    `readsPerSecond` is enforced per client label. Every LSO recovery in one process shares that
    label, which is why LSO paces its own reads below the quota (see `--buffered-read-budget-per-second`
-   below). Raise the server quota and the client budget together if you ever need more than about
-   eight simultaneous recoveries.
+   below). One recording reads about 10 batches per second, so the default pair (server 20, client
+   16) is enough for a single pilot in the pattern and saturates with two: on 14 September 2026
+   every pass flown with two pilots recording came out with orange telemetry health and 20 to 113 s
+   of budget waits (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`, section 9). Size the two values
+   together at about 10 reads per second per simultaneous recording plus a 20 % margin, e.g. for
+   up to four pilots in the pattern:
+
+   ```lua
+   recoveryTelemetry.readsPerSecond = 50
+   ```
+
+   ```powershell
+   .\lso.exe run ... --buffered-read-budget-per-second 40
+   ```
+
+   Both accept values from 1 to 100. Raising them costs one extra Lua round trip per read on the
+   DCS server, which is small next to the 20 Hz capture itself.
 4. Start the DCS server and check `dcs.log` for the DCS-gRPC banner reporting `0.10.0`.
 
 What v0.10.0 contains that earlier builds lack: the `RecoveryService` buffered telemetry

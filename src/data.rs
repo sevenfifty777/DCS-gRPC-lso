@@ -170,18 +170,22 @@ static FA18C: AirplaneInfo = AirplaneInfo {
 };
 
 /// F-14 AOA rating shared by all Tomcat variants.
-/// https://www.heatblur.se/F-14Manual/cockpit.html?highlight=aoa#approach-indexer
-/// AOA degrees for Tomcat calculated by degrees=((units/1.0989) - 3.01)
-/// from units in manual based off conversation found here:
-/// https://forum.dcs.world/topic/228893-aoa-units-to-degrees-conversion/
+///
+/// Thresholds measured on the cockpit approach indexer itself (calibration flight of 14
+/// September 2026, F-14B(U), two pilots, `docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`): the
+/// flight model's own AoA (`LoGetAngleOfAttack`) at every lamp switch, 30 to 83 switches per
+/// threshold, hysteresis under 0.1 deg. Measured medians 9.47 / 9.93 / 10.82 / 11.27 deg, so the
+/// donut alone covers 9.93 to 10.82 deg (centre 10.4). The previous band (9.7 / 10.2 / 11.1 /
+/// 11.6, from the manual's units and a forum units-to-degrees formula) sat 0.3 deg too high.
+/// The LSO's own computed AoA matched the flight model within 0.1 deg (median) on all 14 passes.
 fn f14_aoa_rating(aoa: f64) -> Aoa {
-    if aoa <= 9.7 {
+    if aoa <= 9.45 {
         Aoa::Fast
-    } else if aoa <= 10.2 {
+    } else if aoa <= 9.95 {
         Aoa::SlightlyFast
-    } else if aoa < 11.1 {
+    } else if aoa < 10.8 {
         Aoa::OnSpeed
-    } else if aoa < 11.6 {
+    } else if aoa < 11.25 {
         Aoa::SlightlySlow
     } else {
         Aoa::Slow
@@ -228,9 +232,10 @@ static F14A: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
-    // See `aoa_grading_calibrated`: computed AoA reads 3-4 deg below this band on every F-14B(U)
-    // pass recorded in September 2026.
-    aoa_grading_calibrated: false,
+    // See `aoa_grading_calibrated`: band measured on the F-14B(U) cockpit indexer on 14 September
+    // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
+    // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
+    aoa_grading_calibrated: true,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -240,9 +245,10 @@ static F14B: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
-    // See `aoa_grading_calibrated`: computed AoA reads 3-4 deg below this band on every F-14B(U)
-    // pass recorded in September 2026.
-    aoa_grading_calibrated: false,
+    // See `aoa_grading_calibrated`: band measured on the F-14B(U) cockpit indexer on 14 September
+    // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
+    // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
+    aoa_grading_calibrated: true,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -252,9 +258,10 @@ static F14BU: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
-    // See `aoa_grading_calibrated`: computed AoA reads 3-4 deg below this band on every F-14B(U)
-    // pass recorded in September 2026.
-    aoa_grading_calibrated: false,
+    // See `aoa_grading_calibrated`: band measured on the F-14B(U) cockpit indexer on 14 September
+    // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
+    // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
+    aoa_grading_calibrated: true,
     aoa_rating: f14_aoa_rating,
 };
 
@@ -274,24 +281,25 @@ static T45: AirplaneInfo = AirplaneInfo {
     // Same draw-argument index as the F/A-18C (25), confirmed by the user. Polarity likewise
     // assumed, not independently confirmed for the T-45 -- see `hook_draw_argument`.
     hook_draw_argument: Some(25),
-    // See `aoa_grading_calibrated`: the "degrees = UNITS_AOA - 10" mapping below is a commented
-    // reference in the module, never checked against the HUD readout in flight.
-    aoa_grading_calibrated: false,
+    // See `aoa_grading_calibrated`: band measured on the VNAO T-45C cockpit indexer on 14
+    // September 2026 (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`).
+    aoa_grading_calibrated: true,
     aoa_rating: |aoa: f64| -> Aoa {
-        // Thresholds derived from VNAO T-45 v1.0.2 DEU (DisplayElectronicsUnit.lua).
-        // The cockpit AOA indexer uses UNITS_AOA (set by the EFM DLL). A commented reference
-        // in the DEU (`getAngleOfAttack()*degrees_per_radian + 10`) implies the mapping
-        // degrees ≈ UNITS_AOA - 10. Indexer thresholds in UNITS → degrees:
-        //   Fast  (chevron "^"):  UNITS <= 16.5  → degrees <= 6.5
-        //   OnSpd (circle  "O"):  16 <= UNITS <= 18  → 6.0–8.0° (centre 7.0°)
-        //   Slow  (vee    "V"):   UNITS >= 17.5  → degrees >= 7.5
-        if aoa <= 6.0 {
+        // Thresholds measured on the cockpit indexer lamps (arguments 320/321/322) against the
+        // flight model's own AoA (`LoGetAngleOfAttack`), 72 to 88 lamp switches per threshold,
+        // hysteresis under 0.05 deg: 8.00 / 8.25 / 8.75 / 9.00 deg. The donut alone covers 8.25
+        // to 8.75 deg (centre 8.5); a chevron with the donut adds 0.25 deg on each side.
+        // The previous band (6.0 / 6.5 / 7.5 / 8.0) rested on the DEU comment "degrees =
+        // UNITS_AOA - 10", which the cockpit gauge disproves: gauge units = 6.6 + 1.23 * degrees
+        // (17 units = 8.5 deg). That band called a centred donut "slow" and a fast chevron
+        // "on speed" on every T-45 pass ever graded.
+        if aoa <= 8.0 {
             Aoa::Fast
-        } else if aoa <= 6.5 {
+        } else if aoa <= 8.25 {
             Aoa::SlightlyFast
-        } else if aoa < 7.5 {
+        } else if aoa < 8.75 {
             Aoa::OnSpeed
-        } else if aoa < 8.0 {
+        } else if aoa < 9.0 {
             Aoa::SlightlySlow
         } else {
             Aoa::Slow
@@ -566,10 +574,12 @@ pub struct AirplaneInfo {
     /// PROTOTYPE (branch `feature/ramp-aoa-grading-prototype`): whether this type's computed AoA
     /// has been checked against its own cockpit indexer, so the AoA axis may change a grade.
     /// `false` keeps AoA episodes in the report as diagnostics only, under
-    /// `CatobarGradingPolicy::aoa_requires_calibrated_type` (`src/grading.rs`). Set from the
-    /// 13 September 2026 review (docs/LIVE_SESSION_REVIEW_2026-09-13.md, F1): every F-14B(U)
-    /// pass recorded so far reads 3-4 deg below its on-speed band while DCS's own LSO called one
-    /// of them slow, and the T-45 band rests on an unverified "degrees = units - 10" mapping.
+    /// `CatobarGradingPolicy::aoa_requires_calibrated_type` (`src/grading.rs`). The T-45C and
+    /// the F-14 were calibrated on 14 September 2026 with a client-side export of the flight
+    /// model's AoA and the cockpit lamps (`tools/aoa_calibration/`,
+    /// `docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`): the computed AoA matched the flight model
+    /// within 0.1 deg (median) and the bands were rewritten from the measured lamp thresholds.
+    /// The F/A-18C keeps its documented external band until the same flight is flown for it.
     pub aoa_grading_calibrated: bool,
 }
 

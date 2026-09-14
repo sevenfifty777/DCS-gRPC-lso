@@ -4,6 +4,8 @@ Branch `feature/ramp-aoa-grading-prototype`, cut from `main` at `664fe5b` on 13 
 
 The three rules come from findings F1 to F3 of `docs/LIVE_SESSION_REVIEW_2026-09-13.md`.
 
+**Update, 14 September 2026.** The calibration flight was flown and analysed in `docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`. The computed AoA is right (within 0.1 deg of the flight model, median, on 20 passes); the T-45 band in the code was 1.75 deg too low and the F-14 band 0.3 deg too high. Both bands are now measured values in `src/data.rs` and both types are flagged calibrated, so P3 no longer removes the AoA axis for them. The tables below are kept as they were produced on 13 September, with the old bands; the re-graded columns with the measured bands are in the new document. Finding F1 of the live review (a wrong F-14 reference) is withdrawn: the pilots were fast.
+
 ---
 
 ## 1. The three candidate rules
@@ -104,4 +106,4 @@ It does not settle whether the T-45 and F-14 AoA bands are right, and it does no
 3. Keep P2 as a guard; it costs nothing and protects against the 18:20 case.
 4. Have a human LSO grade the eight passes and the fourteen fixtures blind, then compare against the P3 column with the calibrated bands. That comparison is the first real calibration of the grader.
 
-To switch production to the candidate once decided, change the default from `BASELINE` to `PROTOTYPE` in `CatobarGradingPolicy` and re-run the fixture tests; nothing else needs to move.
+To switch production to the candidate once decided, change the default from `BASELINE` to `PROTOTYPE` in `CatobarGradingPolicy` and re-run the fixture tests; nothing else needs to move. **Done on 14 September 2026**: `impl Default for CatobarGradingPolicy` returns `PROTOTYPE` and the three production wrappers use `default()`; eight tests that pinned the baseline upgrade were updated (see `docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`, section 10).

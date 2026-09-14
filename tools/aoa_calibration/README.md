@@ -36,11 +36,14 @@ Afterwards send the CSV file(s) together with the usual server folder (JSON repo
 python tools/aoa_calibration/align_aoa.py "<folder with lso_aoa_*.csv>" "<folder with LSO-*.json>" --markdown docs/AOA_CALIBRATION_<date>.md
 ```
 
-For each pass it aligns the two clocks (a small constant offset between the client and the server is searched automatically), then prints:
+For each pass it picks the CSV rows of the report's pilot (`unit_name` must equal the report's `pilot_name`; with two pilots in the same type at the same time, matching on type alone mixes their samples), aligns the two clocks (a small constant offset between the client and the server is searched automatically), then prints:
 
-- **LSO minus true AoA** over the groove: median, mean and spread. A constant value is an offset in our computation. A spread that follows bank or wind is a problem in the correction itself.
-- **True AoA by indexer state**: what the flight model read while the cockpit showed donut only, donut plus chevron, or chevron only. That is the on-speed band in the units `src/data.rs` uses, per type.
-- The band currently in the code next to the proposed one.
+- **LSO minus true AoA** over the groove: median, mean, spread, and the slope against bank. A constant value is an offset in our computation. A spread that follows bank or wind is a problem in the correction itself.
+- **What was flown**: the true AoA in the groove and the share of the groove the cockpit showed each indexer state, next to DCS's own LSO comment.
+- **Lamp switch thresholds** per type: the true AoA at every indexer lamp change over the whole flight, in both directions, which gives the band in the units `src/data.rs` uses and shows the lamp hysteresis.
+- The band currently in the code next to the measured one, how each band rates the LSO's own groove samples, and a confusion table of cockpit state against LSO rating (raw and smoothed over 0.5 s).
+
+First run on real data: `docs/AOA_CALIBRATION_2026-09-14.md` (tool output) and `docs/AOA_CALIBRATION_REVIEW_2026-09-14.md` (the analysis). Multiple CSV files in the folder are merged, one per pilot is the normal case.
 
 ## 4. Columns of the CSV
 

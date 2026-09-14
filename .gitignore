@@ -5,6 +5,7 @@
 /target
 /*.png
 /*.acmi
+*.csv
 notes*
 
 # Common OS files
@@ -42,6 +43,7 @@ coverage/
 # tests/recordings/ instead.
 /releases/
 /trap sample/
+/tools/aoa_calibration/recovery_aoa_calibration
 
 # Local launch scripts carry the Discord webhook and machine-specific paths.
 # Keep them untracked; read the webhook from the environment (see

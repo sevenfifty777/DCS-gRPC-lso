@@ -6635,8 +6635,10 @@ mod tests {
             },
         ];
 
+        // A 1.5 deg medium in the middle zone (weight 1.2) is (OK) under the production policy;
+        // the baseline added a level because the series ends inside the excursion.
         let result = track.finish();
-        assert_eq!(result.pass_grade, PassGrade::NoGrade);
+        assert_eq!(result.pass_grade, PassGrade::OkParentheses);
         assert_eq!(result.trajectory_deviations.len(), 2);
     }
 
