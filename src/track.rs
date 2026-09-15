@@ -328,6 +328,20 @@ const POST_ARREST_EVIDENCE_WINDOW_S: f64 = 10.0;
 /// `WireEstimateEvidence::reason` when the estimate came from the hook transient; the only reason
 /// that also counts as arrest evidence (`arrest_evidence == "hook_transient"`).
 const HOOK_TRANSIENT_ESTIMATE_REASON: &str = "hook_deflection_correlated_with_wire_crossing";
+/// `WireEstimateEvidence::reason` when the wire was named from where the aircraft came to rest
+/// (`Track::wire_estimate_from_stop_position`).
+const STOP_POSITION_ESTIMATE_REASON: &str = "stop_position_run_out";
+/// `WireEstimateEvidence::reason` on a pass flown with the hook up: the crossing sequence says
+/// which wire the hook would have caught, useful feedback on an intentional bolter, but nothing
+/// was caught and the number must never read as an arrestment.
+const HYPOTHETICAL_HOOK_UP_REASON: &str = "hypothetical_hook_up_plane_crossing";
+/// Largest distance between `stop position + run-out` and the nearest recorded hook-plane
+/// crossing for the stop-position estimate to name that wire: half the 12 m pendant spacing.
+/// The residual was 0 to 2 m on the eight Tomcat traps it was calibrated on.
+const WIRE_STOP_POSITION_MAX_RESIDUAL_M: f64 = 6.0;
+/// How far from a crossing's timestamp the aircraft position sample may be to give that
+/// crossing its `x`.
+const WIRE_CROSSING_POSITION_TOLERANCE_S: f64 = 0.3;
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Datum {
@@ -1738,6 +1752,14 @@ impl Grading {
             // Intentional bolters are valid only for arrested recoveries. Keep the
             // V/STOL fallback defensive in case an invalid grading reaches this layer.
             (true, Self::TouchAndGo { .. }) => "Waveoff/Go-around".to_string(),
+            // An intentional bolter still tells the pilot which wire the hook would have caught;
+            // the wording keeps it apart from an arrestment.
+            (
+                false,
+                Self::TouchAndGo {
+                    cable_estimated: Some(estimated),
+                },
+            ) => format!("T&G (CQ) — would have caught wire {estimated}"),
             (false, Self::TouchAndGo { .. }) => "T&G (CQ)".to_string(),
             (_, Self::WaveoffUnknown) => "Waveoff/Go-around — initiator unknown".to_string(),
             (true, Self::Recovered { .. }) => "Spot 7.5".to_string(),
@@ -2967,7 +2989,6 @@ impl Track {
             .or(self.deck_crossing_time)
             .or_else(|| self.datums.last().map(|datum| datum.time))
             .unwrap_or_default();
-        let wire_estimation = self.wire_estimate_at(touchdown_reference, dcs_wire.is_some());
         let deck_kinematics = if is_arrested {
             self.evaluate_deck_arrest_kinematics()
         } else {
@@ -2979,6 +3000,18 @@ impl Track {
             HookState::Unknown
         };
         self.hook_observation.interpreted_state = hook_state.as_str();
+        // The stop position names the wire only once the deck kinematics have confirmed a stop
+        // inside the run-out band; a hook-up pass gets the hypothetical estimate instead.
+        let stop_x = deck_kinematics
+            .confirmed
+            .then_some(deck_kinematics.x_at_slow_m)
+            .flatten();
+        let wire_estimation = self.wire_estimate_with(
+            touchdown_reference,
+            dcs_wire.is_some(),
+            stop_x,
+            hook_state == HookState::Up,
+        );
         let arrest_confirmation = self.arrest_confirmation_evidence_with(
             dcs_wire,
             wire_estimation.reason == HOOK_TRANSIENT_ESTIMATE_REASON,
@@ -3862,13 +3895,98 @@ impl Track {
         self.previous_horizontal_speed = Some((speed, plane.time));
     }
 
+    /// Aircraft `x` (landing-area frame of `Datum::x`) at `time`, from the nearest position
+    /// sample within `WIRE_CROSSING_POSITION_TOLERANCE_S`.
+    fn aircraft_x_at(&self, time: f64) -> Option<f64> {
+        self.datums
+            .iter()
+            .filter(|datum| (datum.time - time).abs() <= WIRE_CROSSING_POSITION_TOLERANCE_S)
+            .min_by(|left, right| {
+                (left.time - time)
+                    .abs()
+                    .total_cmp(&(right.time - time).abs())
+            })
+            .map(|datum| datum.x)
+    }
+
+    /// Which wire was caught, from where the aircraft came to rest. The arresting gear's run-out
+    /// past the engaged wire is a constant of the type (`AirplaneInfo::arresting_run_out_m`, 85
+    /// to 89 m on seven Tomcat traps at entry speeds from 53 to 76 m/s), so `stop_x + run_out`
+    /// is the engaged wire's position, matched against the recorded hook-plane crossings (the
+    /// aircraft's `x` at each crossing time). The crossing sequence alone cannot name the wire
+    /// on a trap without a landing mark: the deceleration onset is detected 53 to 59 m past the
+    /// wire, later than the 0.6 s the hook takes to sweep all four planes, so the onset-anchored
+    /// pick below always returned the 1-wire (15 September 2026, 19:17: a 2-wire, wheels down
+    /// beyond the 4-wire; `docs/RECOVERY_REVIEW_2026-09-15.md`, section 6).
+    fn wire_estimate_from_stop_position(&self, stop_x: f64) -> Option<WireEstimateEvidence> {
+        let run_out = self.plane_info.arresting_run_out_m?;
+        let engaged_x = stop_x + run_out;
+        let (crossing, residual) = self
+            .wire_crossings
+            .iter()
+            .filter_map(|crossing| {
+                let x = self.aircraft_x_at(crossing.timestamp_dcs)?;
+                Some((crossing, (x - engaged_x).abs()))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))?;
+        if residual > WIRE_STOP_POSITION_MAX_RESIDUAL_M {
+            tracing::debug!(
+                stop_x,
+                run_out,
+                engaged_x,
+                nearest_wire = crossing.wire,
+                residual_m = residual,
+                "wire estimate: stop position matches no recorded crossing"
+            );
+            return None;
+        }
+        tracing::debug!(
+            wire = crossing.wire,
+            stop_x,
+            run_out,
+            residual_m = residual,
+            "wire estimate from stop position"
+        );
+        Some(WireEstimateEvidence {
+            wire: Some(crossing.wire),
+            confidence: "medium",
+            reason: STOP_POSITION_ESTIMATE_REASON,
+            hook_deflection_time_dcs: None,
+            hook_recovered_time_dcs: None,
+            correlation_lag_ms: None,
+            crossings: self.wire_crossings.clone(),
+            arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
+        })
+    }
+
+    #[cfg(test)]
     fn wire_estimate_at(&self, event_time: f64, arrest_confirmed: bool) -> WireEstimateEvidence {
+        self.wire_estimate_with(event_time, arrest_confirmed, None, false)
+    }
+
+    /// The wire estimate at `event_time`. `stop_x` is where the aircraft came to rest on a
+    /// confirmed arrestment (`DeckArrestKinematicsEvidence::x_at_slow_m`), `hook_up` whether the
+    /// pass was flown with the hook up, in which case the estimate is the wire the hook would
+    /// have caught and is labelled `HYPOTHETICAL_HOOK_UP_REASON`.
+    fn wire_estimate_with(
+        &self,
+        event_time: f64,
+        arrest_confirmed: bool,
+        stop_x: Option<f64>,
+        hook_up: bool,
+    ) -> WireEstimateEvidence {
         // A completed hook transient is the strongest independent evidence of which wire was
-        // caught (validated on the 2026-09 live corpus); the deceleration-onset / last-crossing
-        // selection below is the fallback when the hook timeline does not contain one (no hook
-        // sampler, batch-delayed hook timestamps, or simply no arrest).
+        // caught (validated on the 2026-09 live corpus); then the stop position on a confirmed
+        // arrestment; the deceleration-onset / last-crossing selection below is the fallback
+        // when neither exists (no hook sampler, batch-delayed hook timestamps, or simply no
+        // arrest).
         if let Some(estimate) = self.wire_estimate_from_hook_transient(event_time) {
             return estimate;
+        }
+        if !hook_up {
+            if let Some(estimate) = stop_x.and_then(|x| self.wire_estimate_from_stop_position(x)) {
+                return estimate;
+            }
         }
         let mut eligible = self
             .wire_crossings
@@ -3969,7 +4087,11 @@ impl Track {
         WireEstimateEvidence {
             wire: Some(selected.wire),
             confidence,
-            reason: "continuous_hook_plane_crossing",
+            reason: if hook_up {
+                HYPOTHETICAL_HOOK_UP_REASON
+            } else {
+                "continuous_hook_plane_crossing"
+            },
             hook_deflection_time_dcs: None,
             hook_recovered_time_dcs: None,
             correlation_lag_ms: None,
@@ -7711,6 +7833,91 @@ mod tests {
         );
     }
 
+    /// A Tomcat with the four hook-plane crossings of a real pass (aircraft `x` +14, +3, -10,
+    /// -22 m at the wires, 0.2 s apart) and no hook transient.
+    fn tomcat_with_four_crossings() -> Track {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("F-14B(U)").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        for (wire, x) in [(1u8, 14.0), (2, 3.0), (3, -10.0), (4, -22.0)] {
+            let timestamp_dcs = 10.0 + f64::from(wire) * 0.2;
+            track.wire_crossings.push(WireCrossingEvidence {
+                wire,
+                timestamp_dcs,
+                bracket_gap_ms: 50.0,
+                method: "finite_hook_plane_crossing",
+            });
+            track.datums.push(Datum {
+                time: timestamp_dcs,
+                x,
+                ..Datum::default()
+            });
+        }
+        track
+    }
+
+    #[test]
+    fn stop_position_names_the_wire_the_run_out_points_at() {
+        // 15 September 2026, 19:17: no landing mark, stopped at x = -85.2 m. The Tomcat's
+        // run-out is 87 m, so the engaged wire sat at about +2 m: the 2-wire (+3 m). The
+        // onset-anchored crossing pick would have said 1.
+        let track = tomcat_with_four_crossings();
+        let estimate = track.wire_estimate_with(11.0, false, Some(-85.2), false);
+        assert_eq!(estimate.wire, Some(2));
+        assert_eq!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+        assert_eq!(estimate.confidence, "medium");
+        // A 4-wire stops 26 m further down the deck.
+        assert_eq!(
+            track
+                .wire_estimate_with(11.0, false, Some(-111.5), false)
+                .wire,
+            Some(4)
+        );
+        // A stop that matches no crossing within half a pendant spacing names nothing from the
+        // stop position and falls back to the crossing selection.
+        let unmatched = track.wire_estimate_with(11.0, false, Some(-60.0), false);
+        assert_ne!(unmatched.reason, STOP_POSITION_ESTIMATE_REASON);
+    }
+
+    #[test]
+    fn stop_position_is_ignored_for_a_type_without_a_measured_run_out() {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("T-45").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        track.wire_crossings.push(WireCrossingEvidence {
+            wire: 3,
+            timestamp_dcs: 10.0,
+            bracket_gap_ms: 50.0,
+            method: "finite_hook_plane_crossing",
+        });
+        track.datums.push(Datum {
+            time: 10.0,
+            x: -10.0,
+            ..Datum::default()
+        });
+        let estimate = track.wire_estimate_with(10.1, false, Some(-66.0), false);
+        assert_ne!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+    }
+
+    #[test]
+    fn hook_up_pass_gets_a_hypothetical_wire_never_a_stop_position_one() {
+        // Same crossings, hook up: the stop position is not consulted (nothing was caught) and
+        // the crossing-based estimate is labelled as the wire the hook would have caught.
+        let track = tomcat_with_four_crossings();
+        let estimate = track.wire_estimate_with(10.9, false, Some(-85.2), true);
+        assert_eq!(estimate.reason, HYPOTHETICAL_HOOK_UP_REASON);
+        assert!(estimate.wire.is_some());
+        assert_eq!(estimate.confidence, "medium");
+        let outcome = Grading::TouchAndGo {
+            cable_estimated: estimate.wire,
+        }
+        .pilot_facing_outcome(false);
+        assert!(
+            outcome.starts_with("T&G (CQ) — would have caught wire "),
+            "{outcome}"
+        );
+    }
+
     #[test]
     fn wire_estimate_prefers_the_crossing_at_deceleration_onset_over_a_later_stretch_crossing() {
         // Regression for the confirmed live bias: cable stretch can carry the hook
@@ -8588,6 +8795,7 @@ mod tests {
         // not on the readings themselves.
         static UNCALIBRATED: AirplaneInfo = AirplaneInfo {
             name: "Future Type",
+            arresting_run_out_m: None,
             hook: DVec3 {
                 x: 0.0,
                 y: 0.0,

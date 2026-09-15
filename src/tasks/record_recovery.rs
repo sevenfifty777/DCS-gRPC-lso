@@ -426,6 +426,12 @@ fn recovery_outcome(grading: &Grading, is_vstol: bool) -> String {
         // Intentional bolters are valid only for arrested recoveries. Keep the
         // V/STOL fallback defensive in case an invalid grading reaches this layer.
         (true, Grading::TouchAndGo { .. }) => "Waveoff/Go-around".to_string(),
+        (
+            false,
+            Grading::TouchAndGo {
+                cable_estimated: Some(estimated),
+            },
+        ) => format!("T&G (CQ) — would have caught wire {estimated}"),
         (false, Grading::TouchAndGo { .. }) => "T&G (CQ)".to_string(),
         (_, Grading::WaveoffUnknown) => "Waveoff/Go-around — initiator unknown".to_string(),
         (true, Grading::Recovered { .. }) => "Spot 7.5".to_string(),
@@ -1420,6 +1426,10 @@ pub async fn record_recovery(
     let wire_primary = match (wire_dcs, wire_estimated) {
         (Some(dcs), Some(estimated)) if dcs == estimated => "agreement",
         (Some(_), _) => "dcs_lqm",
+        // A hook-up pass: the wire the hook would have caught, never an arrestment.
+        (None, Some(_)) if matches!(track.grading, Grading::TouchAndGo { .. }) => {
+            "rust_hypothetical"
+        }
         (None, Some(_)) => "rust_estimated",
         (None, None) => "none",
     };
@@ -2365,8 +2375,20 @@ mod tests {
             cable_estimated: Some(3),
         };
 
-        assert_eq!(recovery_outcome(&grading, false), "T&G (CQ)");
+        assert_eq!(
+            recovery_outcome(&grading, false),
+            "T&G (CQ) — would have caught wire 3"
+        );
         assert_eq!(recovery_outcome(&grading, true), "Waveoff/Go-around");
+        assert_eq!(
+            recovery_outcome(
+                &Grading::TouchAndGo {
+                    cable_estimated: None
+                },
+                false
+            ),
+            "T&G (CQ)"
+        );
     }
 
     #[test]

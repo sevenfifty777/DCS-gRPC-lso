@@ -153,6 +153,10 @@ static FA18C: AirplaneInfo = AirplaneInfo {
     // Documented external band, no live contradiction observed so far (no Hornet pass in the
     // September 2026 corpus); left grading until the same cockpit check is flown for it.
     aoa_grading_calibrated: true,
+    // Not constant across recordings: 89 m on the 14 September 2026 3-wire trap, 60 m on the
+    // `wire_4_01_FA18C` fixture. The stop position cannot name the Hornet's wire until the
+    // reason for the difference (carrier, DCS build, weight) is known.
+    arresting_run_out_m: None,
     aoa_rating: |aoa: f64| -> Aoa {
         // https://forums.vrsimulations.com/support/index.php/Navigation_Tutorial_Flight#Angle_of_Attack_Bracket
         if aoa <= 6.9 {
@@ -236,6 +240,11 @@ static F14A: AirplaneInfo = AirplaneInfo {
     // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
     // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
     aoa_grading_calibrated: true,
+    // Seven F-14B(U) traps with a DCS wire on 14 and 15 September 2026 (85 to 89 m past the
+    // wire, 1-, 2- and 4-wires, entry speeds 53 to 76 m/s) and the three 2 and 3 September
+    // fixtures (`f14bu_hookdown_wire1/2/4`, residual 0.2 to 3.9 m): ten of ten. The A and B
+    // share the airframe mass class.
+    arresting_run_out_m: Some(87.0),
     aoa_rating: f14_aoa_rating,
 };
 
@@ -249,6 +258,11 @@ static F14B: AirplaneInfo = AirplaneInfo {
     // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
     // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
     aoa_grading_calibrated: true,
+    // Seven F-14B(U) traps with a DCS wire on 14 and 15 September 2026 (85 to 89 m past the
+    // wire, 1-, 2- and 4-wires, entry speeds 53 to 76 m/s) and the three 2 and 3 September
+    // fixtures (`f14bu_hookdown_wire1/2/4`, residual 0.2 to 3.9 m): ten of ten. The A and B
+    // share the airframe mass class.
+    arresting_run_out_m: Some(87.0),
     aoa_rating: f14_aoa_rating,
 };
 
@@ -262,6 +276,11 @@ static F14BU: AirplaneInfo = AirplaneInfo {
     // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
     // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
     aoa_grading_calibrated: true,
+    // Seven F-14B(U) traps with a DCS wire on 14 and 15 September 2026 (85 to 89 m past the
+    // wire, 1-, 2- and 4-wires, entry speeds 53 to 76 m/s) and the three 2 and 3 September
+    // fixtures (`f14bu_hookdown_wire1/2/4`, residual 0.2 to 3.9 m): ten of ten. The A and B
+    // share the airframe mass class.
+    arresting_run_out_m: Some(87.0),
     aoa_rating: f14_aoa_rating,
 };
 
@@ -284,6 +303,10 @@ static T45: AirplaneInfo = AirplaneInfo {
     // See `aoa_grading_calibrated`: band measured on the VNAO T-45C cockpit indexer on 14
     // September 2026 (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`).
     aoa_grading_calibrated: true,
+    // Not constant enough: 52 to 61 m past the wire on the four traps of 14 and 15 September
+    // 2026, 49 m on the 2 and 3 September fixtures (`t45_hookdown_wire3`, `wire4`), a spread of
+    // one pendant spacing. The stop position cannot name the Goshawk's wire.
+    arresting_run_out_m: None,
     aoa_rating: |aoa: f64| -> Aoa {
         // Thresholds measured on the cockpit indexer lamps (arguments 320/321/322) against the
         // flight model's own AoA (`LoGetAngleOfAttack`), 72 to 88 lamp switches per threshold,
@@ -331,6 +354,7 @@ static AV8B: AirplaneInfo = AirplaneInfo {
     hook_draw_argument: None,
     // V/STOL AoA never grades (see `compute_vstol_approach_grade_points`); the flag is moot.
     aoa_grading_calibrated: false,
+    arresting_run_out_m: None,
     // AV-8B target approach AOA: 10-12 degrees.  This rating is used only
     // for the trace colour / AOA indication; it does NOT change the V/STOL
     // approach grade, which remains based on GS + LU at the three gates.
@@ -581,6 +605,13 @@ pub struct AirplaneInfo {
     /// within 0.1 deg (median) and the bands were rewritten from the measured lamp thresholds.
     /// The F/A-18C keeps its documented external band until the same flight is flown for it.
     pub aoa_grading_calibrated: bool,
+    /// Arresting-gear run-out in DCS for this type: how far past the engaged wire the aircraft
+    /// comes to rest (metres along the landing area, in the frame of `Datum::x`). PROJECT-DERIVED
+    /// from the traps with a DCS landing mark of 14 and 15 September 2026, where it did not vary
+    /// with the entry speed (`docs/RECOVERY_REVIEW_2026-09-15.md`, section 6). Lets
+    /// `Track::wire_estimate_from_stop_position` name the wire on an arrestment that DCS did not
+    /// mark, from where the aircraft stopped. `None` for a type with no measured value.
+    pub arresting_run_out_m: Option<f64>,
 }
 
 impl PartialEq for AirplaneInfo {

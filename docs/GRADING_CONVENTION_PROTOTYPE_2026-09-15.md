@@ -4,6 +4,8 @@ Branch `feature/ramp-aoa-grading-prototype`, 15 September 2026. Follow-up to `do
 
 **Decision, 15 September 2026:** `CatobarGradingPolicy::CONVENTION` is the production default on this branch (`impl Default` in `src/grading.rs`). The tables below were produced before the switch and still label it "the candidate"; `PROTOTYPE` is the previous default and stays available as the P3 column of `grade-ab`.
 
+**Update, evening of 15 September 2026:** the first recovery flown under `CONVENTION` exposed a bug in the AoA axis: readings 2 to 3 degrees outside the band were dropped from the series before grading, so the gross tier (P5) only ever fired beyond about 3 degrees. With the fix, four rows of the tables below change (14 September 19:00, 19:38 Justice and 19:41, 13 September 18:26: `(OK)` to `--`). The corrected tables and the analysis of the new recovery are in `docs/RECOVERY_REVIEW_2026-09-15.md`.
+
 ---
 
 ## 1. In plain language

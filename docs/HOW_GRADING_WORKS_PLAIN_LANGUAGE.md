@@ -190,13 +190,17 @@ Pass 8 on 13 September is the case the whole design exists for: DCS sent a `land
 
 **When DCS gives nothing**, the estimate is used and the chart says "Wire #1 (Rust estimate)". The database `wire` column holds the DCS number when there is one, otherwise the estimate.
 
-The estimate is built from two pieces of evidence.
+**When the hook was up** (an intentional bolter or a touch-and-go), nothing was caught, but the same crossings say which wire the hook would have caught, and that is worth telling the pilot. The outcome then reads "T&G (CQ) — would have caught wire 2", the report's `wire_estimation.reason` is `hypothetical_hook_up_plane_crossing` and `wire_primary` is `rust_hypothetical`, so the number can never be mistaken for an arrestment.
+
+The estimate is built from three pieces of evidence, tried in this order.
 
 **Wire crossings.** Each wire is modelled as a line between its two deck anchor points, taken from the carrier's 3D model. At every sample the program checks whether the hook point moved from behind a wire's line to in front of it, while being between the two anchors and within 3 metres of the wire's height. The moment of crossing is interpolated between the two samples. On 13 September the four crossings of each trap spanned 0.6 to 0.8 seconds, about one wire every 200 to 250 milliseconds.
 
 **Method A, the hook transient.** The program looks for: the hook reading 0.8 or more for at least 0.2 seconds, then 0.7 or less on the very next sample, within 2 seconds of the touchdown reference, then back to 0.8 or more within 8 seconds. The wire is the last crossing that happened between 0 and 200 milliseconds before that deflection sample. Any sample gap in this search longer than 300 milliseconds disqualifies the pair.
 
-**Method B, the deceleration fallback**, used when method A finds nothing. The program watches the aircraft's horizontal speed and marks the "deceleration onset" as the first of two consecutive samples slowing at 5 m/s² or more. The touchdown event must fall between 0 and 300 milliseconds after that onset; otherwise no wire is named. The wire is then the earliest crossing that happened no more than 1.2 seconds before the onset.
+**Method B, the stop position**, used when method A finds nothing and the deck kinematics have confirmed a stop. The arresting gear's run-out is a constant of the aircraft type in DCS: a Tomcat comes to rest 85 to 89 metres past the wire it caught, whatever its entry speed (ten of ten traps across the 2, 3, 14 and 15 September 2026 recordings). So the stop position plus 87 metres is the wire's position, matched against the recorded crossings; if no crossing sits within 6 metres of it, method B names nothing. The T-45C (49 to 61 metres between recordings) and the F/A-18C (60 and 89 metres) do not have a usable constant yet and skip this method. Added on 15 September 2026 after a Tomcat trap with no landing mark was named "wire 1" by method C when it was a 2-wire caught in the air (`docs/RECOVERY_REVIEW_2026-09-15.md`, section 6).
+
+**Method C, the deceleration fallback**, used when neither A nor B names a wire, and on every hook-up pass. The program watches the aircraft's horizontal speed and marks the "deceleration onset" as the first of two consecutive samples slowing at 5 m/s² or more. The touchdown event must fall between 0 and 300 milliseconds after that onset; otherwise no wire is named. The wire is then the earliest crossing that happened no more than 1.2 seconds before the onset. On a trap this tends to answer "1-wire" whatever was caught, because the onset is detected about 55 metres past the wire, later than the hook takes to sweep all four planes; that is why method B sits before it.
 
 **Confidence labels.** "High" requires a DCS-confirmed trap plus tight sample brackets; otherwise "medium"; "insufficient" when no wire could be named, with a reason string in the report.
 

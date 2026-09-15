@@ -6,6 +6,31 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ## Unreleased
 
+### Fixed
+
+- AoA readings 2 to 3 degrees outside the on-speed band were dropped from the graded series:
+  the distance-to-band search stepped geometrically and gave up when it overshot the band, so
+  on the F-14 every reading between 6.8 and 7.95 deg and between 12.8 and 13.95 deg (on the
+  T-45C between 4.75 and 6.25 and between 6.75 and 7.25) never reached the grader, and the gross
+  AoA tier of `CONVENTION` only fired beyond about 3 degrees. Fixed-step search
+  (`normalized_aoa_error`, `src/grading.rs`); `docs/RECOVERY_REVIEW_2026-09-15.md`, section 4.
+
+### Changed
+
+- `CatobarGradingPolicy::CONVENTION` gains three rules (`src/grading.rs`,
+  `docs/GRADING_REFERENCE.md`): gross AoA needs one second of gross readings before an episode
+  is gross; the graded series end at the physical touchdown (sink rate collapsed on the deck)
+  instead of at the DCS touchdown event; inside 100 m of the landing point glideslope and lineup
+  deviations are sized in height, not angle. `lso grade-ab` shows them as steps P7 to P9. On the
+  53 recorded passes: five touchdown artifacts return from `--` to `(OK)`, one pass reaches `OK`.
+- Wire estimate without a DCS landing mark (`src/track.rs`, `src/data.rs`): on a confirmed
+  arrestment the wire is taken from where the aircraft came to rest (`stop position + run-out`,
+  `AirplaneInfo::arresting_run_out_m`, 87 m for the F-14 on ten of ten traps; the T-45C and the
+  F/A-18C run-outs vary between recordings and stay unset), reason `stop_position_run_out`. On a
+  hook-up pass the crossing-based estimate is kept as the wire the hook would have caught,
+  reason `hypothetical_hook_up_plane_crossing`, `wire_primary` `rust_hypothetical`, and the
+  outcome reads "T&G (CQ) — would have caught wire N".
+
 ## [0.5.0] - 2026-09-13
 
 ### Fixed

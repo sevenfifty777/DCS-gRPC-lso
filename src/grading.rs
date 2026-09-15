@@ -284,6 +284,31 @@ pub struct CatobarGradingPolicy {
     /// against the flight model (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`, section 3), so at
     /// 0.3 the detector reads measurement noise as overcontrol on nearly every long AoA episode.
     pub aoa_oscillation_min_swing_deg: f64,
+    /// Minimum span (seconds) of consecutive gross (`Large`) AoA samples before an AoA episode
+    /// may be rated gross; a shorter gross run is demoted to moderate (`Medium`) sample by
+    /// sample, so the episode keeps its length and its peak. `0.0` disables the rule. Without
+    /// it one gross sample inside a three-second moderate episode makes the whole episode
+    /// gross, and gross at the ramp is `--` in every cell of the convention table: on the 15
+    /// September 2026 recovery five passes were decided that way by 0.1 to 0.9 s of gross
+    /// readings, four of them taken as the nose dropped onto the deck
+    /// (`docs/RECOVERY_REVIEW_2026-09-15.md`, section 5). In the cockpit the rule is the fast or
+    /// slow chevron alone, 2 degrees past the donut edge, held for a full second.
+    pub aoa_large_min_duration_s: f64,
+    /// End the glideslope, lineup and AoA series at the physical touchdown
+    /// (`physical_touchdown_time`: sink rate collapsed with the aircraft on the deck, inside the
+    /// ramp zone) instead of at the last trajectory sample before the DCS touchdown event, which
+    /// arrives 0.6 to 0.9 s after the wheels. The samples in between are rollout: the flight
+    /// model's AoA collapses as the nose comes down and the glideslope angle is measured from a
+    /// few metres. Passes that were still flying at the landing reference are unaffected.
+    pub series_ends_at_physical_touchdown: bool,
+    /// Inside this distance to the landing point (metres), a glideslope or lineup deviation is
+    /// sized as the angle the same height or lateral error would make at this distance, so that
+    /// the angle stops growing as the distance shrinks (a foot of height is ten degrees at 5 m).
+    /// At 100 m the existing thresholds become 0.87 m (small), 1.75 m (moderate) and 4.4 m
+    /// (gross) of height, and 1.75 / 3.5 / 5.2 m of lineup. `0.0` disables the scaling. Without
+    /// it no pass could reach `OK` through the ramp: 19:43 on 15 September 2026 missed it on
+    /// 0.86 degrees at 5 m, which is 7 cm.
+    pub near_deck_reference_distance_m: f64,
 }
 
 impl CatobarGradingPolicy {
@@ -294,6 +319,9 @@ impl CatobarGradingPolicy {
         lso_convention_table: false,
         aoa_large_error_deg: 0.0,
         aoa_oscillation_min_swing_deg: 0.0,
+        aoa_large_min_duration_s: 0.0,
+        series_ends_at_physical_touchdown: false,
+        near_deck_reference_distance_m: 0.0,
     };
     pub const PROTOTYPE: Self = Self {
         touchdown_ends_correction_assessment: true,
@@ -302,11 +330,16 @@ impl CatobarGradingPolicy {
         lso_convention_table: false,
         aoa_large_error_deg: 0.0,
         aoa_oscillation_min_swing_deg: 0.0,
+        aoa_large_min_duration_s: 0.0,
+        series_ends_at_physical_touchdown: false,
+        near_deck_reference_distance_m: 0.0,
     };
     /// `PROTOTYPE` plus the LSO convention table, the gross-AoA tier at 2 degrees outside the
     /// band (PROJECT-DERIVED: about two indexer units on the F-14, two and a half on the T-45,
     /// roughly 10 to 15 knots off speed on either) and an AoA oscillation swing of 1 degree,
-    /// just above the measured noise band.
+    /// just above the measured noise band. Since 15 September 2026 (evening) also: the gross
+    /// tier needs one second of gross readings, the series end at the physical touchdown, and
+    /// the last 100 m are judged in height (`docs/RECOVERY_REVIEW_2026-09-15.md`, section 12).
     pub const CONVENTION: Self = Self {
         touchdown_ends_correction_assessment: true,
         aoa_min_episode_duration_s: 1.0,
@@ -314,6 +347,9 @@ impl CatobarGradingPolicy {
         lso_convention_table: true,
         aoa_large_error_deg: 2.0,
         aoa_oscillation_min_swing_deg: 1.0,
+        aoa_large_min_duration_s: 1.0,
+        series_ends_at_physical_touchdown: true,
+        near_deck_reference_distance_m: 100.0,
     };
 }
 
@@ -1021,17 +1057,25 @@ fn normalized_aoa_error(plane: &AirplaneInfo, aoa: f64) -> Option<f64> {
         Aoa::Slow | Aoa::SlightlySlow => -1.0,
         Aoa::OnSpeed => unreachable!(),
     };
+    // Walk toward the band in fixed steps, then bisect onto its edge. The step must be smaller
+    // than the narrowest on-speed band (the T-45C's is 0.5 deg wide) so that it cannot jump over
+    // it. The previous geometric search (0.25, 0.5, 1, 2, 4 deg ...) overshot the band from
+    // about 2 to 3 deg out and returned `None`, and the caller then dropped the sample: on the
+    // F-14 every reading between 6.8 and 7.95 deg and between 12.8 and 13.95 deg, on the T-45C
+    // between 4.75 and 6.25 and between 6.75 and 7.25 deg, was invisible to the AoA axis, which
+    // is exactly the gross tier `aoa_large_error_deg` is meant to catch (found on the 15
+    // September 2026 recovery: a Tomcat at 7.2 deg at the ramp graded as a moderate 7.98).
+    const SEARCH_STEP_DEG: f64 = 0.1;
+    const SEARCH_MAX_STEPS: usize = 600;
     let mut outside = aoa;
-    let mut step = 0.25;
     let mut inside = None;
-    for _ in 0..32 {
-        let candidate = aoa + direction * step;
+    for k in 1..=SEARCH_MAX_STEPS {
+        let candidate = aoa + direction * SEARCH_STEP_DEG * k as f64;
         if (plane.aoa_rating)(candidate) == Aoa::OnSpeed {
             inside = Some(candidate);
             break;
         }
         outside = candidate;
-        step *= 2.0;
     }
     let mut inside = inside?;
     for _ in 0..48 {
@@ -1043,6 +1087,84 @@ fn normalized_aoa_error(plane: &AirplaneInfo, aoa: f64) -> Option<f64> {
         }
     }
     Some(aoa - inside)
+}
+
+/// Physical touchdown, for `CatobarGradingPolicy::series_ends_at_physical_touchdown`: the
+/// aircraft is on the deck when its reference altitude is within this height of it ...
+const PHYSICAL_TOUCHDOWN_MAX_ALT_M: f64 = 1.2;
+/// ... and its sink rate has collapsed to this value or less ...
+const PHYSICAL_TOUCHDOWN_MAX_SINK_MPS: f64 = 1.5;
+/// ... after a genuine descent: at least this sink rate within the preceding window. Sized on the
+/// 15 September 2026 traps (PROJECT-DERIVED): the sink rate goes from 3 to 6 m/s to under 1.5
+/// m/s within one 50 ms sample as the wheels touch, 1.0 to 1.4 s before the DCS `runway_touch`
+/// event, with the F-14's reference altitude reading 0.4 to 0.8 m on the deck and the T-45C's
+/// about 0.0; a pass still flying over the landing point reads 3 to 6 m/s to its last sample.
+const PHYSICAL_TOUCHDOWN_PRIOR_SINK_MPS: f64 = 2.0;
+const PHYSICAL_TOUCHDOWN_PRIOR_WINDOW_S: f64 = 1.0;
+
+/// DCS time of the first ramp-zone trajectory sample at which the aircraft is on the deck (see
+/// the `PHYSICAL_TOUCHDOWN_*` constants), or `None` when the trajectory ends in the air.
+pub fn physical_touchdown_time(trajectory: &[TrajectoryDeviation]) -> Option<f64> {
+    trajectory.iter().enumerate().find_map(|(index, sample)| {
+        let on_deck = sample.distance_m <= LATE_WINDOW_DISTANCE_M
+            && sample.alt_m <= PHYSICAL_TOUCHDOWN_MAX_ALT_M
+            && sample.sink_rate_mps <= PHYSICAL_TOUCHDOWN_MAX_SINK_MPS;
+        if !on_deck {
+            return None;
+        }
+        let was_descending = trajectory[..index]
+            .iter()
+            .rev()
+            .take_while(|earlier| {
+                sample.timestamp_dcs - earlier.timestamp_dcs <= PHYSICAL_TOUCHDOWN_PRIOR_WINDOW_S
+            })
+            .any(|earlier| earlier.sink_rate_mps >= PHYSICAL_TOUCHDOWN_PRIOR_SINK_MPS);
+        was_descending.then_some(sample.timestamp_dcs)
+    })
+}
+
+/// `CatobarGradingPolicy::aoa_large_min_duration_s`: a run of consecutive gross (`Large`)
+/// samples shorter than `min_duration_s` is demoted to moderate (`Medium`), sample by sample.
+/// The span of a run is first to last gross sample plus one sample period, so a single gross
+/// sample spans one period. Episodes are built afterwards and keep their length and peak.
+fn demote_short_gross_runs(observations: &mut [AxisObservation], min_duration_s: f64) {
+    let mut start = 0;
+    while start < observations.len() {
+        if observations[start].severity != EpisodeSeverity::Large {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end + 1 < observations.len()
+            && observations[end + 1].severity == EpisodeSeverity::Large
+        {
+            end += 1;
+        }
+        let period = if end + 1 < observations.len() {
+            observations[end + 1].time - observations[end].time
+        } else if end > start {
+            (observations[end].time - observations[start].time) / (end - start) as f64
+        } else {
+            0.0
+        };
+        let span = observations[end].time - observations[start].time + period.clamp(0.0, 0.5);
+        if span < min_duration_s {
+            for observation in &mut observations[start..=end] {
+                observation.severity = EpisodeSeverity::Medium;
+            }
+        }
+        start = end + 1;
+    }
+}
+
+/// `CatobarGradingPolicy::near_deck_reference_distance_m`: inside `reference_m` of the landing
+/// point, the angle that the same height or lateral error would make at `reference_m`.
+fn near_deck_equivalent_deg(value_deg: f64, distance_m: f64, reference_m: f64) -> f64 {
+    if reference_m <= 0.0 || distance_m >= reference_m || !value_deg.is_finite() {
+        return value_deg;
+    }
+    let offset_m = value_deg.to_radians().tan() * distance_m.max(0.0);
+    (offset_m / reference_m).atan().to_degrees()
 }
 
 fn build_axis_episodes(
@@ -1304,36 +1426,61 @@ fn classify_catobar_episodes(
     aoa_reliable: bool,
     policy: &CatobarGradingPolicy,
 ) -> Vec<GradingEpisode> {
+    // The graded series end at the physical touchdown when the policy says so; the samples
+    // between the wheels and the DCS event are rollout, not approach.
+    let trajectory = match policy
+        .series_ends_at_physical_touchdown
+        .then(|| physical_touchdown_time(trajectory))
+        .flatten()
+    {
+        Some(cut) => {
+            let end = trajectory
+                .iter()
+                .position(|sample| sample.timestamp_dcs >= cut)
+                .unwrap_or(trajectory.len());
+            &trajectory[..end]
+        }
+        None => trajectory,
+    };
+    let near_deck = |value: f64, distance_m: f64| {
+        near_deck_equivalent_deg(value, distance_m, policy.near_deck_reference_distance_m)
+    };
     let gs = trajectory
         .iter()
         .filter(|sample| sample.gs_deviation_deg.is_finite())
-        .map(|sample| AxisObservation {
-            time: sample.timestamp_dcs,
-            distance_m: sample.distance_m,
-            value: sample.gs_deviation_deg,
-            normalized_error: sample.gs_deviation_deg,
-            severity: gs_severity(sample.gs_deviation_deg),
-            classification: if sample.gs_deviation_deg >= 0.0 {
-                "high"
-            } else {
-                "low"
-            },
+        .map(|sample| {
+            let error = near_deck(sample.gs_deviation_deg, sample.distance_m);
+            AxisObservation {
+                time: sample.timestamp_dcs,
+                distance_m: sample.distance_m,
+                value: sample.gs_deviation_deg,
+                normalized_error: error,
+                severity: gs_severity(error),
+                classification: if sample.gs_deviation_deg >= 0.0 {
+                    "high"
+                } else {
+                    "low"
+                },
+            }
         })
         .collect::<Vec<_>>();
     let lineup = trajectory
         .iter()
         .filter(|sample| sample.lineup_deg.is_finite())
-        .map(|sample| AxisObservation {
-            time: sample.timestamp_dcs,
-            distance_m: sample.distance_m,
-            value: sample.lineup_deg,
-            normalized_error: sample.lineup_deg,
-            severity: lineup_severity(sample.lineup_deg),
-            classification: if sample.lineup_deg >= 0.0 {
-                "right"
-            } else {
-                "left"
-            },
+        .map(|sample| {
+            let error = near_deck(sample.lineup_deg, sample.distance_m);
+            AxisObservation {
+                time: sample.timestamp_dcs,
+                distance_m: sample.distance_m,
+                value: sample.lineup_deg,
+                normalized_error: error,
+                severity: lineup_severity(error),
+                classification: if sample.lineup_deg >= 0.0 {
+                    "right"
+                } else {
+                    "left"
+                },
+            }
         })
         .collect::<Vec<_>>();
     let mut episodes = build_axis_episodes(GradingAxis::Glideslope, &gs, true, None, policy);
@@ -1360,7 +1507,7 @@ fn classify_catobar_episodes(
         } else {
             (true, None)
         };
-        let aoa = datums
+        let mut aoa = datums
             .iter()
             .filter(|sample| {
                 sample.time >= first.timestamp_dcs
@@ -1396,6 +1543,9 @@ fn classify_catobar_episodes(
                 })
             })
             .collect::<Vec<_>>();
+        if policy.aoa_large_min_duration_s > 0.0 {
+            demote_short_gross_runs(&mut aoa, policy.aoa_large_min_duration_s);
+        }
         episodes.extend(build_axis_episodes(
             GradingAxis::Aoa,
             &aoa,
@@ -3581,6 +3731,202 @@ mod tests {
             severity_for(9.3, &CatobarGradingPolicy::CONVENTION),
             EpisodeSeverity::Medium
         );
+        // 7.2 deg is 2.75 under the band: gross. Before the fixed-step search this reading was
+        // dropped from the AoA series altogether (the geometric search overshot the band), so the
+        // episode did not exist and the ramp of the 19:17 pass of 15 September 2026 graded (OK).
+        assert_eq!(
+            severity_for(7.2, &CatobarGradingPolicy::CONVENTION),
+            EpisodeSeverity::Large
+        );
+        assert_eq!(
+            severity_for(13.2, &CatobarGradingPolicy::CONVENTION),
+            EpisodeSeverity::Large
+        );
+    }
+
+    #[test]
+    fn short_gross_aoa_run_is_demoted_to_moderate_under_the_persistence_rule() {
+        // F-14: three seconds slow at 12.0 deg (moderate) with a gross spike (13.5 deg, 2.7
+        // over the band) of the given length inside it, at 20 Hz. Under `CONVENTION` the
+        // episode is gross only when the spike lasts a full second; the episode itself keeps its
+        // length and its peak either way.
+        let trajectory = [
+            trajectory_point_at(0.0, 1_200.0, 0.0, 0.0),
+            trajectory_point_at(4.0, 900.0, 0.0, 0.0),
+        ];
+        let plane = AirplaneInfo::by_type("F-14B(U)").unwrap();
+        let episode_for = |spike_s: f64, policy: &CatobarGradingPolicy| {
+            let datums = (0..80)
+                .map(|index| {
+                    let time = f64::from(index) * 0.05;
+                    let aoa = if (1.0..1.0 + spike_s).contains(&time) {
+                        13.5
+                    } else if time < 3.0 {
+                        12.0
+                    } else {
+                        10.4
+                    };
+                    Datum {
+                        time,
+                        x: 1_200.0 - time * 75.0,
+                        aoa,
+                        ..Datum::default()
+                    }
+                })
+                .collect::<Vec<_>>();
+            classify_catobar_episodes(&trajectory, &datums, Some(plane), true, policy)
+                .into_iter()
+                .find(|episode| episode.axis == GradingAxis::Aoa)
+                .unwrap()
+        };
+        let flick = episode_for(0.3, &CatobarGradingPolicy::CONVENTION);
+        assert_eq!(flick.maximum_severity, EpisodeSeverity::Medium);
+        assert!(
+            (flick.peak_value - 13.5).abs() < 1e-9,
+            "{}",
+            flick.peak_value
+        );
+        assert!(flick.duration_s > 2.5, "{}", flick.duration_s);
+        let held = episode_for(1.5, &CatobarGradingPolicy::CONVENTION);
+        assert_eq!(held.maximum_severity, EpisodeSeverity::Large);
+        // Without the rule (P6 of `grade-ab`) the flick alone makes the episode gross.
+        let no_rule = CatobarGradingPolicy {
+            aoa_large_min_duration_s: 0.0,
+            ..CatobarGradingPolicy::CONVENTION
+        };
+        assert_eq!(
+            episode_for(0.3, &no_rule).maximum_severity,
+            EpisodeSeverity::Large
+        );
+    }
+
+    #[test]
+    fn physical_touchdown_ends_the_graded_series() {
+        // Ramp samples every 0.1 s: descending at 4 m/s to 0.3 m, then on the deck with the
+        // sink rate collapsed. The wheels are at the seventh sample; the two after it are
+        // rollout and must not be graded (a T-45's AoA collapses there, 19:03 on 15 September
+        // 2026 read "gross fast at the ramp" from 0.2 s of it).
+        let sample = |index: u32, alt_m: f64, sink_rate_mps: f64, gs: f64| TrajectoryDeviation {
+            timestamp_dcs: 10.0 + f64::from(index) * 0.1,
+            distance_m: 60.0 - f64::from(index) * 6.0,
+            gs_deviation_deg: gs,
+            lineup_deg: 0.0,
+            lineup_deviation_m: 0.0,
+            track_angle_deg: 0.0,
+            alt_m,
+            bank_deg: 0.0,
+            sink_rate_mps,
+        };
+        let trajectory = [
+            sample(0, 3.0, 4.0, 0.0),
+            sample(1, 2.6, 4.0, 0.0),
+            sample(2, 2.2, 4.0, 0.0),
+            sample(3, 1.8, 4.0, 0.0),
+            sample(4, 1.4, 4.0, 0.0),
+            sample(5, 1.0, 4.0, 0.0),
+            sample(6, 0.3, 0.5, 0.0),
+            sample(7, 0.1, -0.2, -3.0),
+            sample(8, 0.0, 0.0, -3.0),
+        ];
+        assert_eq!(physical_touchdown_time(&trajectory), Some(10.6));
+        // A pass still flying over the landing point ends in the air: no cut.
+        let airborne = trajectory[..6].to_vec();
+        assert_eq!(physical_touchdown_time(&airborne), None);
+
+        let plane = AirplaneInfo::by_type("T-45").unwrap();
+        // On-speed T-45 (8.5 deg) through the ramp, collapsing to 2.0 deg on the deck.
+        let datums = (0..9)
+            .map(|index| Datum {
+                time: 10.0 + f64::from(index) * 0.1,
+                x: 60.0 - f64::from(index) * 6.0,
+                aoa: if index >= 7 { 2.0 } else { 8.5 },
+                ..Datum::default()
+            })
+            .collect::<Vec<_>>();
+        let with_cut = classify_catobar_episodes(
+            &trajectory,
+            &datums,
+            Some(plane),
+            true,
+            &CatobarGradingPolicy::CONVENTION,
+        );
+        assert!(with_cut.is_empty(), "rollout samples graded: {with_cut:?}");
+        let without_cut = classify_catobar_episodes(
+            &trajectory,
+            &datums,
+            Some(plane),
+            true,
+            &CatobarGradingPolicy {
+                series_ends_at_physical_touchdown: false,
+                near_deck_reference_distance_m: 0.0,
+                ..CatobarGradingPolicy::CONVENTION
+            },
+        );
+        assert!(
+            without_cut
+                .iter()
+                .any(|episode| episode.axis == GradingAxis::Glideslope),
+            "{without_cut:?}"
+        );
+    }
+
+    #[test]
+    fn near_deck_deviation_is_judged_in_height_inside_the_reference_distance() {
+        // 0.86 deg at 5 m is 7 cm: nothing (19:43 on 15 September 2026 missed `OK` on it).
+        let at_5_m = near_deck_equivalent_deg(0.86, 5.0, 100.0);
+        assert!(at_5_m < 0.05, "{at_5_m}");
+        // 1.0 deg at 50 m is 0.87 m, the angle 0.5 deg makes at 100 m.
+        let at_50_m = near_deck_equivalent_deg(1.0, 50.0, 100.0);
+        assert!((at_50_m - 0.5).abs() < 0.01, "{at_50_m}");
+        // At and beyond the reference distance the angle is unchanged; disabled leaves it alone.
+        assert_eq!(near_deck_equivalent_deg(2.0, 100.0, 100.0), 2.0);
+        assert_eq!(near_deck_equivalent_deg(2.0, 400.0, 100.0), 2.0);
+        assert_eq!(near_deck_equivalent_deg(2.0, 5.0, 0.0), 2.0);
+        // Sign is kept.
+        assert!(near_deck_equivalent_deg(-1.0, 50.0, 100.0) < 0.0);
+    }
+
+    #[test]
+    fn normalized_aoa_error_reaches_the_band_from_any_reading() {
+        // Every reading between 0 and 25 deg must resolve to a signed distance to the nearest
+        // edge of the on-speed band, on every carrier type, whatever the width of its band.
+        // The old geometric search returned None from specific windows (F-14: 6.8 to 7.95 and
+        // 12.8 to 13.95 deg; T-45C: 4.75 to 6.25 and 6.75 to 7.25 deg).
+        for type_name in ["T-45", "F-14B", "F-14B(U)", "FA-18C_hornet"] {
+            let plane = AirplaneInfo::by_type(type_name).unwrap();
+            let mut aoa = 0.0;
+            while aoa <= 25.0 {
+                let error = normalized_aoa_error(plane, aoa)
+                    .unwrap_or_else(|| panic!("{type_name}: no band edge found from {aoa} deg"));
+                let rating = (plane.aoa_rating)(aoa);
+                match rating {
+                    Aoa::OnSpeed => assert_eq!(error, 0.0),
+                    Aoa::Fast | Aoa::SlightlyFast => assert!(error < 0.0, "{type_name} {aoa}"),
+                    Aoa::Slow | Aoa::SlightlySlow => assert!(error > 0.0, "{type_name} {aoa}"),
+                }
+                // The edge the error is measured from sits on the band boundary: a hair inside
+                // it is on speed (the bisection converges onto the boundary itself, so the exact
+                // edge may round to either side).
+                if rating != Aoa::OnSpeed {
+                    let edge = aoa - error;
+                    let inward = if error < 0.0 { 1e-6 } else { -1e-6 };
+                    assert_eq!(
+                        (plane.aoa_rating)(edge + inward),
+                        Aoa::OnSpeed,
+                        "{type_name} {aoa}"
+                    );
+                    assert!(error.abs() <= 25.0);
+                }
+                aoa += 0.05;
+            }
+        }
+        // The two readings behind the 15 September 2026 finding, F-14: 7.22 at the ramp is
+        // 2.73 under the 9.95 edge; 13.2 in the middle is 2.4 over the 10.8 edge.
+        let plane = AirplaneInfo::by_type("F-14B(U)").unwrap();
+        let fast = normalized_aoa_error(plane, 7.22).unwrap();
+        let slow = normalized_aoa_error(plane, 13.2).unwrap();
+        assert!((fast + 2.73).abs() < 0.02, "{fast}");
+        assert!((slow - 2.4).abs() < 0.02, "{slow}");
     }
 
     #[test]

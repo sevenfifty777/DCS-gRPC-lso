@@ -196,20 +196,17 @@ fn default_true() -> bool {
     true
 }
 
-/// The seven cumulative policy steps compared by this command, in column order. P3 is
-/// `CatobarGradingPolicy::PROTOTYPE` (the production default since 14 September 2026), P6 is
-/// `CatobarGradingPolicy::CONVENTION`.
-pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 7] = [
+/// The ten cumulative policy steps compared by this command, in column order. P3 is
+/// `CatobarGradingPolicy::PROTOTYPE` (the production default from 14 September 2026), P6 the
+/// `CONVENTION` policy as switched on 15 September 2026, P9 `CatobarGradingPolicy::CONVENTION`
+/// as it stands (with the three additions of that evening's review).
+pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 10] = [
     ("P0 baseline", CatobarGradingPolicy::BASELINE),
     (
         "P1 +touchdown ends correction",
         CatobarGradingPolicy {
             touchdown_ends_correction_assessment: true,
-            aoa_min_episode_duration_s: 0.0,
-            aoa_requires_calibrated_type: false,
-            lso_convention_table: false,
-            aoa_large_error_deg: 0.0,
-            aoa_oscillation_min_swing_deg: 0.0,
+            ..CatobarGradingPolicy::BASELINE
         },
     ),
     (
@@ -217,10 +214,7 @@ pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 7] = [
         CatobarGradingPolicy {
             touchdown_ends_correction_assessment: true,
             aoa_min_episode_duration_s: 1.0,
-            aoa_requires_calibrated_type: false,
-            lso_convention_table: false,
-            aoa_large_error_deg: 0.0,
-            aoa_oscillation_min_swing_deg: 0.0,
+            ..CatobarGradingPolicy::BASELINE
         },
     ),
     (
@@ -230,27 +224,50 @@ pub(crate) const STEPS: [(&str, CatobarGradingPolicy); 7] = [
     (
         "P4 +LSO convention table",
         CatobarGradingPolicy {
-            touchdown_ends_correction_assessment: true,
-            aoa_min_episode_duration_s: 1.0,
-            aoa_requires_calibrated_type: true,
             lso_convention_table: true,
-            aoa_large_error_deg: 0.0,
-            aoa_oscillation_min_swing_deg: 0.0,
+            ..CatobarGradingPolicy::PROTOTYPE
         },
     ),
     (
         "P5 +gross AoA tier 2 deg",
         CatobarGradingPolicy {
-            touchdown_ends_correction_assessment: true,
-            aoa_min_episode_duration_s: 1.0,
-            aoa_requires_calibrated_type: true,
             lso_convention_table: true,
             aoa_large_error_deg: 2.0,
-            aoa_oscillation_min_swing_deg: 0.0,
+            ..CatobarGradingPolicy::PROTOTYPE
         },
     ),
     (
-        "P6 +AoA swing 1 deg (CONVENTION)",
+        "P6 +AoA swing 1 deg",
+        CatobarGradingPolicy {
+            lso_convention_table: true,
+            aoa_large_error_deg: 2.0,
+            aoa_oscillation_min_swing_deg: 1.0,
+            ..CatobarGradingPolicy::PROTOTYPE
+        },
+    ),
+    (
+        "P7 +gross AoA needs 1 s",
+        CatobarGradingPolicy {
+            lso_convention_table: true,
+            aoa_large_error_deg: 2.0,
+            aoa_oscillation_min_swing_deg: 1.0,
+            aoa_large_min_duration_s: 1.0,
+            ..CatobarGradingPolicy::PROTOTYPE
+        },
+    ),
+    (
+        "P8 +series end at physical touchdown",
+        CatobarGradingPolicy {
+            lso_convention_table: true,
+            aoa_large_error_deg: 2.0,
+            aoa_oscillation_min_swing_deg: 1.0,
+            aoa_large_min_duration_s: 1.0,
+            series_ends_at_physical_touchdown: true,
+            ..CatobarGradingPolicy::PROTOTYPE
+        },
+    ),
+    (
+        "P9 +height inside 100 m (CONVENTION)",
         CatobarGradingPolicy::CONVENTION,
     ),
 ];

@@ -86,8 +86,31 @@ consecutive samples back inside it. Each episode carries a size, a zone and a co
 | Size | Glideslope | Lineup | AoA | LSO shorthand |
 |---|---|---|---|---|
 | small | 0.5 to 1.0 deg | 1.0 to 2.0 deg | donut plus a chevron ("slightly") | `(X)`, a little |
-| medium | 1.0 to 1.5 deg | 2.0 to 3.0 deg | chevron alone ("fast", "slow") | `X`, moderate |
-| large | 1.5 deg and above | 3.0 deg and above | more than 2.0 deg outside the on-speed band (`aoa_large_error_deg`) | `_X_`, gross |
+| medium | 1.0 to 2.5 deg | 2.0 to 3.0 deg | chevron alone ("fast", "slow") | `X`, moderate |
+| large | 2.5 deg and above | 3.0 deg and above | more than 2.0 deg outside the on-speed band (`aoa_large_error_deg`) | `_X_`, gross |
+
+The glideslope thresholds are the code's (`gs_severity` in `src/grading.rs`, unchanged since the
+episode grader was introduced); an earlier version of this table said 1.5 deg for gross. Lowering
+it to 1.5 was tried on the 45 recorded passes on 15 September 2026 and moved one grade
+(`docs/RECOVERY_REVIEW_2026-09-15.md`, section 8).
+
+Three rules added on 15 September 2026 (`docs/RECOVERY_REVIEW_2026-09-15.md`, section 12), all
+part of `CONVENTION`:
+
+- **Gross AoA needs one second** (`aoa_large_min_duration_s`). A run of consecutive gross AoA
+  samples shorter than one second is demoted to moderate, sample by sample; the episode keeps its
+  length and its peak. In the cockpit: the chevron alone, 2 deg past the donut edge (F-14 below
+  7.95 or above 12.8 deg, T-45C below 6.25 or above 10.75), held for a full second. Without it a
+  single gross sample as the nose drops at touchdown made a three-second moderate episode gross.
+- **The series end at the physical touchdown** (`series_ends_at_physical_touchdown`,
+  `physical_touchdown_time`): the first ramp-zone sample with the aircraft within 1.2 m of the
+  deck and its sink rate under 1.5 m/s after a descent of 2 m/s or more in the preceding second.
+  The DCS touchdown event arrives 0.6 to 0.9 s after the wheels; the samples in between are
+  rollout and are not graded. A pass still flying over the landing point is not cut.
+- **The last 100 m are judged in height** (`near_deck_reference_distance_m`): inside 100 m a
+  glideslope or lineup deviation is sized as the angle the same height or lateral error would
+  make at 100 m, so the thresholds above become 0.87 / 1.75 / 4.4 m of height and 1.75 / 3.5 /
+  5.2 m of lineup, and a foot of height at 5 m is no longer ten degrees.
 
 Zones by distance to the landing point: START from groove entry to 926 m, MIDDLE to 463 m, IN CLOSE
 to 150 m, RAMP the last 150 m. The correction verdict looks at what happened after the peak: good
