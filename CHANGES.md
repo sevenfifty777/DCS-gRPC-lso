@@ -17,6 +17,24 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Changed
 
+- A recognisable final with no groove entry (the aircraft never rolled out on the centreline) is
+  a pattern waveoff: new grade `WO(P)` (`PassGrade::PatternWaveoff`), no points, instead of a
+  gate grade computed from readings taken in the turn (`compute_pass_grade_with_reason_and_policy`,
+  `src/grading.rs`); report `cause` `pattern_waveoff_no_groove_entry`. 18 September 2026, 20:30:
+  an overhead pattern abandoned at the 90 had been graded `--` with 2 points
+  (`docs/RECOVERY_REVIEW_2026-09-18.md`, section 4).
+- A deck contact after a DCS waveoff call is graded on the approach flown: a bolter with a
+  correlated touchdown event is no longer turned into a waveoff by the DCS `GRADE:WO` mark (only
+  a geometry-only bolter without any touchdown event still is), and the grade reason notes "DCS
+  called a waveoff on this pass" on any trap, bolter or touch-and-go that carries such a mark
+  (`Track::finish`, `src/track.rs`). The documented "`C` for landing after a waveoff" rule, which
+  was never implemented, is withdrawn: a human LSO may overrule the DCS call.
+- The DCS landing quality mark names the waveoff initiator: `GRADE:WO` gives the grade `WO`
+  (1.0 point, as `docs/GRADING_REFERENCE.md` already listed), `GRADE:OWO` gives `OWO` (no
+  points); without a mark the grade stays `WO?`. `GRADE:OWO` now also establishes the waveoff
+  outcome the way `GRADE:WO` did (`dcs_waveoff_initiator`, `apply_dcs_waveoff_initiator`,
+  `src/grading.rs`; `Track::finish`, `src/track.rs`). Report `cause` gains `dcs_lso_waveoff`
+  and `dcs_own_waveoff`; `lso grade-ab` applies the same mapping to its columns.
 - `CatobarGradingPolicy::CONVENTION` gains three rules (`src/grading.rs`,
   `docs/GRADING_REFERENCE.md`): gross AoA needs one second of gross readings before an episode
   is gross; the graded series end at the physical touchdown (sink rate collapsed on the deck)

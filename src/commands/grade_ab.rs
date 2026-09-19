@@ -460,7 +460,7 @@ fn analyze(path: &Path, list_episodes: bool) -> Result<Option<String>, crate::er
     let grading = parse_grading(&input.grading);
     let mut episode_lines = String::new();
     let cells = policy_cells(|policy| {
-        let assessment = compute_catobar_assessment_with_policy(
+        let mut assessment = compute_catobar_assessment_with_policy(
             CatobarEvidence {
                 grading: &grading,
                 gates: &gates,
@@ -472,6 +472,12 @@ fn analyze(path: &Path, list_episodes: bool) -> Result<Option<String>, crate::er
                 groove_entry_time: entry_time,
             },
             policy,
+        );
+        // Same post-step as `Track::finish`: a DCS mark naming the waveoff initiator turns the
+        // neutral `WO?` into `WO` or `OWO`, so the columns compare with the recorded grade.
+        assessment.grade = crate::grading::apply_dcs_waveoff_initiator(
+            assessment.grade,
+            input.dcs_grading.as_deref(),
         );
         if list_episodes {
             episode_lines.push_str(&episode_listing(policy, &assessment));

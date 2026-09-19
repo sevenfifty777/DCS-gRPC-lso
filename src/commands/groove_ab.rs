@@ -232,6 +232,9 @@ pub(crate) fn normalized_recorded_grade(grade: &str) -> &str {
         "Cut" => "C",
         "Bolter" => "B",
         "WaveoffUnknown" => "WO?",
+        "Waveoff" => "WO",
+        "OwnWaveoff" => "OWO",
+        "PatternWaveoff" => "WO(P)",
         "Incomplete" | "Unknown" => "NC",
         grade => grade,
     }

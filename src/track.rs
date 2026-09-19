@@ -3046,8 +3046,14 @@ impl Track {
         // author, it is refusing a bolter that DCS's own grading directly contradicts. Confirmed
         // live 5 September 2026: an LQM `GRADE:WO ... WO(AFU)IC` was received on a pass our
         // geometry alone had called `Bolter`, with no `runway_touch`/`land` event at all.
+        // With a correlated touchdown event the deck contact is real and the pass is graded on
+        // the approach flown, whatever DCS called: a human LSO may overrule the DCS waveoff, so
+        // the call is only noted in the grade reason (see the end of this function).
         let grading = match grading {
-            Grading::Bolter if dcs_grade_is_waveoff(self.dcs_grading.as_deref()) => {
+            Grading::Bolter
+                if self.landing_time.is_none()
+                    && dcs_grade_is_waveoff(self.dcs_grading.as_deref()) =>
+            {
                 tracing::info!(
                     dcs_grading = ?self.dcs_grading,
                     "geometric Bolter refused: DCS LQM opens on GRADE:WO"
@@ -3152,6 +3158,13 @@ impl Track {
             } else {
                 (approach_grade, approach_points)
             };
+        // A neutral `WO?` takes the initiator the DCS mark names (`WO` ordered by the LSO,
+        // `OWO` by the pilot); with no mark, or on any other grade, nothing changes.
+        pass_grade =
+            crate::grading::apply_dcs_waveoff_initiator(pass_grade, self.dcs_grading.as_deref());
+        if pass_grade != approach_grade {
+            grade_points = pass_grade.points();
+        }
 
         // V/STOL keeps the unconditional three-gates rule (`None`): it has no roll-out-confirmed
         // groove entry to distinguish a mid-turn 3/4 NM reading from a real one.
@@ -3246,6 +3259,27 @@ impl Track {
                 }
                 _ => 0.0,
             };
+
+        // DCS called a waveoff but the aircraft touched the deck: the grade above stands (a
+        // human LSO may overrule DCS), and the reason records the call for whoever reads it.
+        let grade_reason = match (
+            self.dcs_grading
+                .as_deref()
+                .and_then(crate::grading::dcs_waveoff_initiator),
+            &grading,
+        ) {
+            (
+                Some(initiator),
+                Grading::Recovered { .. } | Grading::Bolter | Grading::TouchAndGo { .. },
+            ) => format!(
+                "{grade_reason} DCS called a waveoff on this pass ({}); the recovery is graded on the approach flown.",
+                match initiator {
+                    crate::grading::DcsWaveoffInitiator::Lso => "GRADE:WO, ordered by the LSO",
+                    crate::grading::DcsWaveoffInitiator::Pilot => "GRADE:OWO, own waveoff",
+                }
+            ),
+            _ => grade_reason,
+        };
 
         TrackResult {
             pilot_name: self.pilot_name,
@@ -5122,7 +5156,7 @@ pub(crate) fn replay_gate_trajectory_and_groove(
 /// GRADE:WO : SLOX DRX (LURIM) DRIM (LURIC) WO(AFU)IC`). This confirms that a waveoff occurred,
 /// while its `WaveoffUnknown` representation deliberately makes no claim about who initiated it.
 fn dcs_grade_is_waveoff(comment: Option<&str>) -> bool {
-    comment.is_some_and(|comment| comment.contains("GRADE:WO"))
+    comment.is_some_and(|comment| crate::grading::dcs_waveoff_initiator(comment).is_some())
 }
 
 fn parse_dcs_wire(comment: &str) -> Option<u8> {
@@ -6144,7 +6178,8 @@ mod tests {
         final_without_outcome.gate_deviations.half_quality = valid_quality();
         let result = final_without_outcome.finish();
         assert_eq!(result.grading, Grading::ApproachOnly);
-        assert_eq!(result.pass_grade, PassGrade::Incomplete);
+        // No groove entry: a final that never rolled out is a pattern waveoff, not graded.
+        assert_eq!(result.pass_grade, PassGrade::PatternWaveoff);
         assert_eq!(result.grade_points, None);
 
         let mut outer_pattern_only = Track::new("pilot", carrier, plane);
@@ -7165,6 +7200,7 @@ mod tests {
             quarter_quality: valid_quality(),
         };
         track.entered_groove = true;
+        track.groove_entry_time = Some(1.0);
         let mut correlator = crate::tasks::event_correlator::EventCorrelator::new(10, 20);
         correlator.stream_unavailable(&mut track, "unavailable: before touchdown");
 
@@ -8581,6 +8617,87 @@ mod tests {
             .set_dcs_grading("LSO: GRADE:WO : SLOX DRX (LURIM) DRIM (LURIC) WO(AFU)IC".to_string());
 
         assert_eq!(track.finish().grading, Grading::WaveoffUnknown);
+    }
+
+    #[test]
+    fn dcs_waveoff_mark_names_the_initiator_in_the_pass_grade() {
+        // 15 September 2026, 18:59 (Justice, `GRADE:OWO`) and 18:47 (Ghost-72, `GRADE:WO`): both
+        // were recorded `WO?`. With the DCS mark naming the initiator the grade says who waved
+        // off; the outcome stays the neutral `WaveoffUnknown` (no deck contact either way).
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let hornet = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let with_groove = || {
+            let mut track = Track::new("pilot", carrier, hornet);
+            track.entered_groove = true;
+            track.groove_entry_time = Some(1.0);
+            track.gate_deviations = GateDeviations {
+                at_three_quarter_nm: Some(gate(1.2)),
+                at_half_nm: Some(gate(2.0)),
+                at_quarter_nm: Some(gate(3.0)),
+                three_quarter_quality: valid_quality(),
+                half_quality: valid_quality(),
+                quarter_quality: valid_quality(),
+            };
+            track
+        };
+
+        let mut own = with_groove();
+        assert!(own.set_dcs_grading(
+            "LSO: GRADE:OWO : _LULIM_  LOIM  LOIC  _DRIC_  (LURIC)  WO(AFU)IC [BC]".to_string()
+        ));
+        let own = own.finish();
+        assert_eq!(own.grading, Grading::WaveoffUnknown);
+        assert_eq!(own.pass_grade, PassGrade::OwnWaveoff);
+        assert_eq!(own.grade_points, None);
+
+        let mut lso = with_groove();
+        assert!(lso.set_dcs_grading(
+            "LSO: GRADE:WO  _LULIM_  _LULIC_  _TMRDIC_  _LULX_  WO(AFU)IC [BC]".to_string()
+        ));
+        let lso = lso.finish();
+        assert_eq!(lso.grading, Grading::WaveoffUnknown);
+        assert_eq!(lso.pass_grade, PassGrade::Waveoff);
+        assert_eq!(lso.grade_points, Some(1.0));
+    }
+
+    #[test]
+    fn deck_contact_after_a_dcs_waveoff_call_is_graded_on_the_approach_flown() {
+        // The DCS LSO called a waveoff, the pilot touched the deck anyway (a correlated
+        // touchdown event, no arrest: a bolter). A human LSO may overrule DCS, so the pass keeps
+        // its measured grade and the reason only records the call. Without any touchdown event
+        // the geometry-only bolter is still refused (see the test above).
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let hornet = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, hornet);
+        track.entered_groove = true;
+        track.groove_entry_time = Some(1.0);
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(1.2)),
+            at_half_nm: Some(gate(2.0)),
+            at_quarter_nm: Some(gate(3.0)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
+        assert!(track.set_dcs_grading(
+            "LSO: GRADE:WO  _TMRDAR_  (NX)  _SLOX_  _LOIC_  WO(AFU)IC [BC]".to_string()
+        ));
+        // The mark arrived first and latched the waveoff; the touchdown then proved contact.
+        assert_eq!(track.grading, Some(Grading::WaveoffUnknown));
+        track.grading = Some(Grading::Bolter);
+        track.landing_time = Some(20.0);
+
+        let result = track.finish();
+        assert_eq!(result.grading, Grading::Bolter);
+        assert_eq!(result.pass_grade, PassGrade::Bolter);
+        assert_eq!(result.grade_points, Some(2.5));
+        assert!(
+            result
+                .grade_reason
+                .contains("DCS called a waveoff on this pass (GRADE:WO, ordered by the LSO)"),
+            "{}",
+            result.grade_reason
+        );
     }
 
     #[test]

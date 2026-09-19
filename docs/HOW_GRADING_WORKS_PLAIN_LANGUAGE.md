@@ -142,7 +142,7 @@ The program keeps an "outcome" for the attempt. It starts empty and is set by th
 
 **DCS touchdown event.** An accepted `runway_touch` or `land` sets the outcome to "recovered" provisionally, records the touchdown time, and records the aircraft's horizontal speed at that instant. Provisional means: the aircraft touched the deck, nothing yet says it stopped.
 
-**DCS says wave-off.** A landing quality mark that starts with `GRADE:WO` sets the outcome to "wave-off" when no touchdown has been recorded, and overrides a bolter the program had decided from geometry alone.
+**DCS says wave-off.** A landing quality mark that starts with `GRADE:WO` (the LSO waved the aircraft off) or `GRADE:OWO` (the pilot waved himself off) sets the outcome to "wave-off" when no touchdown has been recorded, and overrides a bolter the program had decided from geometry alone without any touchdown event. The grade then says who decided: `WO` (1 point) or `OWO` (no points). If the pilot touches the deck anyway after the call (trap, bolter or touch-and-go with a DCS touchdown event), the pass is graded on the approach flown like any other; a human LSO may overrule DCS, so the call is only noted in the grade reason. Without a DCS mark the grade stays `WO?`, initiator unknown. DCS only writes the mark for a pilot who has checked in with the ship on the radio menu; without the check-in it writes "NC, no proper communications" as a plain comment the program never receives.
 
 **Crossing the reference point without an event.** If the hook passes the reference point (x goes from positive to negative) below 50 feet and no DCS event arrives, the program notes a deck crossing and whether the hook was within 1 metre of the deck at that instant.
 

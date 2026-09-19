@@ -1406,14 +1406,30 @@ pub async fn record_recovery(
         }
     };
 
-    let outcome = recovery_outcome(&track.grading, track.carrier_info.is_vstol());
+    // A waveoff whose initiator the DCS mark named reads as such everywhere; the neutral
+    // "initiator unknown" wording is kept for a go-around without a mark.
+    let dcs_named_waveoff = match track.pass_grade {
+        crate::grading::PassGrade::Waveoff => Some("Waveoff — ordered by the LSO (DCS)"),
+        crate::grading::PassGrade::OwnWaveoff => Some("Own waveoff (DCS)"),
+        crate::grading::PassGrade::PatternWaveoff => Some("Pattern waveoff — no roll-out on final"),
+        _ => None,
+    };
+    let outcome = dcs_named_waveoff.map_or_else(
+        || recovery_outcome(&track.grading, track.carrier_info.is_vstol()),
+        str::to_string,
+    );
     // Pilot-facing surfaces (Discord, PNG chart, SQLite/greenie-board log) use a simplified
     // headline that never contradicts what the pilot saw in DCS: see
     // Grading::pilot_facing_outcome for the rationale. The full `outcome` string above (which can
     // show a diverging Rust estimate) is reserved for the JSON report.
-    let outcome_headline = track
-        .grading
-        .pilot_facing_outcome(track.carrier_info.is_vstol());
+    let outcome_headline = dcs_named_waveoff.map_or_else(
+        || {
+            track
+                .grading
+                .pilot_facing_outcome(track.carrier_info.is_vstol())
+        },
+        str::to_string,
+    );
     let (wire_estimated, wire_dcs) = match track.grading {
         Grading::Recovered {
             cable,
@@ -1454,8 +1470,15 @@ pub async fn record_recovery(
         | crate::track::Completeness::UnconfirmedArrest
         | crate::track::Completeness::BufferLimit) => completeness_cause(cause),
         crate::track::Completeness::Complete => match track.grading {
-            Grading::WaveoffUnknown => "go_around_initiator_unknown",
-            Grading::ApproachOnly => "approach_only_outcome_unknown",
+            Grading::WaveoffUnknown => match track.pass_grade {
+                crate::grading::PassGrade::Waveoff => "dcs_lso_waveoff",
+                crate::grading::PassGrade::OwnWaveoff => "dcs_own_waveoff",
+                _ => "go_around_initiator_unknown",
+            },
+            Grading::ApproachOnly => match track.pass_grade {
+                crate::grading::PassGrade::PatternWaveoff => "pattern_waveoff_no_groove_entry",
+                _ => "approach_only_outcome_unknown",
+            },
             Grading::Bolter => "deck_crossing_without_arrest",
             Grading::TouchAndGo { .. } => "hook_up_near_deck",
             Grading::Recovered { .. } => match track.arrest_evidence {

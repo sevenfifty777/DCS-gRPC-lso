@@ -21,7 +21,21 @@ The persisted result separates outcome, display grade, optional points, comment/
 completeness, grading version, cable estimate and DCS cable evidence.
 
 An incomplete observation has grade `NC` and `points = null`. `WO?` means a go-around/waveoff was
-observed but its initiator was not proven. The module never invents OWO, WOP or a pilot waveoff.
+observed but its initiator was not proven. The initiator is only ever taken from the DCS landing
+quality mark: `GRADE:WO` gives `WO` (ordered by the LSO), `GRADE:OWO` gives `OWO` (own waveoff);
+the module never invents either, nor a WOP. DCS writes the mark only for a pilot who has checked
+in with the ship's ATC; without the check-in it writes `GRADE: NC : No proper communications` as a
+plain comment event the module does not receive, and the pass stays `WO?`.
+
+A recognisable final that never rolled out on the centreline (no groove entry) is a pattern
+waveoff, `WO(P)`, `points = null`, whatever its gate readings say. The gates of such a pass were
+captured in a turn and do not describe an approach (18 September 2026, 20:30).
+
+A deck contact after a DCS waveoff call (a trap, a bolter or a touch-and-go with a correlated
+touchdown event) is graded on the approach flown like any other pass: a human LSO may overrule
+the DCS call, so the DCS mark never changes a graded pass. The grade reason records that DCS
+called a waveoff. Only a bolter decided from geometry alone, with no touchdown event at all, is
+refused when DCS says waveoff (confirmed live, 5 September 2026).
 
 ## Gates
 
@@ -58,9 +72,10 @@ historical module/MOOSE-inspired model pending validation:
 | `C` | quarter-NM GS strictly below `-2.5 deg` | 0.0 |
 | `B` | confirmed bolter and all three gates valid | 2.5 |
 | `WO` | DCS LSO ordered a waveoff and the aircraft never touched the deck (`OFFICIAL` symbol, `PROJECT-DERIVED` points) | 1.0 |
-| `C` | deck contact after a DCS-ordered waveoff (NAVAIR 00-80T-104: landing after a waveoff), whatever the gates say | 0.0 |
-| `WO?` | neutral waveoff/go-around, initiator unknown | none |
-| `NC` | insufficient/invalid telemetry or unconfirmed trap | none |
+| `OWO` | own waveoff named by the DCS LSO (`GRADE:OWO`), no deck contact | none |
+| `WO?` | neutral waveoff/go-around, initiator unknown (no DCS mark) | none |
+| `WO(P)` | pattern waveoff: a recognisable final with no groove entry, never rolled out on the centreline | none |
+| `NC` | not counted: insufficient/invalid telemetry or unconfirmed trap | none |
 
 A hook-up deck contact (`T&G (CQ)`) keeps the measured approach grade and never receives wire or
 trap upgrades. A `WO` outcome does not require three valid gates; every other grade does.

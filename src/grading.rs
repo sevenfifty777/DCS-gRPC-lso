@@ -483,7 +483,11 @@ const OK_PERFECT_GROOVE_TIME_MAX_S: f64 = 18.0;
 /// | `--`    | 2.0    | No grade — significant deviations |
 /// | `C`     | 0.0    | Cut pass — dangerously low at the ramp |
 /// | `B`     | 2.5    | Bolter |
-/// | `WO`    | 1.0    | Waveoff |
+/// | `WO`    | 1.0    | Waveoff ordered by the DCS LSO (`GRADE:WO` mark) |
+/// | `OWO`   | none   | Own waveoff, named by the DCS LSO (`GRADE:OWO` mark) |
+/// | `WO?`   | none   | Waveoff/go-around, initiator not proven (no DCS mark) |
+/// | `WO(P)` | none   | Pattern waveoff: a final that never rolled out on the centreline |
+/// | `NC`    | none   | Not counted: insufficient telemetry or unconfirmed trap |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum PassGrade {
     /// Perfect pass (`OFFICIAL` `_OK_` symbol, NAVAIR 00-80T-104 §11.4.1). Emitted by
@@ -494,11 +498,25 @@ pub enum PassGrade {
     OkParentheses,
     /// No grade — significant deviations (NAVAIR label `--`).
     NoGrade,
-    /// Cut pass — dangerously low at the ramp, or landed after being waved off.
+    /// Cut pass — dangerously low at the ramp. A deck contact after a DCS waveoff call is
+    /// graded on the approach flown like any other pass (a human LSO may overrule DCS); the
+    /// call is only noted in the grade reason.
     Cut,
     Bolter,
     WaveoffUnknown,
-    /// Project use of `NC` for insufficient telemetry; never carries points.
+    /// Waveoff ordered by the DCS LSO: the landing quality mark opens on `GRADE:WO` and the
+    /// aircraft never touched the deck (`OFFICIAL` symbol, `PROJECT-DERIVED` 1.0 point, see
+    /// `docs/GRADING_REFERENCE.md`). DCS only writes the mark when the pilot has checked in
+    /// with the ship's ATC; without it the outcome stays `WaveoffUnknown`.
+    Waveoff,
+    /// Own waveoff, named by the DCS LSO (`GRADE:OWO`): the pilot's decision, no points.
+    OwnWaveoff,
+    /// Pattern waveoff (LSO shorthand `WO(P)`): a recognisable final that never rolled out on
+    /// the centreline, so it has no groove and its gate readings were taken in a turn. Not
+    /// graded, no points (18 September 2026, 20:30; `docs/RECOVERY_REVIEW_2026-09-18.md`).
+    PatternWaveoff,
+    /// Project use of `NC` ("not counted") for insufficient telemetry or an unconfirmed trap;
+    /// never carries points. Unrelated to DCS's own `GRADE: NC` ("no proper communications").
     Incomplete,
 }
 
@@ -514,6 +532,9 @@ impl PassGrade {
             Self::Cut => "C",
             Self::Bolter => "B",
             Self::WaveoffUnknown => "WO?",
+            Self::Waveoff => "WO",
+            Self::OwnWaveoff => "OWO",
+            Self::PatternWaveoff => "WO(P)",
             Self::Incomplete => "NC",
         }
     }
@@ -527,8 +548,48 @@ impl PassGrade {
             Self::NoGrade => Some(2.0),
             Self::Cut => Some(0.0),
             Self::Bolter => Some(2.5),
-            Self::WaveoffUnknown | Self::Incomplete => None,
+            Self::Waveoff => Some(1.0),
+            Self::WaveoffUnknown | Self::OwnWaveoff | Self::PatternWaveoff | Self::Incomplete => {
+                None
+            }
         }
+    }
+}
+
+/// Who initiated a waveoff according to the DCS landing quality mark: `GRADE:WO` is a waveoff
+/// ordered by the LSO, `GRADE:OWO` an own waveoff by the pilot. DCS writes either only when the
+/// pilot has checked in with the ship's ATC (without the check-in it writes `GRADE: NC : No
+/// proper communications` as a plain comment event the program never receives), so the absence
+/// of a mark says nothing about the initiator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DcsWaveoffInitiator {
+    Lso,
+    Pilot,
+}
+
+/// The waveoff initiator named by a DCS LSO comment, if it names one.
+pub fn dcs_waveoff_initiator(comment: &str) -> Option<DcsWaveoffInitiator> {
+    let (_, grade) = comment.split_once("GRADE:")?;
+    let grade = grade.trim_start();
+    if grade.starts_with("OWO") {
+        Some(DcsWaveoffInitiator::Pilot)
+    } else if grade.starts_with("WO") {
+        Some(DcsWaveoffInitiator::Lso)
+    } else {
+        None
+    }
+}
+
+/// A neutral `WO?` becomes `WO` or `OWO` when the DCS mark names the initiator. Every other
+/// grade is returned unchanged: a deck contact after a waveoff keeps its measured grade.
+pub fn apply_dcs_waveoff_initiator(grade: PassGrade, dcs_grading: Option<&str>) -> PassGrade {
+    if grade != PassGrade::WaveoffUnknown {
+        return grade;
+    }
+    match dcs_grading.and_then(dcs_waveoff_initiator) {
+        Some(DcsWaveoffInitiator::Lso) => PassGrade::Waveoff,
+        Some(DcsWaveoffInitiator::Pilot) => PassGrade::OwnWaveoff,
+        None => grade,
     }
 }
 
@@ -739,6 +800,15 @@ pub fn compute_pass_grade_with_reason_and_policy(
         Grading::Unknown => (
             PassGrade::Incomplete,
             "Grading unavailable: no recognisable approach was recorded.".to_string(),
+        ),
+        // A recognisable final that never rolled out on the centreline has no groove, so its
+        // gate readings were taken in a turn. 18 September 2026, 20:30: an overhead pattern
+        // abandoned at the 90 was graded `--` with 2 points from a 1/4 NM reading at 17 degrees
+        // of lineup and 8 degrees high (`docs/RECOVERY_REVIEW_2026-09-18.md`, section 4). A
+        // human LSO logs that as a pattern waveoff and does not grade it.
+        Grading::ApproachOnly if groove_entry_time.is_none() => (
+            PassGrade::PatternWaveoff,
+            "WO(P): pattern waveoff, no roll-out on final; the approach was never established, not graded, no points.".to_string(),
         ),
         Grading::ApproachOnly => {
             if gates.all_valid(groove_entry_time) {
@@ -2715,6 +2785,78 @@ mod tests {
             compute_pass_grade_with_reason(&Grading::WaveoffUnknown, &g, &[], None, None).0,
             PassGrade::WaveoffUnknown
         );
+    }
+
+    #[test]
+    fn approach_only_without_groove_entry_is_a_pattern_waveoff_not_a_grade() {
+        // 18 September 2026, 20:30: three valid gates captured while still in the turn, no
+        // roll-out on final, and the pass was graded `--` with 2 points. Without a groove entry
+        // the gates do not grade (`docs/RECOVERY_REVIEW_2026-09-18.md`, section 4).
+        let g = gates_deg(-0.9, -18.5, 2.0, -5.6, 8.2, 17.1);
+        let (grade, reason) =
+            compute_pass_grade_with_reason(&Grading::ApproachOnly, &g, &[], None, None);
+        assert_eq!(grade, PassGrade::PatternWaveoff);
+        assert_eq!(grade.label(), "WO(P)");
+        assert_eq!(grade.points(), None);
+        assert!(reason.starts_with("WO(P): pattern waveoff"), "{reason}");
+
+        // The same gates behind a real groove entry keep grading as before.
+        let (graded, reason) =
+            compute_pass_grade_with_reason(&Grading::ApproachOnly, &g, &[], None, Some(0.5));
+        assert_eq!(graded, PassGrade::NoGrade, "{reason}");
+        assert!(
+            reason.starts_with("Approach only (outcome unknown)"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn dcs_mark_names_the_waveoff_initiator() {
+        // Live comments from the 14 and 15 September 2026 DCS logs.
+        assert_eq!(
+            dcs_waveoff_initiator("LSO: GRADE:WO  _TMRDAR_  (NX)  _SLOX_  WO(AFU)IC [BC]"),
+            Some(DcsWaveoffInitiator::Lso)
+        );
+        assert_eq!(
+            dcs_waveoff_initiator("LSO: GRADE:OWO : _LULIM_  LOIM  LOIC  _DRIC_  WO(AFU)IC [BC]"),
+            Some(DcsWaveoffInitiator::Pilot)
+        );
+        assert_eq!(
+            dcs_waveoff_initiator("LSO: GRADE:WO : SLOX DRX (LURIM) DRIM (LURIC) WO(AFU)IC"),
+            Some(DcsWaveoffInitiator::Lso)
+        );
+        assert_eq!(
+            dcs_waveoff_initiator("LSO: GRADE:--- : _SLOX_  _TMRDAR_  WIRE# 2 _EGIW_ [BC]"),
+            None
+        );
+        assert_eq!(
+            dcs_waveoff_initiator("LSO: GRADE: NC : No proper communications"),
+            None
+        );
+
+        let owo = Some("LSO: GRADE:OWO : WO(AFU)IC [BC]");
+        let wo = Some("LSO: GRADE:WO  WO(AFU)IC [BC]");
+        assert_eq!(
+            apply_dcs_waveoff_initiator(PassGrade::WaveoffUnknown, owo),
+            PassGrade::OwnWaveoff
+        );
+        assert_eq!(
+            apply_dcs_waveoff_initiator(PassGrade::WaveoffUnknown, wo),
+            PassGrade::Waveoff
+        );
+        assert_eq!(
+            apply_dcs_waveoff_initiator(PassGrade::WaveoffUnknown, None),
+            PassGrade::WaveoffUnknown
+        );
+        // A deck contact after the waveoff keeps its measured grade.
+        assert_eq!(
+            apply_dcs_waveoff_initiator(PassGrade::NoGrade, wo),
+            PassGrade::NoGrade
+        );
+        assert_eq!(PassGrade::Waveoff.label(), "WO");
+        assert_eq!(PassGrade::Waveoff.points(), Some(1.0));
+        assert_eq!(PassGrade::OwnWaveoff.label(), "OWO");
+        assert_eq!(PassGrade::OwnWaveoff.points(), None);
     }
 
     #[test]
