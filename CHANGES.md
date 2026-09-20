@@ -8,6 +8,14 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Fixed
 
+- A hook-animation transient that named no wire (deflection more than 200 ms after the last
+  crossing, or before any crossing) was returned as the final wire estimate, so the stop
+  position and the crossing selection never ran: two Tomcat traps of 20 September 2026 read
+  "Rust estimate unavailable" although the aircraft's stop named the wire to within 2 m (18:57,
+  DCS 3-wire; 09:04, no DCS wire). The transient's non-answer now falls through to the stop
+  position, then the crossing selection, and its timings stay in `wire_estimation` as
+  diagnostics (`Track::wire_estimate_with`, `src/track.rs`;
+  `docs/RECOVERY_REVIEW_2026-09-20.md`, section 3).
 - AoA readings 2 to 3 degrees outside the on-speed band were dropped from the graded series:
   the distance-to-band search stepped geometrically and gave up when it overshot the band, so
   on the F-14 every reading between 6.8 and 7.95 deg and between 12.8 and 13.95 deg (on the

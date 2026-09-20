@@ -461,12 +461,15 @@ pub struct WireEstimateEvidence {
     pub confidence: &'static str,
     pub reason: &'static str,
     /// DCS time of the sharp hook deflection that started the completed arrestment transient
-    /// (see `HOOK_DEFLECTED_MAX`), when one was found near the touchdown reference.
+    /// (see `HOOK_DEFLECTED_MAX`), when one was found near the touchdown reference. Kept even
+    /// when the transient named no wire and `wire` came from the stop position or the crossing
+    /// selection instead.
     pub hook_deflection_time_dcs: Option<f64>,
     /// DCS time at which the deflected hook returned to its stable down band.
     pub hook_recovered_time_dcs: Option<f64>,
-    /// `hook_deflection_time_dcs` minus the selected crossing time, when the estimate was
-    /// anchored on the hook transient.
+    /// `hook_deflection_time_dcs` minus the last crossing before it, when a completed transient
+    /// was found and a crossing preceded it; the estimate was anchored on the transient only
+    /// when `reason` is `hook_deflection_correlated_with_wire_crossing`.
     pub correlation_lag_ms: Option<f64>,
     pub crossings: Vec<WireCrossingEvidence>,
     /// Diagnostic only, never used for grading: the DCS simulation time at which a sustained
@@ -4009,14 +4012,48 @@ impl Track {
         stop_x: Option<f64>,
         hook_up: bool,
     ) -> WireEstimateEvidence {
-        // A completed hook transient is the strongest independent evidence of which wire was
-        // caught (validated on the 2026-09 live corpus); then the stop position on a confirmed
-        // arrestment; the deceleration-onset / last-crossing selection below is the fallback
-        // when neither exists (no hook sampler, batch-delayed hook timestamps, or simply no
-        // arrest).
-        if let Some(estimate) = self.wire_estimate_from_hook_transient(event_time) {
-            return estimate;
+        // A completed hook transient correlated with a crossing is the strongest independent
+        // evidence of which wire was caught (validated on the 2026-09 live corpus); then the stop
+        // position on a confirmed arrestment; the deceleration-onset / last-crossing selection is
+        // the fallback when neither exists (no hook sampler, batch-delayed hook timestamps, or
+        // simply no arrest).
+        //
+        // A transient that names no wire is not an answer, only a diagnostic: it used to be
+        // returned as final and blanked two Tomcat traps on 20 September 2026 (18:57, DCS 3-wire,
+        // deflection 214 ms after the 3-wire crossing; 09:04, hook striking the deck 22 m short
+        // of the 1-wire) whose stop position named the wire to within 2 m
+        // (`docs/RECOVERY_REVIEW_2026-09-20.md`, section 3). The later methods run instead and
+        // the transient's timings are kept on whatever they return.
+        let hook_transient = self.wire_estimate_from_hook_transient(event_time);
+        if let Some(estimate) = hook_transient
+            .as_ref()
+            .filter(|estimate| estimate.wire.is_some())
+        {
+            return estimate.clone();
         }
+        let mut estimate = self.wire_estimate_from_stop_or_crossings(
+            event_time,
+            arrest_confirmed,
+            stop_x,
+            hook_up,
+        );
+        if let Some(hook_transient) = hook_transient {
+            estimate.hook_deflection_time_dcs = hook_transient.hook_deflection_time_dcs;
+            estimate.hook_recovered_time_dcs = hook_transient.hook_recovered_time_dcs;
+            estimate.correlation_lag_ms = hook_transient.correlation_lag_ms;
+        }
+        estimate
+    }
+
+    /// The stop-position estimate on a confirmed hook-down arrestment, else the deceleration-onset
+    /// / last-crossing selection (see `wire_estimate_with` for the order).
+    fn wire_estimate_from_stop_or_crossings(
+        &self,
+        event_time: f64,
+        arrest_confirmed: bool,
+        stop_x: Option<f64>,
+        hook_up: bool,
+    ) -> WireEstimateEvidence {
         if !hook_up {
             if let Some(estimate) = stop_x.and_then(|x| self.wire_estimate_from_stop_position(x)) {
                 return estimate;
@@ -7933,6 +7970,124 @@ mod tests {
         });
         let estimate = track.wire_estimate_with(10.1, false, Some(-66.0), false);
         assert_ne!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+    }
+
+    /// A Tomcat in the final window with hook-plane crossings at the given `(time, x)` and a
+    /// hook timeline: stable down (1.0) every 0.2 s from about 8.0 s to `deflected_at - 0.2`,
+    /// one deflected sample (`deflected_raw`) at `deflected_at`, pushed-up readings (0.17) every
+    /// 0.3 s, and a return to 0.9 at `deflected_at + 6.0`.
+    fn tomcat_with_hook_transient(
+        crossings: [(f64, f64); 4],
+        deflected_at: f64,
+        deflected_raw: f64,
+    ) -> Track {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("F-14B(U)").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        track.entered_groove = true;
+        track.previous_x = 0.0;
+        for (wire, (timestamp_dcs, x)) in (1u8..=4).zip(crossings) {
+            track.wire_crossings.push(WireCrossingEvidence {
+                wire,
+                timestamp_dcs,
+                bracket_gap_ms: 50.0,
+                method: "finite_hook_plane_crossing",
+            });
+            track.datums.push(Datum {
+                time: timestamp_dcs,
+                x,
+                ..Datum::default()
+            });
+        }
+        let mut sequence = 0u64;
+        let mut sample = |track: &mut Track, time: f64, raw: f64| {
+            sequence += 1;
+            track.observe_hook_sample(time, sequence, 0.0, Some(raw), HookSampleStatus::Success);
+        };
+        let mut stable = Vec::new();
+        let mut time = deflected_at - 0.2;
+        while time >= 8.0 {
+            stable.push(time);
+            time -= 0.2;
+        }
+        for time in stable.into_iter().rev() {
+            sample(&mut track, time, 1.0);
+        }
+        sample(&mut track, deflected_at, deflected_raw);
+        let mut time = deflected_at + 0.3;
+        while time < deflected_at + 6.0 {
+            sample(&mut track, time, 0.17);
+            time += 0.3;
+        }
+        sample(&mut track, deflected_at + 6.0, 0.9);
+        track
+    }
+
+    #[test]
+    fn hook_transient_that_names_no_wire_falls_through_to_the_stop_position() {
+        // 20 September 2026, 18:57 (Justice, DCS `WIRE# 3`): the hook deflected 214 ms after the
+        // 3-wire crossing and 6 ms before the 4-wire's, outside the 200 ms correlation window, so
+        // the transient named nothing; the aircraft stopped at -97.5 m, the 3-wire plane within
+        // 0.3 m of `stop + 87`. The recorded report said "Rust estimate unavailable".
+        let track = tomcat_with_hook_transient(
+            [(10.0, 15.0), (10.22, 3.5), (10.44, -10.75), (10.66, -22.2)],
+            10.654,
+            -0.7,
+        );
+        let transient = track.wire_estimate_from_hook_transient(11.6).unwrap();
+        assert_eq!(transient.wire, None);
+        assert_eq!(
+            transient.reason,
+            "hook_deflection_not_correlated_with_wire_crossing"
+        );
+
+        let estimate = track.wire_estimate_with(11.6, false, Some(-97.5), false);
+        assert_eq!(estimate.wire, Some(3), "{estimate:?}");
+        assert_eq!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+        assert_eq!(estimate.confidence, "medium");
+        // The transient's timings stay in the report as diagnostics.
+        assert_eq!(estimate.hook_deflection_time_dcs, Some(10.654));
+        assert_eq!(estimate.hook_recovered_time_dcs, Some(16.654));
+        let lag = estimate.correlation_lag_ms.unwrap();
+        assert!((213.0..215.0).contains(&lag), "{lag}");
+
+        // Without a confirmed stop the crossing selection runs instead of the transient's
+        // non-answer; here the reference is 940 ms past the last crossing, so it names nothing
+        // either, but for its own reason and still carrying the hook timings.
+        let unconfirmed = track.wire_estimate_with(11.6, false, None, false);
+        assert_eq!(unconfirmed.wire, None);
+        assert_eq!(
+            unconfirmed.reason,
+            "wire_crossing_not_time_correlated_with_event"
+        );
+        assert_eq!(unconfirmed.hook_deflection_time_dcs, Some(10.654));
+    }
+
+    #[test]
+    fn hook_striking_the_deck_before_the_wires_does_not_block_the_stop_position() {
+        // 20 September 2026, 09:04 (6-Rose, DCS `NC`, no wire): the hook hit the deck 22 m short
+        // of the 1-wire (deflection 387 ms before the first crossing), so no crossing preceded
+        // the transient; the aircraft stopped at -79.9 m, `stop + 87` sitting 1.9 m from the
+        // 2-wire plane. The recorded report said "wire evidence unavailable".
+        let track = tomcat_with_hook_transient(
+            [
+                (10.0, 16.35),
+                (10.22, 5.25),
+                (10.45, -8.57),
+                (10.68, -19.57),
+            ],
+            9.613,
+            0.22,
+        );
+        let transient = track.wire_estimate_from_hook_transient(11.0).unwrap();
+        assert_eq!(transient.wire, None);
+        assert_eq!(transient.correlation_lag_ms, None);
+
+        let estimate = track.wire_estimate_with(11.0, false, Some(-79.88), false);
+        assert_eq!(estimate.wire, Some(2), "{estimate:?}");
+        assert_eq!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+        assert_eq!(estimate.hook_deflection_time_dcs, Some(9.613));
+        assert_eq!(estimate.correlation_lag_ms, None);
     }
 
     #[test]

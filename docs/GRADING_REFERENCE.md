@@ -199,10 +199,27 @@ endpoints, more than 3 m vertically from the cable, or the telemetry bracket exc
 prevents an overhead or high-altitude crossing of an infinite cable plane from suppressing the real
 deck crossing.
 
-The selected wire is the last valid crossing no more than 200 ms before a complete external hook
-transient: stable down (`raw >= 0.8`) for at least 0.2 s, deflected (`raw <= 0.7`) within 2 s of the
-touchdown event, then recovered to down within 8 s. A stable hook-up value, a transition that does
-not recover, stale samples, and geometry without a matching hook transient produce no estimate.
+Three methods name the wire, tried in this order, each running only when the previous one named
+nothing:
+
+1. **Hook transient.** The last valid crossing no more than 200 ms before a complete external hook
+   transient: stable down (`raw >= 0.8`) for at least 0.2 s, deflected (`raw <= 0.7`) within 2 s of
+   the touchdown reference, then recovered to down within 8 s. A transient with no crossing in
+   that window (the deflection came before the first crossing, or more than 200 ms after the
+   last) is a non-answer, not a verdict: its timings are kept in `wire_estimation`
+   (`hook_deflection_time_dcs`, `hook_recovered_time_dcs`, `correlation_lag_ms`) and the next
+   method runs.
+2. **Stop position.** On a hook-down pass whose deck kinematics confirmed the stop, and for a
+   type with a measured run-out (`arresting_run_out_m`, 87 m on every F-14 variant), the crossing
+   whose aircraft position lies within 6 m of `stop + run_out`; reason `stop_position_run_out`,
+   medium confidence.
+3. **Crossing selection.** The earliest crossing at or after the arrest deceleration onset, else
+   the last crossing before the touchdown reference, provided the reference is within 300 ms of
+   the onset (or of that crossing when no onset was seen); reason `continuous_hook_plane_crossing`,
+   or `hypothetical_hook_up_plane_crossing` on a hook-up pass.
+
+A stable hook-up value, a transition that does not recover and stale samples leave method 1
+silent; geometry without any of the three produces no estimate.
 
 `wire_dcs` is parsed independently from LQM text and remains authoritative whenever present. The
 estimate is the labelled fallback when DCS supplies no wire, including a recovery supervised by a

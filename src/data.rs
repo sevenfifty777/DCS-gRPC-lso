@@ -153,9 +153,14 @@ static FA18C: AirplaneInfo = AirplaneInfo {
     // Documented external band, no live contradiction observed so far (no Hornet pass in the
     // September 2026 corpus); left grading until the same cockpit check is flown for it.
     aoa_grading_calibrated: true,
-    // Not constant across recordings: 89 m on the 14 September 2026 3-wire trap, 60 m on the
-    // `wire_4_01_FA18C` fixture. The stop position cannot name the Hornet's wire until the
-    // reason for the difference (carrier, DCS build, weight) is known.
+    // Two live Hornet traps on CVN-72 under DCS 2.9.29 ran 89 m past the 3-wire (14 September
+    // 2026, Ducks) and 88 m (20 September, ERGO, `docs/RECOVERY_REVIEW_2026-09-20.md`, section
+    // 4), the same run-out as the Tomcat. But the `wire_4_01_FA18C` fixture stopped 60 m past
+    // its 4-wire, which with 87 m lands 5.3 m from the 1-wire plane, inside the 6 m residual
+    // guard (`WIRE_STOP_POSITION_MAX_RESIDUAL_M`): the stop position would name that trap
+    // "1-wire". Left off until the fixture's run-out is explained or the estimate is
+    // cross-checked against the deceleration onset (53 to 59 m past the engaged wire on every
+    // live Tomcat and Hornet trap).
     arresting_run_out_m: None,
     aoa_rating: |aoa: f64| -> Aoa {
         // https://forums.vrsimulations.com/support/index.php/Navigation_Tutorial_Flight#Angle_of_Attack_Bracket
