@@ -67,6 +67,18 @@ struct RecoveryReport<'a> {
     spot_bonus_points: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dcs_grading: Option<&'a str>,
+    /// `dcs_grading` read against the NATOPS shorthand glossary (`crate::lso_notation::parse`):
+    /// grade label, wire, each deviation as glossary symbols, magnitude and position suffix,
+    /// the ball call, and any token the glossary could not read. Additive; absent with
+    /// `dcs_grading`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dcs_grading_parsed: Option<crate::lso_notation::Notation>,
+    /// The graded episodes written in the same shorthand (`crate::lso_notation::from_episodes`),
+    /// what the Discord embed shows when DCS wrote no comment. Comparable with
+    /// `dcs_grading_parsed` axis by axis and zone by zone. Absent when no episode affected the
+    /// grade.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lso_notation_measured: Option<crate::lso_notation::Notation>,
     gate_deviations: &'a GateDeviations,
     /// Continuous groove-to-touchdown GS/lineup series (see `TrajectoryDeviation`), additive
     /// to `gate_deviations`. Empty for a pass that never entered the groove.
@@ -1653,6 +1665,9 @@ pub async fn record_recovery(
         spot_distance_m: track.spot_distance_m,
         spot_bonus_points: track.spot_grade.map(|g| g.bonus_points()),
         dcs_grading: track.dcs_grading.as_deref(),
+        dcs_grading_parsed: track.dcs_grading.as_deref().map(crate::lso_notation::parse),
+        lso_notation_measured: Some(crate::lso_notation::from_episodes(&track.grading_episodes))
+            .filter(|notation| !notation.deviations.is_empty()),
         gate_deviations: &track.gate_deviations,
         trajectory_deviations: &track.trajectory_deviations,
         grading_episodes: &track.grading_episodes,
@@ -2032,10 +2047,12 @@ pub async fn record_recovery(
                 }
             }
 
-            // LSO notation and plain-English notes from DCS grading string. DCS never emits this
-            // for a touch-and-go (only for an arrested pass), so fall back to a plain-language
-            // summary of our own measured deviations -- explicitly labelled as such, never
-            // presented as a DCS/NATOPS comment (see `describe_measured_deviations`, src/grading.rs).
+            // LSO notation and plain-English notes from the DCS grading string. DCS writes none
+            // for a touch-and-go, a pass without a ball call or a straight-in it never saw, so
+            // fall back to the project's own graded episodes written in the same shorthand
+            // (`crate::lso_notation::from_episodes`), and to the gate summary when there are no
+            // episodes (V/STOL, gates-only grading) -- always labelled as measured, never
+            // presented as a DCS/NATOPS comment.
             if let Some(ref notation) = track.dcs_grading {
                 embed = embed.field("LSO Notation", notation.as_str(), false);
                 let notes = crate::lso_notation::to_english(notation);
@@ -2043,10 +2060,20 @@ pub async fn record_recovery(
                     embed = embed.field("LSO Notes", notes, false);
                 }
             } else {
-                let notes = crate::grading::describe_measured_deviations(
-                    &track.gate_deviations,
-                    &track.trajectory_deviations,
-                );
+                let measured = crate::lso_notation::from_episodes(&track.grading_episodes);
+                let notes = if measured.deviations.is_empty() {
+                    crate::grading::describe_measured_deviations(
+                        &track.gate_deviations,
+                        &track.trajectory_deviations,
+                    )
+                } else {
+                    embed = embed.field(
+                        "LSO Notation (measured by LSO, not a DCS comment)",
+                        measured.shorthand(),
+                        false,
+                    );
+                    measured.english()
+                };
                 if !notes.is_empty() {
                     embed = embed.field("LSO Notes (measured by LSO, not a DCS comment)", notes, false);
                 }

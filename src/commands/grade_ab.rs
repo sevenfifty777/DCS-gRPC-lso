@@ -292,6 +292,10 @@ pub(crate) fn table_header() -> String {
         header.push_str(&format!(" {label} |"));
         rule.push_str("---|");
     }
+    // The DCS LSO's deviations against the CONVENTION episodes, axis by axis and zone by zone
+    // (`crate::lso_notation::compare`).
+    header.push_str(" DCS vs LSO (CONVENTION) |");
+    rule.push_str("---|");
     format!("{header}\n{rule}")
 }
 
@@ -459,6 +463,7 @@ fn analyze(path: &Path, list_episodes: bool) -> Result<Option<String>, crate::er
         .collect::<Vec<_>>();
     let grading = parse_grading(&input.grading);
     let mut episode_lines = String::new();
+    let mut convention: Option<CatobarAssessment> = None;
     let cells = policy_cells(|policy| {
         let mut assessment = compute_catobar_assessment_with_policy(
             CatobarEvidence {
@@ -482,8 +487,20 @@ fn analyze(path: &Path, list_episodes: bool) -> Result<Option<String>, crate::er
         if list_episodes {
             episode_lines.push_str(&episode_listing(policy, &assessment));
         }
+        if *policy == CatobarGradingPolicy::default() {
+            convention = Some(assessment.clone());
+        }
         assessment
     });
+    // DCS's own deviations against the production grader's episodes, per axis and zone.
+    let comparison = match (input.dcs_grading.as_deref(), convention.as_ref()) {
+        (Some(comment), Some(assessment)) => {
+            crate::lso_notation::compare(&crate::lso_notation::parse(comment), &assessment.episodes)
+                .summary()
+        }
+        (None, _) => "no DCS comment".to_string(),
+        (Some(_), None) => String::new(),
+    };
     let report = if input.recording_started_at.is_empty() {
         path.file_name()
             .and_then(|name| name.to_str())
@@ -495,11 +512,11 @@ fn analyze(path: &Path, list_episodes: bool) -> Result<Option<String>, crate::er
     let dcs = input
         .dcs_grading
         .as_deref()
-        .and_then(|comment| comment.split_once("GRADE:"))
-        .map(|(_, rest)| rest.split_whitespace().next().unwrap_or("").to_string())
-        .unwrap_or_else(|| "none".to_string());
+        .and_then(|comment| crate::lso_notation::parse(comment).grade)
+        .unwrap_or("none")
+        .to_string();
     Ok(Some(format!(
-        "| {report} | {} | {} | {dcs} | `{}` ({evidence_source}) |{cells}{episode_lines}",
+        "| {report} | {} | {} | {dcs} | `{}` ({evidence_source}) |{cells} {comparison} |{episode_lines}",
         input.aircraft_type,
         input.outcome,
         normalized_recorded_grade(&input.pass_grade),

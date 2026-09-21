@@ -567,17 +567,10 @@ pub enum DcsWaveoffInitiator {
     Pilot,
 }
 
-/// The waveoff initiator named by a DCS LSO comment, if it names one.
+/// The waveoff initiator named by a DCS LSO comment's grade label, if it names one
+/// (`crate::lso_notation::parse`).
 pub fn dcs_waveoff_initiator(comment: &str) -> Option<DcsWaveoffInitiator> {
-    let (_, grade) = comment.split_once("GRADE:")?;
-    let grade = grade.trim_start();
-    if grade.starts_with("OWO") {
-        Some(DcsWaveoffInitiator::Pilot)
-    } else if grade.starts_with("WO") {
-        Some(DcsWaveoffInitiator::Lso)
-    } else {
-        None
-    }
+    crate::lso_notation::parse(comment).waveoff_initiator()
 }
 
 /// A neutral `WO?` becomes `WO` or `OWO` when the DCS mark names the initiator. Every other

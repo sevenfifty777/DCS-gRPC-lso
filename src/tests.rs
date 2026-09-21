@@ -366,7 +366,7 @@ mod live_2026_09 {
                 .dcs_wire
                 .map_or_else(|| "none".to_string(), |wire| format!("wire {wire}"));
             println!(
-                "| {name} | {} | {} | {dcs} | `{}` |{cells}{episode_lines}",
+                "| {name} | {} | {} | {dcs} | `{}` |{cells} no DCS comment |{episode_lines}",
                 sidecar.aircraft_type,
                 result.grading.pilot_facing_outcome(false),
                 result.pass_grade.label(),

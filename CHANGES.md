@@ -8,6 +8,22 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Fixed
 
+- The Discord "LSO Notes" line and the greenie board's `lso_notes` misread nearly every real
+  DCS comment: the translator was written from invented examples and a 25-symbol table. The
+  NATOPS underline (`_LOAR_`, the gross deviation) was rendered "slightly" and lost its
+  position, `_EGIW_` (eased gun in the wires, present on 97 of 160 recorded comments) became
+  four separate axes, `_TMRDAR_` (too much rate of descent at the ramp) became "slightly
+  turning, slightly drift", and every `GRADE:WO` comment was prefixed with six spurious
+  deviations because its label is not followed by ` : `. `src/lso_notation.rs` now parses the
+  comment against the NAVAIR 00-80T-104 glossary (about seventy symbols, the position suffixes
+  `X`/`IM`/`IC`/`AR`/`TL`/`IW`/`AW`, the three modifiers, the grade labels, `WIRE#` and `[BC]`)
+  into a typed `Notation`; all 160 distinct comments recorded up to 20 September 2026
+  (`tests/fixtures/dcs_lso_comments.txt`) parse with no unknown token, and an unknown token is
+  now reported as "not understood" instead of being skipped character by character
+  (`docs/LSO_NOTATION_PARSER_PROTOTYPE_2026-09-21.md`). The `WIRE#` reader (`parse_dcs_wire`,
+  `src/track.rs`), the waveoff-initiator reader (`dcs_waveoff_initiator`, `src/grading.rs`) and
+  the grade label of `grade-ab` now read the same parse; `WOP` (pattern waveoff, NATOPS) no
+  longer counts as an LSO waveoff.
 - A hook-animation transient that named no wire (deflection more than 200 ms after the last
   crossing, or before any crossing) was returned as the final wire estimate, so the stop
   position and the crossing selection never ran: two Tomcat traps of 20 September 2026 read
@@ -25,6 +41,28 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Changed
 
+- When DCS wrote no comment (touch-and-go, no ball call, a straight-in it never saw), the
+  Discord embed now writes the project's own graded episodes in the same LSO shorthand and the
+  same English: a new "LSO Notation (measured by LSO, not a DCS comment)" field (for example
+  `_LULX_ SLOX FIM (SLOIM) SLOAR`) and the "LSO Notes (measured by LSO, not a DCS comment)"
+  field rendered from it (`crate::lso_notation::from_episodes`). Only episodes that affected
+  the grade are written, sized by their peak severity and placed by their peak zone. The gate
+  summary (`describe_measured_deviations`) remains the fallback when there are no episodes
+  (V/STOL, gates-only grading).
+- The JSON report gains two additive fields: `dcs_grading_parsed`, the DCS comment read against
+  the glossary (grade label, wire, deviations as symbols/magnitude/suffix, ball call, unknown
+  tokens), and `lso_notation_measured`, the graded episodes in the same shorthand. Both are
+  absent when there is nothing to write; `schema_version` stays 9.
+- `lso grade-ab` gains a last column, "DCS vs LSO (CONVENTION)": the DCS LSO's deviations
+  against the production grader's episodes, axis by axis (glideslope, lineup, AoA) and zone by
+  zone (start, middle, in close, ramp), as `= LU@X · DCS only AoA@X · LSO only GS@IC`,
+  `agree (n)`, `nothing to compare` or `no DCS comment` (`crate::lso_notation::compare`).
+  Sizes are not compared. Power, attitude and landing symbols and the `TL`/`IW` positions take
+  no part.
+- New `docs/LSO_SHORTHAND_GLOSSARY.md`: every NATOPS symbol, suffix, grade label and modifier,
+  with the number of recorded DCS comments using each, the grader axis it is compared against,
+  and the three readings settled on 21 September 2026: `[BC]` is the ball call made (DCS records
+  it only when comms work), `W` is "wings not level", parentheses after `WO` hold the reason.
 - A recognisable final with no groove entry (the aircraft never rolled out on the centreline) is
   a pattern waveoff: new grade `WO(P)` (`PassGrade::PatternWaveoff`), no points, instead of a
   gate grade computed from readings taken in the turn (`compute_pass_grade_with_reason_and_policy`,

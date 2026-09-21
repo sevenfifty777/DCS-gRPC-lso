@@ -5196,25 +5196,11 @@ fn dcs_grade_is_waveoff(comment: Option<&str>) -> bool {
     comment.is_some_and(|comment| crate::grading::dcs_waveoff_initiator(comment).is_some())
 }
 
+/// The wire named by the DCS comment's `WIRE#` callout (`crate::lso_notation::parse`), kept only
+/// when it is one of the four wires.
 fn parse_dcs_wire(comment: &str) -> Option<u8> {
-    let (_, suffix) = comment.split_once("WIRE#")?;
-    let suffix = suffix.trim_start();
-    let digit_count = suffix.bytes().take_while(u8::is_ascii_digit).count();
-    if digit_count == 0 {
-        return None;
-    }
-    let (digits, remainder) = suffix.split_at(digit_count);
-    if !remainder.is_empty()
-        && !remainder
-            .chars()
-            .next()
-            .is_some_and(|next| next.is_ascii_whitespace() || next == '[')
-    {
-        return None;
-    }
-    let wire = digits.parse::<u64>().ok()?;
-    u8::try_from(wire)
-        .ok()
+    crate::lso_notation::parse(comment)
+        .wire
         .filter(|wire| (1..=4).contains(wire))
 }
 
