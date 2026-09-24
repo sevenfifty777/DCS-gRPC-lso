@@ -95,6 +95,12 @@ since the `0.2.0` tag are listed under Unreleased.
   reason `hypothetical_hook_up_plane_crossing`, `wire_primary` `rust_hypothetical`, and the
   outcome reads "T&G (CQ) — would have caught wire N".
 
+### Security
+
+- `cargo audit` failed on RUSTSEC-2026-0285 (rustls 0.23.40: TLS 1.3 handshake messages accepted
+  across encryption levels), pulled transitively by `serenity` → `reqwest`. `Cargo.lock` now
+  resolves `rustls` 0.23.45 and `rustls-webpki` 0.103.15; no `Cargo.toml` change.
+
 ## [0.5.0] - 2026-09-13
 
 ### Fixed
