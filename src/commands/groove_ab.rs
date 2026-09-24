@@ -223,7 +223,7 @@ fn analyze(path: &Path) -> Result<Option<String>, crate::error::Error> {
     )))
 }
 
-fn normalized_recorded_grade(grade: &str) -> &str {
+pub(crate) fn normalized_recorded_grade(grade: &str) -> &str {
     match grade {
         "Perfect" => "_OK_",
         "Ok" => "OK",
@@ -232,12 +232,15 @@ fn normalized_recorded_grade(grade: &str) -> &str {
         "Cut" => "C",
         "Bolter" => "B",
         "WaveoffUnknown" => "WO?",
+        "Waveoff" => "WO",
+        "OwnWaveoff" => "OWO",
+        "PatternWaveoff" => "WO(P)",
         "Incomplete" | "Unknown" => "NC",
         grade => grade,
     }
 }
 
-fn parse_grading(value: &serde_json::Value) -> Grading {
+pub(crate) fn parse_grading(value: &serde_json::Value) -> Grading {
     if let Some(kind) = value.as_str() {
         return match kind {
             "Bolter" => Grading::Bolter,
@@ -272,7 +275,7 @@ fn parse_grading(value: &serde_json::Value) -> Grading {
     Grading::Unknown
 }
 
-fn collect_json_files(input: &Path) -> Result<Vec<PathBuf>, crate::error::Error> {
+pub(crate) fn collect_json_files(input: &Path) -> Result<Vec<PathBuf>, crate::error::Error> {
     let metadata = std::fs::metadata(input)?;
     if metadata.is_file() {
         return Ok(vec![input.to_path_buf()]);

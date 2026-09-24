@@ -67,6 +67,18 @@ struct RecoveryReport<'a> {
     spot_bonus_points: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dcs_grading: Option<&'a str>,
+    /// `dcs_grading` read against the NATOPS shorthand glossary (`crate::lso_notation::parse`):
+    /// grade label, wire, each deviation as glossary symbols, magnitude and position suffix,
+    /// the ball call, and any token the glossary could not read. Additive; absent with
+    /// `dcs_grading`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dcs_grading_parsed: Option<crate::lso_notation::Notation>,
+    /// The graded episodes written in the same shorthand (`crate::lso_notation::from_episodes`),
+    /// what the Discord embed shows when DCS wrote no comment. Comparable with
+    /// `dcs_grading_parsed` axis by axis and zone by zone. Absent when no episode affected the
+    /// grade.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lso_notation_measured: Option<crate::lso_notation::Notation>,
     gate_deviations: &'a GateDeviations,
     /// Continuous groove-to-touchdown GS/lineup series (see `TrajectoryDeviation`), additive
     /// to `gate_deviations`. Empty for a pass that never entered the groove.
@@ -426,6 +438,12 @@ fn recovery_outcome(grading: &Grading, is_vstol: bool) -> String {
         // Intentional bolters are valid only for arrested recoveries. Keep the
         // V/STOL fallback defensive in case an invalid grading reaches this layer.
         (true, Grading::TouchAndGo { .. }) => "Waveoff/Go-around".to_string(),
+        (
+            false,
+            Grading::TouchAndGo {
+                cable_estimated: Some(estimated),
+            },
+        ) => format!("T&G (CQ) — would have caught wire {estimated}"),
         (false, Grading::TouchAndGo { .. }) => "T&G (CQ)".to_string(),
         (_, Grading::WaveoffUnknown) => "Waveoff/Go-around — initiator unknown".to_string(),
         (true, Grading::Recovered { .. }) => "Spot 7.5".to_string(),
@@ -1400,14 +1418,30 @@ pub async fn record_recovery(
         }
     };
 
-    let outcome = recovery_outcome(&track.grading, track.carrier_info.is_vstol());
+    // A waveoff whose initiator the DCS mark named reads as such everywhere; the neutral
+    // "initiator unknown" wording is kept for a go-around without a mark.
+    let dcs_named_waveoff = match track.pass_grade {
+        crate::grading::PassGrade::Waveoff => Some("Waveoff — ordered by the LSO (DCS)"),
+        crate::grading::PassGrade::OwnWaveoff => Some("Own waveoff (DCS)"),
+        crate::grading::PassGrade::PatternWaveoff => Some("Pattern waveoff — no roll-out on final"),
+        _ => None,
+    };
+    let outcome = dcs_named_waveoff.map_or_else(
+        || recovery_outcome(&track.grading, track.carrier_info.is_vstol()),
+        str::to_string,
+    );
     // Pilot-facing surfaces (Discord, PNG chart, SQLite/greenie-board log) use a simplified
     // headline that never contradicts what the pilot saw in DCS: see
     // Grading::pilot_facing_outcome for the rationale. The full `outcome` string above (which can
     // show a diverging Rust estimate) is reserved for the JSON report.
-    let outcome_headline = track
-        .grading
-        .pilot_facing_outcome(track.carrier_info.is_vstol());
+    let outcome_headline = dcs_named_waveoff.map_or_else(
+        || {
+            track
+                .grading
+                .pilot_facing_outcome(track.carrier_info.is_vstol())
+        },
+        str::to_string,
+    );
     let (wire_estimated, wire_dcs) = match track.grading {
         Grading::Recovered {
             cable,
@@ -1420,6 +1454,10 @@ pub async fn record_recovery(
     let wire_primary = match (wire_dcs, wire_estimated) {
         (Some(dcs), Some(estimated)) if dcs == estimated => "agreement",
         (Some(_), _) => "dcs_lqm",
+        // A hook-up pass: the wire the hook would have caught, never an arrestment.
+        (None, Some(_)) if matches!(track.grading, Grading::TouchAndGo { .. }) => {
+            "rust_hypothetical"
+        }
         (None, Some(_)) => "rust_estimated",
         (None, None) => "none",
     };
@@ -1444,8 +1482,15 @@ pub async fn record_recovery(
         | crate::track::Completeness::UnconfirmedArrest
         | crate::track::Completeness::BufferLimit) => completeness_cause(cause),
         crate::track::Completeness::Complete => match track.grading {
-            Grading::WaveoffUnknown => "go_around_initiator_unknown",
-            Grading::ApproachOnly => "approach_only_outcome_unknown",
+            Grading::WaveoffUnknown => match track.pass_grade {
+                crate::grading::PassGrade::Waveoff => "dcs_lso_waveoff",
+                crate::grading::PassGrade::OwnWaveoff => "dcs_own_waveoff",
+                _ => "go_around_initiator_unknown",
+            },
+            Grading::ApproachOnly => match track.pass_grade {
+                crate::grading::PassGrade::PatternWaveoff => "pattern_waveoff_no_groove_entry",
+                _ => "approach_only_outcome_unknown",
+            },
             Grading::Bolter => "deck_crossing_without_arrest",
             Grading::TouchAndGo { .. } => "hook_up_near_deck",
             Grading::Recovered { .. } => match track.arrest_evidence {
@@ -1620,6 +1665,9 @@ pub async fn record_recovery(
         spot_distance_m: track.spot_distance_m,
         spot_bonus_points: track.spot_grade.map(|g| g.bonus_points()),
         dcs_grading: track.dcs_grading.as_deref(),
+        dcs_grading_parsed: track.dcs_grading.as_deref().map(crate::lso_notation::parse),
+        lso_notation_measured: Some(crate::lso_notation::from_episodes(&track.grading_episodes))
+            .filter(|notation| !notation.deviations.is_empty()),
         gate_deviations: &track.gate_deviations,
         trajectory_deviations: &track.trajectory_deviations,
         grading_episodes: &track.grading_episodes,
@@ -1999,10 +2047,12 @@ pub async fn record_recovery(
                 }
             }
 
-            // LSO notation and plain-English notes from DCS grading string. DCS never emits this
-            // for a touch-and-go (only for an arrested pass), so fall back to a plain-language
-            // summary of our own measured deviations -- explicitly labelled as such, never
-            // presented as a DCS/NATOPS comment (see `describe_measured_deviations`, src/grading.rs).
+            // LSO notation and plain-English notes from the DCS grading string. DCS writes none
+            // for a touch-and-go, a pass without a ball call or a straight-in it never saw, so
+            // fall back to the project's own graded episodes written in the same shorthand
+            // (`crate::lso_notation::from_episodes`), and to the gate summary when there are no
+            // episodes (V/STOL, gates-only grading) -- always labelled as measured, never
+            // presented as a DCS/NATOPS comment.
             if let Some(ref notation) = track.dcs_grading {
                 embed = embed.field("LSO Notation", notation.as_str(), false);
                 let notes = crate::lso_notation::to_english(notation);
@@ -2010,10 +2060,20 @@ pub async fn record_recovery(
                     embed = embed.field("LSO Notes", notes, false);
                 }
             } else {
-                let notes = crate::grading::describe_measured_deviations(
-                    &track.gate_deviations,
-                    &track.trajectory_deviations,
-                );
+                let measured = crate::lso_notation::from_episodes(&track.grading_episodes);
+                let notes = if measured.deviations.is_empty() {
+                    crate::grading::describe_measured_deviations(
+                        &track.gate_deviations,
+                        &track.trajectory_deviations,
+                    )
+                } else {
+                    embed = embed.field(
+                        "LSO Notation (measured by LSO, not a DCS comment)",
+                        measured.shorthand(),
+                        false,
+                    );
+                    measured.english()
+                };
                 if !notes.is_empty() {
                     embed = embed.field("LSO Notes (measured by LSO, not a DCS comment)", notes, false);
                 }
@@ -2365,8 +2425,20 @@ mod tests {
             cable_estimated: Some(3),
         };
 
-        assert_eq!(recovery_outcome(&grading, false), "T&G (CQ)");
+        assert_eq!(
+            recovery_outcome(&grading, false),
+            "T&G (CQ) — would have caught wire 3"
+        );
         assert_eq!(recovery_outcome(&grading, true), "Waveoff/Go-around");
+        assert_eq!(
+            recovery_outcome(
+                &Grading::TouchAndGo {
+                    cable_estimated: None
+                },
+                false
+            ),
+            "T&G (CQ)"
+        );
     }
 
     #[test]

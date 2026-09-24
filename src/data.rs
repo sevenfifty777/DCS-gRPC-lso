@@ -150,6 +150,18 @@ static FA18C: AirplaneInfo = AirplaneInfo {
     },
     glide_slope: 3.5,
     hook_draw_argument: Some(25),
+    // Documented external band, no live contradiction observed so far (no Hornet pass in the
+    // September 2026 corpus); left grading until the same cockpit check is flown for it.
+    aoa_grading_calibrated: true,
+    // Two live Hornet traps on CVN-72 under DCS 2.9.29 ran 89 m past the 3-wire (14 September
+    // 2026, Ducks) and 88 m (20 September, ERGO, `docs/RECOVERY_REVIEW_2026-09-20.md`, section
+    // 4), the same run-out as the Tomcat. But the `wire_4_01_FA18C` fixture stopped 60 m past
+    // its 4-wire, which with 87 m lands 5.3 m from the 1-wire plane, inside the 6 m residual
+    // guard (`WIRE_STOP_POSITION_MAX_RESIDUAL_M`): the stop position would name that trap
+    // "1-wire". Left off until the fixture's run-out is explained or the estimate is
+    // cross-checked against the deceleration onset (53 to 59 m past the engaged wire on every
+    // live Tomcat and Hornet trap).
+    arresting_run_out_m: None,
     aoa_rating: |aoa: f64| -> Aoa {
         // https://forums.vrsimulations.com/support/index.php/Navigation_Tutorial_Flight#Angle_of_Attack_Bracket
         if aoa <= 6.9 {
@@ -167,18 +179,22 @@ static FA18C: AirplaneInfo = AirplaneInfo {
 };
 
 /// F-14 AOA rating shared by all Tomcat variants.
-/// https://www.heatblur.se/F-14Manual/cockpit.html?highlight=aoa#approach-indexer
-/// AOA degrees for Tomcat calculated by degrees=((units/1.0989) - 3.01)
-/// from units in manual based off conversation found here:
-/// https://forum.dcs.world/topic/228893-aoa-units-to-degrees-conversion/
+///
+/// Thresholds measured on the cockpit approach indexer itself (calibration flight of 14
+/// September 2026, F-14B(U), two pilots, `docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`): the
+/// flight model's own AoA (`LoGetAngleOfAttack`) at every lamp switch, 30 to 83 switches per
+/// threshold, hysteresis under 0.1 deg. Measured medians 9.47 / 9.93 / 10.82 / 11.27 deg, so the
+/// donut alone covers 9.93 to 10.82 deg (centre 10.4). The previous band (9.7 / 10.2 / 11.1 /
+/// 11.6, from the manual's units and a forum units-to-degrees formula) sat 0.3 deg too high.
+/// The LSO's own computed AoA matched the flight model within 0.1 deg (median) on all 14 passes.
 fn f14_aoa_rating(aoa: f64) -> Aoa {
-    if aoa <= 9.7 {
+    if aoa <= 9.45 {
         Aoa::Fast
-    } else if aoa <= 10.2 {
+    } else if aoa <= 9.95 {
         Aoa::SlightlyFast
-    } else if aoa < 11.1 {
+    } else if aoa < 10.8 {
         Aoa::OnSpeed
-    } else if aoa < 11.6 {
+    } else if aoa < 11.25 {
         Aoa::SlightlySlow
     } else {
         Aoa::Slow
@@ -225,6 +241,15 @@ static F14A: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
+    // See `aoa_grading_calibrated`: band measured on the F-14B(U) cockpit indexer on 14 September
+    // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
+    // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
+    aoa_grading_calibrated: true,
+    // Seven F-14B(U) traps with a DCS wire on 14 and 15 September 2026 (85 to 89 m past the
+    // wire, 1-, 2- and 4-wires, entry speeds 53 to 76 m/s) and the three 2 and 3 September
+    // fixtures (`f14bu_hookdown_wire1/2/4`, residual 0.2 to 3.9 m): ten of ten. The A and B
+    // share the airframe mass class.
+    arresting_run_out_m: Some(87.0),
     aoa_rating: f14_aoa_rating,
 };
 
@@ -234,6 +259,15 @@ static F14B: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
+    // See `aoa_grading_calibrated`: band measured on the F-14B(U) cockpit indexer on 14 September
+    // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
+    // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
+    aoa_grading_calibrated: true,
+    // Seven F-14B(U) traps with a DCS wire on 14 and 15 September 2026 (85 to 89 m past the
+    // wire, 1-, 2- and 4-wires, entry speeds 53 to 76 m/s) and the three 2 and 3 September
+    // fixtures (`f14bu_hookdown_wire1/2/4`, residual 0.2 to 3.9 m): ten of ten. The A and B
+    // share the airframe mass class.
+    arresting_run_out_m: Some(87.0),
     aoa_rating: f14_aoa_rating,
 };
 
@@ -243,6 +277,15 @@ static F14BU: AirplaneInfo = AirplaneInfo {
     landing_reference: F14_HOOK,
     glide_slope: 3.5,
     hook_draw_argument: F14_HOOK_DRAW_ARGUMENT,
+    // See `aoa_grading_calibrated`: band measured on the F-14B(U) cockpit indexer on 14 September
+    // 2026 (`f14_aoa_rating`); the A and B share the same Heatblur indexer and AoA vane, and the
+    // earlier "3-4 deg fast on every pass" was the pilots, not the computation.
+    aoa_grading_calibrated: true,
+    // Seven F-14B(U) traps with a DCS wire on 14 and 15 September 2026 (85 to 89 m past the
+    // wire, 1-, 2- and 4-wires, entry speeds 53 to 76 m/s) and the three 2 and 3 September
+    // fixtures (`f14bu_hookdown_wire1/2/4`, residual 0.2 to 3.9 m): ten of ten. The A and B
+    // share the airframe mass class.
+    arresting_run_out_m: Some(87.0),
     aoa_rating: f14_aoa_rating,
 };
 
@@ -262,21 +305,29 @@ static T45: AirplaneInfo = AirplaneInfo {
     // Same draw-argument index as the F/A-18C (25), confirmed by the user. Polarity likewise
     // assumed, not independently confirmed for the T-45 -- see `hook_draw_argument`.
     hook_draw_argument: Some(25),
+    // See `aoa_grading_calibrated`: band measured on the VNAO T-45C cockpit indexer on 14
+    // September 2026 (`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`).
+    aoa_grading_calibrated: true,
+    // Not constant enough: 52 to 61 m past the wire on the four traps of 14 and 15 September
+    // 2026, 49 m on the 2 and 3 September fixtures (`t45_hookdown_wire3`, `wire4`), a spread of
+    // one pendant spacing. The stop position cannot name the Goshawk's wire.
+    arresting_run_out_m: None,
     aoa_rating: |aoa: f64| -> Aoa {
-        // Thresholds derived from VNAO T-45 v1.0.2 DEU (DisplayElectronicsUnit.lua).
-        // The cockpit AOA indexer uses UNITS_AOA (set by the EFM DLL). A commented reference
-        // in the DEU (`getAngleOfAttack()*degrees_per_radian + 10`) implies the mapping
-        // degrees ≈ UNITS_AOA - 10. Indexer thresholds in UNITS → degrees:
-        //   Fast  (chevron "^"):  UNITS <= 16.5  → degrees <= 6.5
-        //   OnSpd (circle  "O"):  16 <= UNITS <= 18  → 6.0–8.0° (centre 7.0°)
-        //   Slow  (vee    "V"):   UNITS >= 17.5  → degrees >= 7.5
-        if aoa <= 6.0 {
+        // Thresholds measured on the cockpit indexer lamps (arguments 320/321/322) against the
+        // flight model's own AoA (`LoGetAngleOfAttack`), 72 to 88 lamp switches per threshold,
+        // hysteresis under 0.05 deg: 8.00 / 8.25 / 8.75 / 9.00 deg. The donut alone covers 8.25
+        // to 8.75 deg (centre 8.5); a chevron with the donut adds 0.25 deg on each side.
+        // The previous band (6.0 / 6.5 / 7.5 / 8.0) rested on the DEU comment "degrees =
+        // UNITS_AOA - 10", which the cockpit gauge disproves: gauge units = 6.6 + 1.23 * degrees
+        // (17 units = 8.5 deg). That band called a centred donut "slow" and a fast chevron
+        // "on speed" on every T-45 pass ever graded.
+        if aoa <= 8.0 {
             Aoa::Fast
-        } else if aoa <= 6.5 {
+        } else if aoa <= 8.25 {
             Aoa::SlightlyFast
-        } else if aoa < 7.5 {
+        } else if aoa < 8.75 {
             Aoa::OnSpeed
-        } else if aoa < 8.0 {
+        } else if aoa < 9.0 {
             Aoa::SlightlySlow
         } else {
             Aoa::Slow
@@ -306,6 +357,9 @@ static AV8B: AirplaneInfo = AirplaneInfo {
     // reference path terminates at 120 ft above the water abeam spot 7.5.
     glide_slope: 3.0,
     hook_draw_argument: None,
+    // V/STOL AoA never grades (see `compute_vstol_approach_grade_points`); the flag is moot.
+    aoa_grading_calibrated: false,
+    arresting_run_out_m: None,
     // AV-8B target approach AOA: 10-12 degrees.  This rating is used only
     // for the trace colour / AOA indication; it does NOT change the V/STOL
     // approach grade, which remains based on GS + LU at the three gates.
@@ -546,6 +600,23 @@ pub struct AirplaneInfo {
     /// confirmed against a test corpus for the F/A-18C — reused unverified for every other type
     /// below (see `HookObservation::polarity` in `Track::new`, `src/track.rs`).
     pub hook_draw_argument: Option<u32>,
+    /// PROTOTYPE (branch `feature/ramp-aoa-grading-prototype`): whether this type's computed AoA
+    /// has been checked against its own cockpit indexer, so the AoA axis may change a grade.
+    /// `false` keeps AoA episodes in the report as diagnostics only, under
+    /// `CatobarGradingPolicy::aoa_requires_calibrated_type` (`src/grading.rs`). The T-45C and
+    /// the F-14 were calibrated on 14 September 2026 with a client-side export of the flight
+    /// model's AoA and the cockpit lamps (`tools/aoa_calibration/`,
+    /// `docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`): the computed AoA matched the flight model
+    /// within 0.1 deg (median) and the bands were rewritten from the measured lamp thresholds.
+    /// The F/A-18C keeps its documented external band until the same flight is flown for it.
+    pub aoa_grading_calibrated: bool,
+    /// Arresting-gear run-out in DCS for this type: how far past the engaged wire the aircraft
+    /// comes to rest (metres along the landing area, in the frame of `Datum::x`). PROJECT-DERIVED
+    /// from the traps with a DCS landing mark of 14 and 15 September 2026, where it did not vary
+    /// with the entry speed (`docs/RECOVERY_REVIEW_2026-09-15.md`, section 6). Lets
+    /// `Track::wire_estimate_from_stop_position` name the wire on an arrestment that DCS did not
+    /// mark, from where the aircraft stopped. `None` for a type with no measured value.
+    pub arresting_run_out_m: Option<f64>,
 }
 
 impl PartialEq for AirplaneInfo {

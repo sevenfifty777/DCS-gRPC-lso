@@ -21,7 +21,21 @@ The persisted result separates outcome, display grade, optional points, comment/
 completeness, grading version, cable estimate and DCS cable evidence.
 
 An incomplete observation has grade `NC` and `points = null`. `WO?` means a go-around/waveoff was
-observed but its initiator was not proven. The module never invents OWO, WOP or a pilot waveoff.
+observed but its initiator was not proven. The initiator is only ever taken from the DCS landing
+quality mark: `GRADE:WO` gives `WO` (ordered by the LSO), `GRADE:OWO` gives `OWO` (own waveoff);
+the module never invents either, nor a WOP. DCS writes the mark only for a pilot who has checked
+in with the ship's ATC; without the check-in it writes `GRADE: NC : No proper communications` as a
+plain comment event the module does not receive, and the pass stays `WO?`.
+
+A recognisable final that never rolled out on the centreline (no groove entry) is a pattern
+waveoff, `WO(P)`, `points = null`, whatever its gate readings say. The gates of such a pass were
+captured in a turn and do not describe an approach (18 September 2026, 20:30).
+
+A deck contact after a DCS waveoff call (a trap, a bolter or a touch-and-go with a correlated
+touchdown event) is graded on the approach flown like any other pass: a human LSO may overrule
+the DCS call, so the DCS mark never changes a graded pass. The grade reason records that DCS
+called a waveoff. Only a bolter decided from geometry alone, with no touchdown event at all, is
+refused when DCS says waveoff (confirmed live, 5 September 2026).
 
 ## Gates
 
@@ -58,9 +72,10 @@ historical module/MOOSE-inspired model pending validation:
 | `C` | quarter-NM GS strictly below `-2.5 deg` | 0.0 |
 | `B` | confirmed bolter and all three gates valid | 2.5 |
 | `WO` | DCS LSO ordered a waveoff and the aircraft never touched the deck (`OFFICIAL` symbol, `PROJECT-DERIVED` points) | 1.0 |
-| `C` | deck contact after a DCS-ordered waveoff (NAVAIR 00-80T-104: landing after a waveoff), whatever the gates say | 0.0 |
-| `WO?` | neutral waveoff/go-around, initiator unknown | none |
-| `NC` | insufficient/invalid telemetry or unconfirmed trap | none |
+| `OWO` | own waveoff named by the DCS LSO (`GRADE:OWO`), no deck contact | none |
+| `WO?` | neutral waveoff/go-around, initiator unknown (no DCS mark) | none |
+| `WO(P)` | pattern waveoff: a recognisable final with no groove entry, never rolled out on the centreline | none |
+| `NC` | not counted: insufficient/invalid telemetry or unconfirmed trap | none |
 
 A hook-up deck contact (`T&G (CQ)`) keeps the measured approach grade and never receives wire or
 trap upgrades. A `WO` outcome does not require three valid gates; every other grade does.
@@ -70,9 +85,86 @@ trap upgrades. A `WO` outcome does not require three valid gates; every other gr
 automatic rule emits it. The former local "wire 3 plus 15-18.99 seconds" Unicorn rule is disabled.
 Groove time and estimated wire cannot produce `_OK_`. A touch-and-go cannot receive `_OK_` or points.
 
-AoA is chart information only. No AoA table changes the grade. Trends, duration of deviations,
-continuous excursions, power, sink rate, wind, weight and LSO calls are not scored because no
-validated per-aircraft rule has been adopted.
+The three-gate table above is the historical model and still decides a pass that has no
+continuous trajectory. Since the episode grader (next section) a CATOBAR pass with a recorded
+groove is graded from its episodes, and AoA does grade the T-45C, the F-14 and the F/A-18C: the
+T-45C and F-14 bands were measured on the cockpit indexer on 14 September 2026
+(`docs/AOA_CALIBRATION_REVIEW_2026-09-14.md`), the F/A-18C band is documented but not yet verified.
+Power, wind, weight and LSO calls are still not scored.
+
+## Episode grading (CATOBAR, continuous trajectory)
+
+`PROJECT-DERIVED`. From groove entry to touchdown the glideslope, lineup and AoA series are cut
+into episodes: a run of samples outside the target band, at least two samples long, ended by two
+consecutive samples back inside it. Each episode carries a size, a zone and a correction verdict.
+
+| Size | Glideslope | Lineup | AoA | LSO shorthand |
+|---|---|---|---|---|
+| small | 0.5 to 1.0 deg | 1.0 to 2.0 deg | donut plus a chevron ("slightly") | `(X)`, a little |
+| medium | 1.0 to 2.5 deg | 2.0 to 3.0 deg | chevron alone ("fast", "slow") | `X`, moderate |
+| large | 2.5 deg and above | 3.0 deg and above | more than 2.0 deg outside the on-speed band (`aoa_large_error_deg`) | `_X_`, gross |
+
+The glideslope thresholds are the code's (`gs_severity` in `src/grading.rs`, unchanged since the
+episode grader was introduced); an earlier version of this table said 1.5 deg for gross. Lowering
+it to 1.5 was tried on the 45 recorded passes on 15 September 2026 and moved one grade
+(`docs/RECOVERY_REVIEW_2026-09-15.md`, section 8).
+
+Three rules added on 15 September 2026 (`docs/RECOVERY_REVIEW_2026-09-15.md`, section 12), all
+part of `CONVENTION`:
+
+- **Gross AoA needs one second** (`aoa_large_min_duration_s`). A run of consecutive gross AoA
+  samples shorter than one second is demoted to moderate, sample by sample; the episode keeps its
+  length and its peak. In the cockpit: the chevron alone, 2 deg past the donut edge (F-14 below
+  7.95 or above 12.8 deg, T-45C below 6.25 or above 10.75), held for a full second. Without it a
+  single gross sample as the nose drops at touchdown made a three-second moderate episode gross.
+- **The series end at the physical touchdown** (`series_ends_at_physical_touchdown`,
+  `physical_touchdown_time`): the first ramp-zone sample with the aircraft within 1.2 m of the
+  deck and its sink rate under 1.5 m/s after a descent of 2 m/s or more in the preceding second.
+  The DCS touchdown event arrives 0.6 to 0.9 s after the wheels; the samples in between are
+  rollout and are not graded. A pass still flying over the landing point is not cut.
+- **The last 100 m are judged in height** (`near_deck_reference_distance_m`): inside 100 m a
+  glideslope or lineup deviation is sized as the angle the same height or lateral error would
+  make at 100 m, so the thresholds above become 0.87 / 1.75 / 4.4 m of height and 1.75 / 3.5 /
+  5.2 m of lineup, and a foot of height at 5 m is no longer ten degrees.
+
+Zones by distance to the landing point: START from groove entry to 926 m, MIDDLE to 463 m, IN CLOSE
+to 150 m, RAMP the last 150 m. The correction verdict looks at what happened after the peak: good
+(durable improvement within the zone's deadline, 3.0 s at the start down to 0.75 s at the ramp, and
+back inside the band), average (real but late or incomplete improvement, or a series that ended at
+touchdown before anything could be seen), poor (no improvement, worsening after an improvement, or
+two or more reversals larger than the swing threshold: 0.3 deg for glideslope and lineup, 1.0 deg
+for AoA under `CONVENTION`, because the computed AoA carries about 0.8 deg of spread). An AoA
+episode shorter than one second is written to the report but does not grade.
+
+Two scoring models exist behind `CatobarGradingPolicy` (`src/grading.rs`):
+
+- **Weighted ladder** (`BASELINE`, `PROTOTYPE`): effective severity = corrected level (size, minus
+  one for good, plus one for poor) times the zone weight (1.0 / 1.2 / 1.5 / 2.0). The pass grade
+  is `OK` below 1.5, `(OK)` below 3.0, `--` otherwise, from the worst episode.
+- **Convention table** (`CONVENTION`, the production default since 15 September 2026): the grade
+  band of each episode is read from the written LSO convention (NAVAIR 00-80T-104 grade
+  definitions, LSO NATOPS shorthand), on the same scale:
+
+  | Deviation | Correction | START, MIDDLE | IN CLOSE, RAMP |
+  |---|---|---|---|
+  | a little | good | `OK` | `OK` |
+  | a little | average | `OK` | `(OK)` |
+  | a little | poor | `(OK)` | `(OK)` |
+  | moderate | good | `OK` | `(OK)` |
+  | moderate | average | `(OK)` | `(OK)` |
+  | moderate | poor | `--` | `--` |
+  | gross | good | `(OK)` | `--` |
+  | gross | average or poor | `--` | `--` |
+
+  "Good" in this table also requires that the axis came back inside its band; a gross excursion
+  reduced to a moderate one and held there is an average correction. The three cells where the
+  weighted ladder disagreed with the convention were: moderate with average correction in close or
+  at the ramp (ladder `--`, convention `(OK)`), a little with poor correction in close or at the
+  ramp (ladder `--`, convention `(OK)`), and gross with good correction at the start or middle
+  (ladder `(OK)`, convention `--` unless back in the band).
+
+`lso grade-ab <reports>` prints both models and every intermediate step per recorded pass. The
+comparison on 44 recorded passes is in `docs/GRADING_CONVENTION_PROTOTYPE_2026-09-15.md`.
 
 ## Commanded hook state
 
@@ -107,10 +199,27 @@ endpoints, more than 3 m vertically from the cable, or the telemetry bracket exc
 prevents an overhead or high-altitude crossing of an infinite cable plane from suppressing the real
 deck crossing.
 
-The selected wire is the last valid crossing no more than 200 ms before a complete external hook
-transient: stable down (`raw >= 0.8`) for at least 0.2 s, deflected (`raw <= 0.7`) within 2 s of the
-touchdown event, then recovered to down within 8 s. A stable hook-up value, a transition that does
-not recover, stale samples, and geometry without a matching hook transient produce no estimate.
+Three methods name the wire, tried in this order, each running only when the previous one named
+nothing:
+
+1. **Hook transient.** The last valid crossing no more than 200 ms before a complete external hook
+   transient: stable down (`raw >= 0.8`) for at least 0.2 s, deflected (`raw <= 0.7`) within 2 s of
+   the touchdown reference, then recovered to down within 8 s. A transient with no crossing in
+   that window (the deflection came before the first crossing, or more than 200 ms after the
+   last) is a non-answer, not a verdict: its timings are kept in `wire_estimation`
+   (`hook_deflection_time_dcs`, `hook_recovered_time_dcs`, `correlation_lag_ms`) and the next
+   method runs.
+2. **Stop position.** On a hook-down pass whose deck kinematics confirmed the stop, and for a
+   type with a measured run-out (`arresting_run_out_m`, 87 m on every F-14 variant), the crossing
+   whose aircraft position lies within 6 m of `stop + run_out`; reason `stop_position_run_out`,
+   medium confidence.
+3. **Crossing selection.** The earliest crossing at or after the arrest deceleration onset, else
+   the last crossing before the touchdown reference, provided the reference is within 300 ms of
+   the onset (or of that crossing when no onset was seen); reason `continuous_hook_plane_crossing`,
+   or `hypothetical_hook_up_plane_crossing` on a hook-up pass.
+
+A stable hook-up value, a transition that does not recover and stale samples leave method 1
+silent; geometry without any of the three produces no estimate.
 
 `wire_dcs` is parsed independently from LQM text and remains authoritative whenever present. The
 estimate is the labelled fallback when DCS supplies no wire, including a recovery supervised by a

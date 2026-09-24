@@ -1038,7 +1038,11 @@ gravités brute/corrigée/effective, le pic (instant, zone, valeur brute, erreur
 direction/classe), les délais vers l'amélioration durable et AUCUN, le niveau et le nombre de
 samples stabilisés, l'aggravation postérieure, les inversions, la qualité et la justification
 déterministe de correction, `affects_grade` et le diagnostic éventuel d'AoA non fiable.
-Le tableau est vide pour V/STOL.
+Le tableau est vide pour V/STOL. Depuis le 21 septembre 2026, `dcs_grading_parsed` ajoute la
+lecture typée du commentaire DCS contre le glossaire NATOPS (`src/lso_notation.rs` :
+`grade`, `wire`, `deviations[]{symbols, magnitude, suffix, waveoff}`, `ball_call`, `free_text`,
+`unknown[]`) et `lso_notation_measured` les épisodes ayant compté pour la note écrits dans la
+même notation ; les deux sont absents quand il n'y a rien à écrire.
 
 SQLite utilise le vocabulaire snake_case du JSON. L'absence d'un nouveau champ signifie
 legacy/unknown, jamais favorable. `points_awarded` (`src/db.rs`, booléen) distingue explicitement

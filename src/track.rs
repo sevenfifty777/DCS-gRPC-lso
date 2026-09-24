@@ -328,6 +328,20 @@ const POST_ARREST_EVIDENCE_WINDOW_S: f64 = 10.0;
 /// `WireEstimateEvidence::reason` when the estimate came from the hook transient; the only reason
 /// that also counts as arrest evidence (`arrest_evidence == "hook_transient"`).
 const HOOK_TRANSIENT_ESTIMATE_REASON: &str = "hook_deflection_correlated_with_wire_crossing";
+/// `WireEstimateEvidence::reason` when the wire was named from where the aircraft came to rest
+/// (`Track::wire_estimate_from_stop_position`).
+const STOP_POSITION_ESTIMATE_REASON: &str = "stop_position_run_out";
+/// `WireEstimateEvidence::reason` on a pass flown with the hook up: the crossing sequence says
+/// which wire the hook would have caught, useful feedback on an intentional bolter, but nothing
+/// was caught and the number must never read as an arrestment.
+const HYPOTHETICAL_HOOK_UP_REASON: &str = "hypothetical_hook_up_plane_crossing";
+/// Largest distance between `stop position + run-out` and the nearest recorded hook-plane
+/// crossing for the stop-position estimate to name that wire: half the 12 m pendant spacing.
+/// The residual was 0 to 2 m on the eight Tomcat traps it was calibrated on.
+const WIRE_STOP_POSITION_MAX_RESIDUAL_M: f64 = 6.0;
+/// How far from a crossing's timestamp the aircraft position sample may be to give that
+/// crossing its `x`.
+const WIRE_CROSSING_POSITION_TOLERANCE_S: f64 = 0.3;
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Datum {
@@ -447,12 +461,15 @@ pub struct WireEstimateEvidence {
     pub confidence: &'static str,
     pub reason: &'static str,
     /// DCS time of the sharp hook deflection that started the completed arrestment transient
-    /// (see `HOOK_DEFLECTED_MAX`), when one was found near the touchdown reference.
+    /// (see `HOOK_DEFLECTED_MAX`), when one was found near the touchdown reference. Kept even
+    /// when the transient named no wire and `wire` came from the stop position or the crossing
+    /// selection instead.
     pub hook_deflection_time_dcs: Option<f64>,
     /// DCS time at which the deflected hook returned to its stable down band.
     pub hook_recovered_time_dcs: Option<f64>,
-    /// `hook_deflection_time_dcs` minus the selected crossing time, when the estimate was
-    /// anchored on the hook transient.
+    /// `hook_deflection_time_dcs` minus the last crossing before it, when a completed transient
+    /// was found and a crossing preceded it; the estimate was anchored on the transient only
+    /// when `reason` is `hook_deflection_correlated_with_wire_crossing`.
     pub correlation_lag_ms: Option<f64>,
     pub crossings: Vec<WireCrossingEvidence>,
     /// Diagnostic only, never used for grading: the DCS simulation time at which a sustained
@@ -1738,6 +1755,14 @@ impl Grading {
             // Intentional bolters are valid only for arrested recoveries. Keep the
             // V/STOL fallback defensive in case an invalid grading reaches this layer.
             (true, Self::TouchAndGo { .. }) => "Waveoff/Go-around".to_string(),
+            // An intentional bolter still tells the pilot which wire the hook would have caught;
+            // the wording keeps it apart from an arrestment.
+            (
+                false,
+                Self::TouchAndGo {
+                    cable_estimated: Some(estimated),
+                },
+            ) => format!("T&G (CQ) — would have caught wire {estimated}"),
             (false, Self::TouchAndGo { .. }) => "T&G (CQ)".to_string(),
             (_, Self::WaveoffUnknown) => "Waveoff/Go-around — initiator unknown".to_string(),
             (true, Self::Recovered { .. }) => "Spot 7.5".to_string(),
@@ -2967,7 +2992,6 @@ impl Track {
             .or(self.deck_crossing_time)
             .or_else(|| self.datums.last().map(|datum| datum.time))
             .unwrap_or_default();
-        let wire_estimation = self.wire_estimate_at(touchdown_reference, dcs_wire.is_some());
         let deck_kinematics = if is_arrested {
             self.evaluate_deck_arrest_kinematics()
         } else {
@@ -2979,6 +3003,18 @@ impl Track {
             HookState::Unknown
         };
         self.hook_observation.interpreted_state = hook_state.as_str();
+        // The stop position names the wire only once the deck kinematics have confirmed a stop
+        // inside the run-out band; a hook-up pass gets the hypothetical estimate instead.
+        let stop_x = deck_kinematics
+            .confirmed
+            .then_some(deck_kinematics.x_at_slow_m)
+            .flatten();
+        let wire_estimation = self.wire_estimate_with(
+            touchdown_reference,
+            dcs_wire.is_some(),
+            stop_x,
+            hook_state == HookState::Up,
+        );
         let arrest_confirmation = self.arrest_confirmation_evidence_with(
             dcs_wire,
             wire_estimation.reason == HOOK_TRANSIENT_ESTIMATE_REASON,
@@ -3013,8 +3049,14 @@ impl Track {
         // author, it is refusing a bolter that DCS's own grading directly contradicts. Confirmed
         // live 5 September 2026: an LQM `GRADE:WO ... WO(AFU)IC` was received on a pass our
         // geometry alone had called `Bolter`, with no `runway_touch`/`land` event at all.
+        // With a correlated touchdown event the deck contact is real and the pass is graded on
+        // the approach flown, whatever DCS called: a human LSO may overrule the DCS waveoff, so
+        // the call is only noted in the grade reason (see the end of this function).
         let grading = match grading {
-            Grading::Bolter if dcs_grade_is_waveoff(self.dcs_grading.as_deref()) => {
+            Grading::Bolter
+                if self.landing_time.is_none()
+                    && dcs_grade_is_waveoff(self.dcs_grading.as_deref()) =>
+            {
                 tracing::info!(
                     dcs_grading = ?self.dcs_grading,
                     "geometric Bolter refused: DCS LQM opens on GRADE:WO"
@@ -3119,6 +3161,13 @@ impl Track {
             } else {
                 (approach_grade, approach_points)
             };
+        // A neutral `WO?` takes the initiator the DCS mark names (`WO` ordered by the LSO,
+        // `OWO` by the pilot); with no mark, or on any other grade, nothing changes.
+        pass_grade =
+            crate::grading::apply_dcs_waveoff_initiator(pass_grade, self.dcs_grading.as_deref());
+        if pass_grade != approach_grade {
+            grade_points = pass_grade.points();
+        }
 
         // V/STOL keeps the unconditional three-gates rule (`None`): it has no roll-out-confirmed
         // groove entry to distinguish a mid-turn 3/4 NM reading from a real one.
@@ -3213,6 +3262,27 @@ impl Track {
                 }
                 _ => 0.0,
             };
+
+        // DCS called a waveoff but the aircraft touched the deck: the grade above stands (a
+        // human LSO may overrule DCS), and the reason records the call for whoever reads it.
+        let grade_reason = match (
+            self.dcs_grading
+                .as_deref()
+                .and_then(crate::grading::dcs_waveoff_initiator),
+            &grading,
+        ) {
+            (
+                Some(initiator),
+                Grading::Recovered { .. } | Grading::Bolter | Grading::TouchAndGo { .. },
+            ) => format!(
+                "{grade_reason} DCS called a waveoff on this pass ({}); the recovery is graded on the approach flown.",
+                match initiator {
+                    crate::grading::DcsWaveoffInitiator::Lso => "GRADE:WO, ordered by the LSO",
+                    crate::grading::DcsWaveoffInitiator::Pilot => "GRADE:OWO, own waveoff",
+                }
+            ),
+            _ => grade_reason,
+        };
 
         TrackResult {
             pilot_name: self.pilot_name,
@@ -3862,13 +3932,132 @@ impl Track {
         self.previous_horizontal_speed = Some((speed, plane.time));
     }
 
+    /// Aircraft `x` (landing-area frame of `Datum::x`) at `time`, from the nearest position
+    /// sample within `WIRE_CROSSING_POSITION_TOLERANCE_S`.
+    fn aircraft_x_at(&self, time: f64) -> Option<f64> {
+        self.datums
+            .iter()
+            .filter(|datum| (datum.time - time).abs() <= WIRE_CROSSING_POSITION_TOLERANCE_S)
+            .min_by(|left, right| {
+                (left.time - time)
+                    .abs()
+                    .total_cmp(&(right.time - time).abs())
+            })
+            .map(|datum| datum.x)
+    }
+
+    /// Which wire was caught, from where the aircraft came to rest. The arresting gear's run-out
+    /// past the engaged wire is a constant of the type (`AirplaneInfo::arresting_run_out_m`, 85
+    /// to 89 m on seven Tomcat traps at entry speeds from 53 to 76 m/s), so `stop_x + run_out`
+    /// is the engaged wire's position, matched against the recorded hook-plane crossings (the
+    /// aircraft's `x` at each crossing time). The crossing sequence alone cannot name the wire
+    /// on a trap without a landing mark: the deceleration onset is detected 53 to 59 m past the
+    /// wire, later than the 0.6 s the hook takes to sweep all four planes, so the onset-anchored
+    /// pick below always returned the 1-wire (15 September 2026, 19:17: a 2-wire, wheels down
+    /// beyond the 4-wire; `docs/RECOVERY_REVIEW_2026-09-15.md`, section 6).
+    fn wire_estimate_from_stop_position(&self, stop_x: f64) -> Option<WireEstimateEvidence> {
+        let run_out = self.plane_info.arresting_run_out_m?;
+        let engaged_x = stop_x + run_out;
+        let (crossing, residual) = self
+            .wire_crossings
+            .iter()
+            .filter_map(|crossing| {
+                let x = self.aircraft_x_at(crossing.timestamp_dcs)?;
+                Some((crossing, (x - engaged_x).abs()))
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))?;
+        if residual > WIRE_STOP_POSITION_MAX_RESIDUAL_M {
+            tracing::debug!(
+                stop_x,
+                run_out,
+                engaged_x,
+                nearest_wire = crossing.wire,
+                residual_m = residual,
+                "wire estimate: stop position matches no recorded crossing"
+            );
+            return None;
+        }
+        tracing::debug!(
+            wire = crossing.wire,
+            stop_x,
+            run_out,
+            residual_m = residual,
+            "wire estimate from stop position"
+        );
+        Some(WireEstimateEvidence {
+            wire: Some(crossing.wire),
+            confidence: "medium",
+            reason: STOP_POSITION_ESTIMATE_REASON,
+            hook_deflection_time_dcs: None,
+            hook_recovered_time_dcs: None,
+            correlation_lag_ms: None,
+            crossings: self.wire_crossings.clone(),
+            arrest_deceleration_onset_time: self.arrest_deceleration_onset_time,
+        })
+    }
+
+    #[cfg(test)]
     fn wire_estimate_at(&self, event_time: f64, arrest_confirmed: bool) -> WireEstimateEvidence {
-        // A completed hook transient is the strongest independent evidence of which wire was
-        // caught (validated on the 2026-09 live corpus); the deceleration-onset / last-crossing
-        // selection below is the fallback when the hook timeline does not contain one (no hook
-        // sampler, batch-delayed hook timestamps, or simply no arrest).
-        if let Some(estimate) = self.wire_estimate_from_hook_transient(event_time) {
-            return estimate;
+        self.wire_estimate_with(event_time, arrest_confirmed, None, false)
+    }
+
+    /// The wire estimate at `event_time`. `stop_x` is where the aircraft came to rest on a
+    /// confirmed arrestment (`DeckArrestKinematicsEvidence::x_at_slow_m`), `hook_up` whether the
+    /// pass was flown with the hook up, in which case the estimate is the wire the hook would
+    /// have caught and is labelled `HYPOTHETICAL_HOOK_UP_REASON`.
+    fn wire_estimate_with(
+        &self,
+        event_time: f64,
+        arrest_confirmed: bool,
+        stop_x: Option<f64>,
+        hook_up: bool,
+    ) -> WireEstimateEvidence {
+        // A completed hook transient correlated with a crossing is the strongest independent
+        // evidence of which wire was caught (validated on the 2026-09 live corpus); then the stop
+        // position on a confirmed arrestment; the deceleration-onset / last-crossing selection is
+        // the fallback when neither exists (no hook sampler, batch-delayed hook timestamps, or
+        // simply no arrest).
+        //
+        // A transient that names no wire is not an answer, only a diagnostic: it used to be
+        // returned as final and blanked two Tomcat traps on 20 September 2026 (18:57, DCS 3-wire,
+        // deflection 214 ms after the 3-wire crossing; 09:04, hook striking the deck 22 m short
+        // of the 1-wire) whose stop position named the wire to within 2 m
+        // (`docs/RECOVERY_REVIEW_2026-09-20.md`, section 3). The later methods run instead and
+        // the transient's timings are kept on whatever they return.
+        let hook_transient = self.wire_estimate_from_hook_transient(event_time);
+        if let Some(estimate) = hook_transient
+            .as_ref()
+            .filter(|estimate| estimate.wire.is_some())
+        {
+            return estimate.clone();
+        }
+        let mut estimate = self.wire_estimate_from_stop_or_crossings(
+            event_time,
+            arrest_confirmed,
+            stop_x,
+            hook_up,
+        );
+        if let Some(hook_transient) = hook_transient {
+            estimate.hook_deflection_time_dcs = hook_transient.hook_deflection_time_dcs;
+            estimate.hook_recovered_time_dcs = hook_transient.hook_recovered_time_dcs;
+            estimate.correlation_lag_ms = hook_transient.correlation_lag_ms;
+        }
+        estimate
+    }
+
+    /// The stop-position estimate on a confirmed hook-down arrestment, else the deceleration-onset
+    /// / last-crossing selection (see `wire_estimate_with` for the order).
+    fn wire_estimate_from_stop_or_crossings(
+        &self,
+        event_time: f64,
+        arrest_confirmed: bool,
+        stop_x: Option<f64>,
+        hook_up: bool,
+    ) -> WireEstimateEvidence {
+        if !hook_up {
+            if let Some(estimate) = stop_x.and_then(|x| self.wire_estimate_from_stop_position(x)) {
+                return estimate;
+            }
         }
         let mut eligible = self
             .wire_crossings
@@ -3969,7 +4158,11 @@ impl Track {
         WireEstimateEvidence {
             wire: Some(selected.wire),
             confidence,
-            reason: "continuous_hook_plane_crossing",
+            reason: if hook_up {
+                HYPOTHETICAL_HOOK_UP_REASON
+            } else {
+                "continuous_hook_plane_crossing"
+            },
             hook_deflection_time_dcs: None,
             hook_recovered_time_dcs: None,
             correlation_lag_ms: None,
@@ -5000,28 +5193,14 @@ pub(crate) fn replay_gate_trajectory_and_groove(
 /// GRADE:WO : SLOX DRX (LURIM) DRIM (LURIC) WO(AFU)IC`). This confirms that a waveoff occurred,
 /// while its `WaveoffUnknown` representation deliberately makes no claim about who initiated it.
 fn dcs_grade_is_waveoff(comment: Option<&str>) -> bool {
-    comment.is_some_and(|comment| comment.contains("GRADE:WO"))
+    comment.is_some_and(|comment| crate::grading::dcs_waveoff_initiator(comment).is_some())
 }
 
+/// The wire named by the DCS comment's `WIRE#` callout (`crate::lso_notation::parse`), kept only
+/// when it is one of the four wires.
 fn parse_dcs_wire(comment: &str) -> Option<u8> {
-    let (_, suffix) = comment.split_once("WIRE#")?;
-    let suffix = suffix.trim_start();
-    let digit_count = suffix.bytes().take_while(u8::is_ascii_digit).count();
-    if digit_count == 0 {
-        return None;
-    }
-    let (digits, remainder) = suffix.split_at(digit_count);
-    if !remainder.is_empty()
-        && !remainder
-            .chars()
-            .next()
-            .is_some_and(|next| next.is_ascii_whitespace() || next == '[')
-    {
-        return None;
-    }
-    let wire = digits.parse::<u64>().ok()?;
-    u8::try_from(wire)
-        .ok()
+    crate::lso_notation::parse(comment)
+        .wire
         .filter(|wire| (1..=4).contains(wire))
 }
 
@@ -6022,7 +6201,8 @@ mod tests {
         final_without_outcome.gate_deviations.half_quality = valid_quality();
         let result = final_without_outcome.finish();
         assert_eq!(result.grading, Grading::ApproachOnly);
-        assert_eq!(result.pass_grade, PassGrade::Incomplete);
+        // No groove entry: a final that never rolled out is a pattern waveoff, not graded.
+        assert_eq!(result.pass_grade, PassGrade::PatternWaveoff);
         assert_eq!(result.grade_points, None);
 
         let mut outer_pattern_only = Track::new("pilot", carrier, plane);
@@ -6635,8 +6815,10 @@ mod tests {
             },
         ];
 
+        // A 1.5 deg medium in the middle zone (weight 1.2) is (OK) under the production policy;
+        // the baseline added a level because the series ends inside the excursion.
         let result = track.finish();
-        assert_eq!(result.pass_grade, PassGrade::NoGrade);
+        assert_eq!(result.pass_grade, PassGrade::OkParentheses);
         assert_eq!(result.trajectory_deviations.len(), 2);
     }
 
@@ -7041,6 +7223,7 @@ mod tests {
             quarter_quality: valid_quality(),
         };
         track.entered_groove = true;
+        track.groove_entry_time = Some(1.0);
         let mut correlator = crate::tasks::event_correlator::EventCorrelator::new(10, 20);
         correlator.stream_unavailable(&mut track, "unavailable: before touchdown");
 
@@ -7706,6 +7889,209 @@ mod tests {
         assert_eq!(
             estimate.reason,
             "wire_crossing_not_time_correlated_with_event"
+        );
+    }
+
+    /// A Tomcat with the four hook-plane crossings of a real pass (aircraft `x` +14, +3, -10,
+    /// -22 m at the wires, 0.2 s apart) and no hook transient.
+    fn tomcat_with_four_crossings() -> Track {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("F-14B(U)").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        for (wire, x) in [(1u8, 14.0), (2, 3.0), (3, -10.0), (4, -22.0)] {
+            let timestamp_dcs = 10.0 + f64::from(wire) * 0.2;
+            track.wire_crossings.push(WireCrossingEvidence {
+                wire,
+                timestamp_dcs,
+                bracket_gap_ms: 50.0,
+                method: "finite_hook_plane_crossing",
+            });
+            track.datums.push(Datum {
+                time: timestamp_dcs,
+                x,
+                ..Datum::default()
+            });
+        }
+        track
+    }
+
+    #[test]
+    fn stop_position_names_the_wire_the_run_out_points_at() {
+        // 15 September 2026, 19:17: no landing mark, stopped at x = -85.2 m. The Tomcat's
+        // run-out is 87 m, so the engaged wire sat at about +2 m: the 2-wire (+3 m). The
+        // onset-anchored crossing pick would have said 1.
+        let track = tomcat_with_four_crossings();
+        let estimate = track.wire_estimate_with(11.0, false, Some(-85.2), false);
+        assert_eq!(estimate.wire, Some(2));
+        assert_eq!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+        assert_eq!(estimate.confidence, "medium");
+        // A 4-wire stops 26 m further down the deck.
+        assert_eq!(
+            track
+                .wire_estimate_with(11.0, false, Some(-111.5), false)
+                .wire,
+            Some(4)
+        );
+        // A stop that matches no crossing within half a pendant spacing names nothing from the
+        // stop position and falls back to the crossing selection.
+        let unmatched = track.wire_estimate_with(11.0, false, Some(-60.0), false);
+        assert_ne!(unmatched.reason, STOP_POSITION_ESTIMATE_REASON);
+    }
+
+    #[test]
+    fn stop_position_is_ignored_for_a_type_without_a_measured_run_out() {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("T-45").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        track.wire_crossings.push(WireCrossingEvidence {
+            wire: 3,
+            timestamp_dcs: 10.0,
+            bracket_gap_ms: 50.0,
+            method: "finite_hook_plane_crossing",
+        });
+        track.datums.push(Datum {
+            time: 10.0,
+            x: -10.0,
+            ..Datum::default()
+        });
+        let estimate = track.wire_estimate_with(10.1, false, Some(-66.0), false);
+        assert_ne!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+    }
+
+    /// A Tomcat in the final window with hook-plane crossings at the given `(time, x)` and a
+    /// hook timeline: stable down (1.0) every 0.2 s from about 8.0 s to `deflected_at - 0.2`,
+    /// one deflected sample (`deflected_raw`) at `deflected_at`, pushed-up readings (0.17) every
+    /// 0.3 s, and a return to 0.9 at `deflected_at + 6.0`.
+    fn tomcat_with_hook_transient(
+        crossings: [(f64, f64); 4],
+        deflected_at: f64,
+        deflected_raw: f64,
+    ) -> Track {
+        let carrier_info = CarrierInfo::by_type("CVN_71").unwrap();
+        let plane_info = AirplaneInfo::by_type("F-14B(U)").unwrap();
+        let mut track = Track::new("pilot", carrier_info, plane_info);
+        track.entered_groove = true;
+        track.previous_x = 0.0;
+        for (wire, (timestamp_dcs, x)) in (1u8..=4).zip(crossings) {
+            track.wire_crossings.push(WireCrossingEvidence {
+                wire,
+                timestamp_dcs,
+                bracket_gap_ms: 50.0,
+                method: "finite_hook_plane_crossing",
+            });
+            track.datums.push(Datum {
+                time: timestamp_dcs,
+                x,
+                ..Datum::default()
+            });
+        }
+        let mut sequence = 0u64;
+        let mut sample = |track: &mut Track, time: f64, raw: f64| {
+            sequence += 1;
+            track.observe_hook_sample(time, sequence, 0.0, Some(raw), HookSampleStatus::Success);
+        };
+        let mut stable = Vec::new();
+        let mut time = deflected_at - 0.2;
+        while time >= 8.0 {
+            stable.push(time);
+            time -= 0.2;
+        }
+        for time in stable.into_iter().rev() {
+            sample(&mut track, time, 1.0);
+        }
+        sample(&mut track, deflected_at, deflected_raw);
+        let mut time = deflected_at + 0.3;
+        while time < deflected_at + 6.0 {
+            sample(&mut track, time, 0.17);
+            time += 0.3;
+        }
+        sample(&mut track, deflected_at + 6.0, 0.9);
+        track
+    }
+
+    #[test]
+    fn hook_transient_that_names_no_wire_falls_through_to_the_stop_position() {
+        // 20 September 2026, 18:57 (Justice, DCS `WIRE# 3`): the hook deflected 214 ms after the
+        // 3-wire crossing and 6 ms before the 4-wire's, outside the 200 ms correlation window, so
+        // the transient named nothing; the aircraft stopped at -97.5 m, the 3-wire plane within
+        // 0.3 m of `stop + 87`. The recorded report said "Rust estimate unavailable".
+        let track = tomcat_with_hook_transient(
+            [(10.0, 15.0), (10.22, 3.5), (10.44, -10.75), (10.66, -22.2)],
+            10.654,
+            -0.7,
+        );
+        let transient = track.wire_estimate_from_hook_transient(11.6).unwrap();
+        assert_eq!(transient.wire, None);
+        assert_eq!(
+            transient.reason,
+            "hook_deflection_not_correlated_with_wire_crossing"
+        );
+
+        let estimate = track.wire_estimate_with(11.6, false, Some(-97.5), false);
+        assert_eq!(estimate.wire, Some(3), "{estimate:?}");
+        assert_eq!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+        assert_eq!(estimate.confidence, "medium");
+        // The transient's timings stay in the report as diagnostics.
+        assert_eq!(estimate.hook_deflection_time_dcs, Some(10.654));
+        assert_eq!(estimate.hook_recovered_time_dcs, Some(16.654));
+        let lag = estimate.correlation_lag_ms.unwrap();
+        assert!((213.0..215.0).contains(&lag), "{lag}");
+
+        // Without a confirmed stop the crossing selection runs instead of the transient's
+        // non-answer; here the reference is 940 ms past the last crossing, so it names nothing
+        // either, but for its own reason and still carrying the hook timings.
+        let unconfirmed = track.wire_estimate_with(11.6, false, None, false);
+        assert_eq!(unconfirmed.wire, None);
+        assert_eq!(
+            unconfirmed.reason,
+            "wire_crossing_not_time_correlated_with_event"
+        );
+        assert_eq!(unconfirmed.hook_deflection_time_dcs, Some(10.654));
+    }
+
+    #[test]
+    fn hook_striking_the_deck_before_the_wires_does_not_block_the_stop_position() {
+        // 20 September 2026, 09:04 (6-Rose, DCS `NC`, no wire): the hook hit the deck 22 m short
+        // of the 1-wire (deflection 387 ms before the first crossing), so no crossing preceded
+        // the transient; the aircraft stopped at -79.9 m, `stop + 87` sitting 1.9 m from the
+        // 2-wire plane. The recorded report said "wire evidence unavailable".
+        let track = tomcat_with_hook_transient(
+            [
+                (10.0, 16.35),
+                (10.22, 5.25),
+                (10.45, -8.57),
+                (10.68, -19.57),
+            ],
+            9.613,
+            0.22,
+        );
+        let transient = track.wire_estimate_from_hook_transient(11.0).unwrap();
+        assert_eq!(transient.wire, None);
+        assert_eq!(transient.correlation_lag_ms, None);
+
+        let estimate = track.wire_estimate_with(11.0, false, Some(-79.88), false);
+        assert_eq!(estimate.wire, Some(2), "{estimate:?}");
+        assert_eq!(estimate.reason, STOP_POSITION_ESTIMATE_REASON);
+        assert_eq!(estimate.hook_deflection_time_dcs, Some(9.613));
+        assert_eq!(estimate.correlation_lag_ms, None);
+    }
+
+    #[test]
+    fn hook_up_pass_gets_a_hypothetical_wire_never_a_stop_position_one() {
+        // Same crossings, hook up: the stop position is not consulted (nothing was caught) and
+        // the crossing-based estimate is labelled as the wire the hook would have caught.
+        let track = tomcat_with_four_crossings();
+        let estimate = track.wire_estimate_with(10.9, false, Some(-85.2), true);
+        assert_eq!(estimate.reason, HYPOTHETICAL_HOOK_UP_REASON);
+        assert!(estimate.wire.is_some());
+        assert_eq!(estimate.confidence, "medium");
+        let outcome = Grading::TouchAndGo {
+            cable_estimated: estimate.wire,
+        }
+        .pilot_facing_outcome(false);
+        assert!(
+            outcome.starts_with("T&G (CQ) — would have caught wire "),
+            "{outcome}"
         );
     }
 
@@ -8375,6 +8761,87 @@ mod tests {
     }
 
     #[test]
+    fn dcs_waveoff_mark_names_the_initiator_in_the_pass_grade() {
+        // 15 September 2026, 18:59 (Justice, `GRADE:OWO`) and 18:47 (Ghost-72, `GRADE:WO`): both
+        // were recorded `WO?`. With the DCS mark naming the initiator the grade says who waved
+        // off; the outcome stays the neutral `WaveoffUnknown` (no deck contact either way).
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let hornet = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let with_groove = || {
+            let mut track = Track::new("pilot", carrier, hornet);
+            track.entered_groove = true;
+            track.groove_entry_time = Some(1.0);
+            track.gate_deviations = GateDeviations {
+                at_three_quarter_nm: Some(gate(1.2)),
+                at_half_nm: Some(gate(2.0)),
+                at_quarter_nm: Some(gate(3.0)),
+                three_quarter_quality: valid_quality(),
+                half_quality: valid_quality(),
+                quarter_quality: valid_quality(),
+            };
+            track
+        };
+
+        let mut own = with_groove();
+        assert!(own.set_dcs_grading(
+            "LSO: GRADE:OWO : _LULIM_  LOIM  LOIC  _DRIC_  (LURIC)  WO(AFU)IC [BC]".to_string()
+        ));
+        let own = own.finish();
+        assert_eq!(own.grading, Grading::WaveoffUnknown);
+        assert_eq!(own.pass_grade, PassGrade::OwnWaveoff);
+        assert_eq!(own.grade_points, None);
+
+        let mut lso = with_groove();
+        assert!(lso.set_dcs_grading(
+            "LSO: GRADE:WO  _LULIM_  _LULIC_  _TMRDIC_  _LULX_  WO(AFU)IC [BC]".to_string()
+        ));
+        let lso = lso.finish();
+        assert_eq!(lso.grading, Grading::WaveoffUnknown);
+        assert_eq!(lso.pass_grade, PassGrade::Waveoff);
+        assert_eq!(lso.grade_points, Some(1.0));
+    }
+
+    #[test]
+    fn deck_contact_after_a_dcs_waveoff_call_is_graded_on_the_approach_flown() {
+        // The DCS LSO called a waveoff, the pilot touched the deck anyway (a correlated
+        // touchdown event, no arrest: a bolter). A human LSO may overrule DCS, so the pass keeps
+        // its measured grade and the reason only records the call. Without any touchdown event
+        // the geometry-only bolter is still refused (see the test above).
+        let carrier = CarrierInfo::by_type("CVN_71").unwrap();
+        let hornet = AirplaneInfo::by_type("FA-18C_hornet").unwrap();
+        let mut track = Track::new("pilot", carrier, hornet);
+        track.entered_groove = true;
+        track.groove_entry_time = Some(1.0);
+        track.gate_deviations = GateDeviations {
+            at_three_quarter_nm: Some(gate(1.2)),
+            at_half_nm: Some(gate(2.0)),
+            at_quarter_nm: Some(gate(3.0)),
+            three_quarter_quality: valid_quality(),
+            half_quality: valid_quality(),
+            quarter_quality: valid_quality(),
+        };
+        assert!(track.set_dcs_grading(
+            "LSO: GRADE:WO  _TMRDAR_  (NX)  _SLOX_  _LOIC_  WO(AFU)IC [BC]".to_string()
+        ));
+        // The mark arrived first and latched the waveoff; the touchdown then proved contact.
+        assert_eq!(track.grading, Some(Grading::WaveoffUnknown));
+        track.grading = Some(Grading::Bolter);
+        track.landing_time = Some(20.0);
+
+        let result = track.finish();
+        assert_eq!(result.grading, Grading::Bolter);
+        assert_eq!(result.pass_grade, PassGrade::Bolter);
+        assert_eq!(result.grade_points, Some(2.5));
+        assert!(
+            result
+                .grade_reason
+                .contains("DCS called a waveoff on this pass (GRADE:WO, ordered by the LSO)"),
+            "{}",
+            result.grade_reason
+        );
+    }
+
+    #[test]
     fn dcs_waveoff_grade_closes_the_track_after_departure() {
         // Regression for the 7 September 2026 human F-14B(U) session: a GRADE:WO was retained as
         // text but did not establish an outcome, so the recorder followed two more circuits and
@@ -8586,6 +9053,7 @@ mod tests {
         // not on the readings themselves.
         static UNCALIBRATED: AirplaneInfo = AirplaneInfo {
             name: "Future Type",
+            arresting_run_out_m: None,
             hook: DVec3 {
                 x: 0.0,
                 y: 0.0,
@@ -8598,6 +9066,7 @@ mod tests {
             },
             glide_slope: 3.5,
             hook_draw_argument: None,
+            aoa_grading_calibrated: false,
             aoa_rating: |_| crate::data::Aoa::OnSpeed,
         };
         let carrier = CarrierInfo::by_type("CVN_71").unwrap();

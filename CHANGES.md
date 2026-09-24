@@ -6,6 +6,101 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ## Unreleased
 
+### Fixed
+
+- The Discord "LSO Notes" line and the greenie board's `lso_notes` misread nearly every real
+  DCS comment: the translator was written from invented examples and a 25-symbol table. The
+  NATOPS underline (`_LOAR_`, the gross deviation) was rendered "slightly" and lost its
+  position, `_EGIW_` (eased gun in the wires, present on 97 of 160 recorded comments) became
+  four separate axes, `_TMRDAR_` (too much rate of descent at the ramp) became "slightly
+  turning, slightly drift", and every `GRADE:WO` comment was prefixed with six spurious
+  deviations because its label is not followed by ` : `. `src/lso_notation.rs` now parses the
+  comment against the NAVAIR 00-80T-104 glossary (about seventy symbols, the position suffixes
+  `X`/`IM`/`IC`/`AR`/`TL`/`IW`/`AW`, the three modifiers, the grade labels, `WIRE#` and `[BC]`)
+  into a typed `Notation`; all 160 distinct comments recorded up to 20 September 2026
+  (`tests/fixtures/dcs_lso_comments.txt`) parse with no unknown token, and an unknown token is
+  now reported as "not understood" instead of being skipped character by character
+  (`docs/LSO_NOTATION_PARSER_PROTOTYPE_2026-09-21.md`). The `WIRE#` reader (`parse_dcs_wire`,
+  `src/track.rs`), the waveoff-initiator reader (`dcs_waveoff_initiator`, `src/grading.rs`) and
+  the grade label of `grade-ab` now read the same parse; `WOP` (pattern waveoff, NATOPS) no
+  longer counts as an LSO waveoff.
+- A hook-animation transient that named no wire (deflection more than 200 ms after the last
+  crossing, or before any crossing) was returned as the final wire estimate, so the stop
+  position and the crossing selection never ran: two Tomcat traps of 20 September 2026 read
+  "Rust estimate unavailable" although the aircraft's stop named the wire to within 2 m (18:57,
+  DCS 3-wire; 09:04, no DCS wire). The transient's non-answer now falls through to the stop
+  position, then the crossing selection, and its timings stay in `wire_estimation` as
+  diagnostics (`Track::wire_estimate_with`, `src/track.rs`;
+  `docs/RECOVERY_REVIEW_2026-09-20.md`, section 3).
+- AoA readings 2 to 3 degrees outside the on-speed band were dropped from the graded series:
+  the distance-to-band search stepped geometrically and gave up when it overshot the band, so
+  on the F-14 every reading between 6.8 and 7.95 deg and between 12.8 and 13.95 deg (on the
+  T-45C between 4.75 and 6.25 and between 6.75 and 7.25) never reached the grader, and the gross
+  AoA tier of `CONVENTION` only fired beyond about 3 degrees. Fixed-step search
+  (`normalized_aoa_error`, `src/grading.rs`); `docs/RECOVERY_REVIEW_2026-09-15.md`, section 4.
+
+### Changed
+
+- When DCS wrote no comment (touch-and-go, no ball call, a straight-in it never saw), the
+  Discord embed now writes the project's own graded episodes in the same LSO shorthand and the
+  same English: a new "LSO Notation (measured by LSO, not a DCS comment)" field (for example
+  `_LULX_ SLOX FIM (SLOIM) SLOAR`) and the "LSO Notes (measured by LSO, not a DCS comment)"
+  field rendered from it (`crate::lso_notation::from_episodes`). Only episodes that affected
+  the grade are written, sized by their peak severity and placed by their peak zone. The gate
+  summary (`describe_measured_deviations`) remains the fallback when there are no episodes
+  (V/STOL, gates-only grading).
+- The JSON report gains two additive fields: `dcs_grading_parsed`, the DCS comment read against
+  the glossary (grade label, wire, deviations as symbols/magnitude/suffix, ball call, unknown
+  tokens), and `lso_notation_measured`, the graded episodes in the same shorthand. Both are
+  absent when there is nothing to write; `schema_version` stays 9.
+- `lso grade-ab` gains a last column, "DCS vs LSO (CONVENTION)": the DCS LSO's deviations
+  against the production grader's episodes, axis by axis (glideslope, lineup, AoA) and zone by
+  zone (start, middle, in close, ramp), as `= LU@X · DCS only AoA@X · LSO only GS@IC`,
+  `agree (n)`, `nothing to compare` or `no DCS comment` (`crate::lso_notation::compare`).
+  Sizes are not compared. Power, attitude and landing symbols and the `TL`/`IW` positions take
+  no part.
+- New `docs/LSO_SHORTHAND_GLOSSARY.md`: every NATOPS symbol, suffix, grade label and modifier,
+  with the number of recorded DCS comments using each, the grader axis it is compared against,
+  and the three readings settled on 21 September 2026: `[BC]` is the ball call made (DCS records
+  it only when comms work), `W` is "wings not level", parentheses after `WO` hold the reason.
+- A recognisable final with no groove entry (the aircraft never rolled out on the centreline) is
+  a pattern waveoff: new grade `WO(P)` (`PassGrade::PatternWaveoff`), no points, instead of a
+  gate grade computed from readings taken in the turn (`compute_pass_grade_with_reason_and_policy`,
+  `src/grading.rs`); report `cause` `pattern_waveoff_no_groove_entry`. 18 September 2026, 20:30:
+  an overhead pattern abandoned at the 90 had been graded `--` with 2 points
+  (`docs/RECOVERY_REVIEW_2026-09-18.md`, section 4).
+- A deck contact after a DCS waveoff call is graded on the approach flown: a bolter with a
+  correlated touchdown event is no longer turned into a waveoff by the DCS `GRADE:WO` mark (only
+  a geometry-only bolter without any touchdown event still is), and the grade reason notes "DCS
+  called a waveoff on this pass" on any trap, bolter or touch-and-go that carries such a mark
+  (`Track::finish`, `src/track.rs`). The documented "`C` for landing after a waveoff" rule, which
+  was never implemented, is withdrawn: a human LSO may overrule the DCS call.
+- The DCS landing quality mark names the waveoff initiator: `GRADE:WO` gives the grade `WO`
+  (1.0 point, as `docs/GRADING_REFERENCE.md` already listed), `GRADE:OWO` gives `OWO` (no
+  points); without a mark the grade stays `WO?`. `GRADE:OWO` now also establishes the waveoff
+  outcome the way `GRADE:WO` did (`dcs_waveoff_initiator`, `apply_dcs_waveoff_initiator`,
+  `src/grading.rs`; `Track::finish`, `src/track.rs`). Report `cause` gains `dcs_lso_waveoff`
+  and `dcs_own_waveoff`; `lso grade-ab` applies the same mapping to its columns.
+- `CatobarGradingPolicy::CONVENTION` gains three rules (`src/grading.rs`,
+  `docs/GRADING_REFERENCE.md`): gross AoA needs one second of gross readings before an episode
+  is gross; the graded series end at the physical touchdown (sink rate collapsed on the deck)
+  instead of at the DCS touchdown event; inside 100 m of the landing point glideslope and lineup
+  deviations are sized in height, not angle. `lso grade-ab` shows them as steps P7 to P9. On the
+  53 recorded passes: five touchdown artifacts return from `--` to `(OK)`, one pass reaches `OK`.
+- Wire estimate without a DCS landing mark (`src/track.rs`, `src/data.rs`): on a confirmed
+  arrestment the wire is taken from where the aircraft came to rest (`stop position + run-out`,
+  `AirplaneInfo::arresting_run_out_m`, 87 m for the F-14 on ten of ten traps; the T-45C and the
+  F/A-18C run-outs vary between recordings and stay unset), reason `stop_position_run_out`. On a
+  hook-up pass the crossing-based estimate is kept as the wire the hook would have caught,
+  reason `hypothetical_hook_up_plane_crossing`, `wire_primary` `rust_hypothetical`, and the
+  outcome reads "T&G (CQ) — would have caught wire N".
+
+### Security
+
+- `cargo audit` failed on RUSTSEC-2026-0285 (rustls 0.23.40: TLS 1.3 handshake messages accepted
+  across encryption levels), pulled transitively by `serenity` → `reqwest`. `Cargo.lock` now
+  resolves `rustls` 0.23.45 and `rustls-webpki` 0.103.15; no `Cargo.toml` change.
+
 ## [0.5.0] - 2026-09-13
 
 ### Fixed
