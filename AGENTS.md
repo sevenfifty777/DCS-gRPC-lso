@@ -937,7 +937,7 @@ afin de préserver prioritairement le dernier quart de nautique et le contact. L
 modifie pas la complétude positionnelle. Seule une perte/débordement de positions dans le segment
 noté produit `BufferLimit`.
 
-SQLite : migrations additives 2–6 (`schema_migrations`), index unique partiel `recovery_id`,
+SQLite : migrations additives 2–8 (`schema_migrations`), index unique partiel `recovery_id`,
 `INSERT OR IGNORE`, base ouverte en mode WAL avec `busy_timeout` 2 s pour qu'un lecteur externe
 (page LSO du DCS Web Dashboard, qui ouvre `lso.db` directement) puisse interroger le board pendant
 une insertion. Discord seulement pour une nouvelle ligne. UCID uniquement SQLite, jamais
@@ -951,7 +951,12 @@ proche et distance au spot visé, séparés ; 5 = gap du segment noté, santé t
 l'estimation de brin et disponibilité de la note ; 6 = causes secondaires encodées JSON (`cause`
 legacy reste la colonne primaire) ; 7 = `arrest_evidence` (`dcs_wire`, `hook_transient`,
 `kinematic`, `unconfirmed`, `none`) et `hook_state` commandé (`up`/`down`/`unknown`) — mêmes
-colonnes que la migration 6 d'`astra-review`, renumérotées pour cette lignée. Au démarrage, chaque `ALTER TABLE` est précédé d'une inspection
+colonnes que la migration 6 d'`astra-review`, renumérotées pour cette lignée ; 8 =
+`lso_notation`, `lso_notes` et `lso_notes_source` (`dcs`/`measured`), écrits par le même calcul
+`pilot_notes` (`src/tasks/record_recovery.rs`) que l'embed Discord : commentaire DCS et sa
+traduction, ou à défaut notation mesurée par LSO (`from_episodes`, puis résumé des gates). La page
+LSO du DCS Web Dashboard affiche ces colonnes telles quelles et ne retraduit `dcs_grading` que pour
+les lignes antérieures. Au démarrage, chaque `ALTER TABLE` est précédé d'une inspection
 `PRAGMA table_info(passes)` ; une erreur de migration inattendue est retournée, jamais avalée comme
 une simple "colonne déjà existante". Les lignes existantes sont préservées. `points_awarded` vaut
 `true` par défaut pour les lignes historiques (une note numérique existait toujours avant ce champ)

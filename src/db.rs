@@ -74,6 +74,12 @@ pub struct DbPass {
     pub arrest_evidence: String,
     /// Commanded hook state: `up`, `down` or `unknown`.
     pub hook_state: String,
+    /// The LSO shorthand shown in Discord: the DCS comment, or the measured episodes.
+    pub lso_notation: Option<String>,
+    /// The plain-English notes shown in Discord.
+    pub lso_notes: Option<String>,
+    /// `dcs` or `measured`: where `lso_notation`/`lso_notes` come from.
+    pub lso_notes_source: Option<String>,
 }
 
 /// Pass record as read back from the database. Since 0.5.0 only the migration
@@ -102,8 +108,9 @@ pub struct StoredPass {
     pub aircraft_type: Option<String>,
     /// DCS theatre / map name.
     pub map_name: Option<String>,
-    /// Plain-English translation of `dcs_grading`, computed at query time.
+    pub lso_notation: Option<String>,
     pub lso_notes: Option<String>,
+    pub lso_notes_source: Option<String>,
     pub grade_date: String,
     pub grade_points: Option<f64>,
     pub points_awarded: Option<bool>,
@@ -229,6 +236,12 @@ impl RecoveryDb {
             // assessment): arrest confirmation source and commanded hook state.
             ("arrest_evidence", "TEXT"),
             ("hook_state", "TEXT"),
+            // Migration 8: the notation and notes exactly as the Discord embed shows them, so
+            // the greenie board never re-translates `dcs_grading` with its own copy of the
+            // glossary, and shows LSO's measured notation when DCS wrote no comment.
+            ("lso_notation", "TEXT"),
+            ("lso_notes", "TEXT"),
+            ("lso_notes_source", "TEXT"),
         ] {
             ensure_column(&conn, "passes", name, definition)?;
         }
@@ -240,7 +253,8 @@ impl RecoveryDb {
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (4);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -263,10 +277,10 @@ impl RecoveryDb {
                  confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
                  max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
                  assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
-                 arrest_evidence, hook_state) \
+                 arrest_evidence, hook_state, lso_notation, lso_notes, lso_notes_source) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                      ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42,
-                     ?43, ?44, ?45, ?46, ?47, ?48, ?49)",
+                     ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -317,6 +331,9 @@ impl RecoveryDb {
                 &pass.fallback_source,
                 &pass.arrest_evidence,
                 &pass.hook_state,
+                &pass.lso_notation,
+                &pass.lso_notes,
+                &pass.lso_notes_source,
             ],
         )?;
         Ok(inserted == 1)
@@ -334,15 +351,11 @@ impl RecoveryDb {
                     confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
                     max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
                     assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
-                    arrest_evidence, hook_state \
+                    arrest_evidence, hook_state, lso_notation, lso_notes, lso_notes_source \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             let dcs_grading: Option<String> = row.get(10)?;
-            let lso_notes = dcs_grading
-                .as_deref()
-                .map(crate::lso_notation::to_english)
-                .filter(|s| !s.is_empty());
             Ok(StoredPass {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,
@@ -357,7 +370,9 @@ impl RecoveryDb {
                 dcs_grading,
                 aircraft_type: row.get(11)?,
                 map_name: row.get(12)?,
-                lso_notes,
+                lso_notation: row.get(50)?,
+                lso_notes: row.get(51)?,
+                lso_notes_source: row.get(52)?,
                 grade_date: row.get(13)?,
                 grade_points: row.get(14)?,
                 mission_datetime: row.get(15)?,
@@ -482,6 +497,9 @@ mod tests {
             fallback_source: "project".to_string(),
             arrest_evidence: "dcs_wire".to_string(),
             hook_state: "down".to_string(),
+            lso_notation: Some("_LULX_ SLOX".to_string()),
+            lso_notes: Some("Lined up left at the start (gross), slow at the start".to_string()),
+            lso_notes_source: Some("measured".to_string()),
         };
         assert!(db.insert(&entry).expect("insert pass"));
         assert!(!db.insert(&entry).expect("duplicate is idempotent"));
@@ -505,6 +523,12 @@ mod tests {
         assert_eq!(passes[0].actual_nearest_spot.as_deref(), Some("7.5"));
         assert_eq!(passes[0].distance_to_intended_spot_m, Some(1.25));
         assert_eq!(passes[0].secondary_causes, ["hook_history_truncated"]);
+        assert_eq!(passes[0].lso_notation.as_deref(), Some("_LULX_ SLOX"));
+        assert_eq!(
+            passes[0].lso_notes.as_deref(),
+            Some("Lined up left at the start (gross), slow at the start")
+        );
+        assert_eq!(passes[0].lso_notes_source.as_deref(), Some("measured"));
     }
 
     #[test]
