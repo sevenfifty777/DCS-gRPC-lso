@@ -24,6 +24,15 @@ since the `0.2.0` tag are listed under Unreleased.
   `src/track.rs`), the waveoff-initiator reader (`dcs_waveoff_initiator`, `src/grading.rs`) and
   the grade label of `grade-ab` now read the same parse; `WOP` (pattern waveoff, NATOPS) no
   longer counts as an LSO waveoff.
+- The greenie board (DCS Web Dashboard LSO page) still showed the old translation of every DCS
+  comment after the glossary parser shipped, because it re-translated `dcs_grading` with its
+  own copy of the pre-glossary translator, and it showed nothing for passes DCS never comments
+  on, where Discord shows LSO's measured notation (23 September 2026: waveoff #547 read "Low,
+  slow, glide slope, drift, energy (AoA)..." on the board; touch-and-go #546 read "-"). SQLite
+  migration 8 adds `lso_notation`, `lso_notes` and `lso_notes_source` (`dcs` or `measured`),
+  written from the same `pilot_notes` computation that fills the Discord embed
+  (`src/tasks/record_recovery.rs`, `src/db.rs`); the dashboard shows those columns and keeps an
+  up-to-date copy of the glossary reader only for rows written before the migration.
 - A hook-animation transient that named no wire (deflection more than 200 ms after the last
   crossing, or before any crossing) was returned as the final wire estimate, so the stop
   position and the crossing selection never ran: two Tomcat traps of 20 September 2026 read

@@ -480,6 +480,51 @@ fn completeness_cause(completeness: crate::track::Completeness) -> &'static str 
     }
 }
 
+/// The LSO notation and plain-English notes shown on every pilot surface: the Discord embed and
+/// the `passes` row the greenie board reads. One computation for both, so they never disagree.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PilotNotes {
+    /// The shorthand: the DCS comment as written, or the graded episodes in the same shorthand.
+    notation: Option<String>,
+    notes: Option<String>,
+    /// `"dcs"` when both come from the DCS comment, `"measured"` when LSO wrote them itself.
+    source: Option<&'static str>,
+}
+
+/// DCS writes no comment for a touch-and-go, a pass without a ball call or a straight-in it
+/// never saw; the project's own graded episodes are then written in the same shorthand
+/// (`crate::lso_notation::from_episodes`), and the gate summary is used when there are no
+/// episodes (V/STOL, gates-only grading) -- always marked measured, never presented as a
+/// DCS/NATOPS comment.
+fn pilot_notes(track: &crate::track::TrackResult) -> PilotNotes {
+    let non_empty = |s: String| (!s.is_empty()).then_some(s);
+    if let Some(comment) = &track.dcs_grading {
+        return PilotNotes {
+            notation: Some(comment.clone()),
+            notes: non_empty(crate::lso_notation::to_english(comment)),
+            source: Some("dcs"),
+        };
+    }
+    let measured = crate::lso_notation::from_episodes(&track.grading_episodes);
+    let (notation, notes) = if measured.deviations.is_empty() {
+        (
+            None,
+            crate::grading::describe_measured_deviations(
+                &track.gate_deviations,
+                &track.trajectory_deviations,
+            ),
+        )
+    } else {
+        (Some(measured.shorthand()), measured.english())
+    };
+    let notes = non_empty(notes);
+    PilotNotes {
+        source: (notation.is_some() || notes.is_some()).then_some("measured"),
+        notation,
+        notes,
+    }
+}
+
 fn correlate_late_event(
     correlator: &mut super::event_correlator::EventCorrelator,
     track: &mut Track,
@@ -1817,6 +1862,8 @@ pub async fn record_recovery(
         }
     }
 
+    let notes = pilot_notes(&track);
+
     // Persist to SQLite database (non-fatal — a write failure must not abort the recovery).
     let db_inserted = if params.positions_only {
         None
@@ -1878,6 +1925,9 @@ pub async fn record_recovery(
             fallback_source: fallback_source.as_str().to_string(),
             arrest_evidence: track.arrest_evidence.to_string(),
             hook_state: track.hook_state.as_str().to_string(),
+            lso_notation: notes.notation.clone(),
+            lso_notes: notes.notes.clone(),
+            lso_notes_source: notes.source.map(str::to_string),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(inserted)) => Some(inserted),
@@ -2047,36 +2097,17 @@ pub async fn record_recovery(
                 }
             }
 
-            // LSO notation and plain-English notes from the DCS grading string. DCS writes none
-            // for a touch-and-go, a pass without a ball call or a straight-in it never saw, so
-            // fall back to the project's own graded episodes written in the same shorthand
-            // (`crate::lso_notation::from_episodes`), and to the gate summary when there are no
-            // episodes (V/STOL, gates-only grading) -- always labelled as measured, never
-            // presented as a DCS/NATOPS comment.
-            if let Some(ref notation) = track.dcs_grading {
-                embed = embed.field("LSO Notation", notation.as_str(), false);
-                let notes = crate::lso_notation::to_english(notation);
-                if !notes.is_empty() {
-                    embed = embed.field("LSO Notes", notes, false);
-                }
+            // LSO notation and plain-English notes, identical to the `passes` row (`pilot_notes`).
+            let measured_label = if notes.source == Some("measured") {
+                " (measured by LSO, not a DCS comment)"
             } else {
-                let measured = crate::lso_notation::from_episodes(&track.grading_episodes);
-                let notes = if measured.deviations.is_empty() {
-                    crate::grading::describe_measured_deviations(
-                        &track.gate_deviations,
-                        &track.trajectory_deviations,
-                    )
-                } else {
-                    embed = embed.field(
-                        "LSO Notation (measured by LSO, not a DCS comment)",
-                        measured.shorthand(),
-                        false,
-                    );
-                    measured.english()
-                };
-                if !notes.is_empty() {
-                    embed = embed.field("LSO Notes (measured by LSO, not a DCS comment)", notes, false);
-                }
+                ""
+            };
+            if let Some(notation) = &notes.notation {
+                embed = embed.field(format!("LSO Notation{measured_label}"), notation, false);
+            }
+            if let Some(text) = &notes.notes {
+                embed = embed.field(format!("LSO Notes{measured_label}"), text, false);
             }
 
             // Wind and groove time — Discord-only fields. The JSON report already carries the
