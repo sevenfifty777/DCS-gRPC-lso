@@ -64,7 +64,7 @@ fn default_true() -> bool {
 pub fn execute(opts: Opts) -> Result<(), crate::error::Error> {
     let files = collect_json_files(&opts.input)?;
     println!(
-        "report\trecorded_distance_m\tnew_distance_m\trecorded_entry_dcs\tnew_entry_dcs\trecorded_groove_s\tnew_groove_s\tgroove_delta_s\trecorded_grade\tnew_geometric_grade\tgrade_changed\tlineup_deg\tbank_deg\ttrack_deg\tinbound_progress_mps\trollout_started_dcs\trollout_s\tsamples\tport_corridor_reached\tadded_samples\tadded_max_abs_lineup_deg\tadded_max_abs_bank_deg\tadded_max_abs_track_deg"
+        "report\trecorded_distance_m\tnew_distance_m\trecorded_entry_dcs\tnew_entry_dcs\trecorded_groove_s\tnew_groove_s\tgroove_delta_s\trecorded_grade\tnew_geometric_grade\tgrade_changed\tlineup_deg\tbank_deg\ttrack_deg\tinbound_progress_mps\trollout_started_dcs\trollout_s\tsamples\tport_corridor_reached\tadded_samples\tadded_max_abs_lineup_deg\tadded_max_abs_bank_deg\tadded_max_abs_track_deg\tflown_approach"
     );
     for path in files {
         match analyze(&path) {
@@ -125,6 +125,19 @@ fn analyze(path: &Path) -> Result<Option<String>, crate::error::Error> {
                     .map(|datum| datum.x)
             })
         });
+    // Same persisted samples, in the shape `crate::flown_approach` reads.
+    let flown_datums = input
+        .datums
+        .iter()
+        .map(|datum| crate::track::Datum {
+            time: datum.time,
+            x: datum.x,
+            y: datum.y,
+            roll_deg: datum.roll_deg,
+            telemetry_valid: datum.telemetry_valid,
+            ..crate::track::Datum::default()
+        })
+        .collect::<Vec<_>>();
     let samples = input.datums.into_iter().map(|datum| ReplaySample {
         time: datum.time,
         x: datum.x,
@@ -185,9 +198,16 @@ fn analyze(path: &Path) -> Result<Option<String>, crate::error::Error> {
     let added_lineup = added_max(|sample| sample.lineup_deg);
     let added_bank = added_max(|sample| sample.bank_deg);
     let added_track = added_max(|sample| sample.track_angle_deg);
+    let flown_approach = if carrier.is_vstol() {
+        "N/A"
+    } else {
+        crate::flown_approach::classify_flown_approach(&flown_datums, entry.is_some())
+            .kind
+            .as_str()
+    };
     let Some(entry) = entry else {
         return Ok(Some(format!(
-            "{report}\t{}\tN/A\t{}\tN/A\t{}\tN/A\tN/A\t{}\t{}\t{}\tN/A\tN/A\tN/A\tN/A\tN/A\tN/A\tN/A\tN/A\t0\tN/A\tN/A\tN/A",
+            "{report}\t{}\tN/A\t{}\tN/A\t{}\tN/A\tN/A\t{}\t{}\t{}\tN/A\tN/A\tN/A\tN/A\tN/A\tN/A\tN/A\tN/A\t0\tN/A\tN/A\tN/A\t{flown_approach}",
             fmt(recorded_distance),
             fmt(recorded_entry),
             fmt(input.groove_time_secs),
@@ -197,7 +217,7 @@ fn analyze(path: &Path) -> Result<Option<String>, crate::error::Error> {
         )));
     };
     Ok(Some(format!(
-        "{report}\t{}\t{:.1}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{report}\t{}\t{:.1}\t{}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\t{}\t{}\t{}\t{}\t{flown_approach}",
         fmt(recorded_distance),
         entry.distance_m,
         fmt(recorded_entry),

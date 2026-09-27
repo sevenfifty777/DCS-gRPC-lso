@@ -80,6 +80,15 @@ pub struct DbPass {
     pub lso_notes: Option<String>,
     /// `dcs` or `measured`: where `lso_notation`/`lso_notes` come from.
     pub lso_notes_source: Option<String>,
+    /// Case DCS's Marshal is expected to order (ED's rule): `I`, `II`, `III` or
+    /// `indeterminate`; `None` when it was not assessed.
+    pub ordered_case: Option<String>,
+    /// NATOPS-minima case, diagnostic only.
+    pub natops_case: Option<String>,
+    /// NATOPS night window (sunset + 30 min to sunrise − 30 min) at the carrier; `None` unknown.
+    pub night: Option<bool>,
+    /// `overhead_pattern`, `straight_in` or `unknown`; `None` for V/STOL or when not assessed.
+    pub flown_approach: Option<String>,
 }
 
 /// Pass record as read back from the database. Since 0.5.0 only the migration
@@ -111,6 +120,10 @@ pub struct StoredPass {
     pub lso_notation: Option<String>,
     pub lso_notes: Option<String>,
     pub lso_notes_source: Option<String>,
+    pub ordered_case: Option<String>,
+    pub natops_case: Option<String>,
+    pub night: Option<bool>,
+    pub flown_approach: Option<String>,
     pub grade_date: String,
     pub grade_points: Option<f64>,
     pub points_awarded: Option<bool>,
@@ -242,6 +255,14 @@ impl RecoveryDb {
             ("lso_notation", "TEXT"),
             ("lso_notes", "TEXT"),
             ("lso_notes_source", "TEXT"),
+            // Migration 9: recovery case (docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md).
+            // `ordered_case` follows ED's rule, `natops_case` is the doctrinal diagnostic, and
+            // `night` is the NATOPS window, `flown_approach` what the pilot flew. NULL for rows
+            // written before this migration.
+            ("ordered_case", "TEXT"),
+            ("natops_case", "TEXT"),
+            ("night", "INTEGER"),
+            ("flown_approach", "TEXT"),
         ] {
             ensure_column(&conn, "passes", name, definition)?;
         }
@@ -254,7 +275,8 @@ impl RecoveryDb {
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (5);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (6);
              INSERT OR IGNORE INTO schema_migrations(version) VALUES (7);
-             INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);",
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (8);
+             INSERT OR IGNORE INTO schema_migrations(version) VALUES (9);",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -277,10 +299,11 @@ impl RecoveryDb {
                  confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
                  max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
                  assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
-                 arrest_evidence, hook_state, lso_notation, lso_notes, lso_notes_source) \
+                 arrest_evidence, hook_state, lso_notation, lso_notes, lso_notes_source,
+                 ordered_case, natops_case, night, flown_approach) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
                      ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42,
-                     ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52)",
+                     ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56)",
             params![
                 &pass.timestamp,
                 &pass.pilot_name,
@@ -334,6 +357,10 @@ impl RecoveryDb {
                 &pass.lso_notation,
                 &pass.lso_notes,
                 &pass.lso_notes_source,
+                &pass.ordered_case,
+                &pass.natops_case,
+                pass.night,
+                &pass.flown_approach,
             ],
         )?;
         Ok(inserted == 1)
@@ -351,7 +378,8 @@ impl RecoveryDb {
                     confidence, cause, grading_version, points_awarded, intended_spot, actual_nearest_spot, distance_to_intended_spot_m,
                     max_scoring_sample_gap_ms, telemetry_health, wire_estimation_confidence, grading_availability, secondary_causes_json,
                     assessment_scope, observed_from_distance_m, missing_coverage_json, points_eligible, fallback_source,
-                    arrest_evidence, hook_state, lso_notation, lso_notes, lso_notes_source \
+                    arrest_evidence, hook_state, lso_notation, lso_notes, lso_notes_source,
+                    ordered_case, natops_case, night, flown_approach \
              FROM passes ORDER BY id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -373,6 +401,10 @@ impl RecoveryDb {
                 lso_notation: row.get(50)?,
                 lso_notes: row.get(51)?,
                 lso_notes_source: row.get(52)?,
+                ordered_case: row.get(53)?,
+                natops_case: row.get(54)?,
+                night: row.get(55)?,
+                flown_approach: row.get(56)?,
                 grade_date: row.get(13)?,
                 grade_points: row.get(14)?,
                 mission_datetime: row.get(15)?,
@@ -500,6 +532,10 @@ mod tests {
             lso_notation: Some("_LULX_ SLOX".to_string()),
             lso_notes: Some("Lined up left at the start (gross), slow at the start".to_string()),
             lso_notes_source: Some("measured".to_string()),
+            ordered_case: Some("III".to_string()),
+            natops_case: Some("II".to_string()),
+            night: Some(false),
+            flown_approach: Some("straight_in".to_string()),
         };
         assert!(db.insert(&entry).expect("insert pass"));
         assert!(!db.insert(&entry).expect("duplicate is idempotent"));
@@ -529,6 +565,10 @@ mod tests {
             Some("Lined up left at the start (gross), slow at the start")
         );
         assert_eq!(passes[0].lso_notes_source.as_deref(), Some("measured"));
+        assert_eq!(passes[0].ordered_case.as_deref(), Some("III"));
+        assert_eq!(passes[0].natops_case.as_deref(), Some("II"));
+        assert_eq!(passes[0].night, Some(false));
+        assert_eq!(passes[0].flown_approach.as_deref(), Some("straight_in"));
     }
 
     #[test]
@@ -602,6 +642,11 @@ mod tests {
         assert_eq!(passes[0].actual_nearest_spot, None);
         assert_eq!(passes[0].arrest_evidence, None);
         assert_eq!(passes[0].hook_state, None);
+        // Migration 9 leaves legacy rows unassessed rather than inventing a case.
+        assert_eq!(passes[0].ordered_case, None);
+        assert_eq!(passes[0].natops_case, None);
+        assert_eq!(passes[0].night, None);
+        assert_eq!(passes[0].flown_approach, None);
         drop(db);
         std::fs::remove_file(path).expect("remove isolated migration fixture");
     }

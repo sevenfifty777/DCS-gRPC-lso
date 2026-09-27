@@ -111,6 +111,12 @@ struct RecoveryReport<'a> {
     /// sentinel forced a fallback to the high probe for the AoA correction itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     wind_reference_probes: Option<crate::track::WindReferenceProbes>,
+    /// Ordered recovery case (ED's rule) with the NATOPS-minima diagnostic, assessed from the
+    /// mission weather at attempt start and at groove entry
+    /// (`crate::recovery_case::RecoveryCaseReport`). Diagnostic only: no grading rule reads it.
+    /// Absent in `--positions-only`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_case: Option<&'a crate::recovery_case::RecoveryCaseReport>,
     datums: &'a [Datum],
     /// Rendering-only segmentation of the full pattern history. This never
     /// changes track closure, telemetry completeness or grading.
@@ -389,6 +395,34 @@ async fn query_wind_with_sentinel_retry(
         Ok(w) => Some(w),
         Err(err) => {
             tracing::warn!(probe, ?err, "failed to query wind");
+            None
+        }
+    }
+}
+
+/// Query the mission weather and assess the ordered recovery case at the carrier position, in
+/// a task of its own so the position loop never waits on `CustomService.Eval`. Any failure
+/// (Eval disabled, timeout, malformed reply) becomes an `indeterminate` assessment.
+fn spawn_case_assessment(
+    ch: crate::client::GrpcChannel,
+    carrier_lat: f64,
+    carrier_lon: f64,
+) -> tokio::task::JoinHandle<crate::recovery_case::CaseAssessment> {
+    tokio::spawn(async move {
+        let mut client = crate::client::CustomClient::new(ch);
+        let (query, _) = crate::mission_weather::query_mission_weather(&mut client).await;
+        crate::recovery_case::assess_recovery_case(&query, Some((carrier_lat, carrier_lon)))
+    })
+}
+
+async fn join_case_assessment(
+    handle: Option<tokio::task::JoinHandle<crate::recovery_case::CaseAssessment>>,
+    moment: &'static str,
+) -> Option<crate::recovery_case::CaseAssessment> {
+    match handle?.await {
+        Ok(assessment) => Some(assessment),
+        Err(err) => {
+            tracing::warn!(moment, ?err, "recovery case assessment task failed");
             None
         }
     }
@@ -777,6 +811,11 @@ pub async fn record_recovery(
     // Set once the wind reference query has been attempted (successfully or not), so it is
     // never repeated for the rest of the recovery. See docs/GRADING_REFERENCE.md, "AoA".
     let mut wind_reference_queried = false;
+    // Recovery case (docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md): one background weather
+    // query when the first carrier position arrives and one at groove entry. Never awaited on
+    // the position loop; collected when the report is built.
+    let mut case_at_attempt_start = None;
+    let mut case_at_groove_entry = None;
 
     // The whole merged stream ends on shutdown, not only the tick half of it: the event half
     // never ends on its own (every recorder holds the hub alive), so without this wrapper a
@@ -994,6 +1033,23 @@ pub async fn record_recovery(
                     lowest_altitude = lowest_altitude.min(plane.alt);
 
                     let keep_tracking = datums.next_sample(&sample, hook_state);
+
+                    if !params.positions_only {
+                        if case_at_attempt_start.is_none() {
+                            case_at_attempt_start = Some(spawn_case_assessment(
+                                params.ch.clone(),
+                                carrier.lat,
+                                carrier.lon,
+                            ));
+                        }
+                        if case_at_groove_entry.is_none() && datums.entered_groove() {
+                            case_at_groove_entry = Some(spawn_case_assessment(
+                                params.ch.clone(),
+                                carrier.lat,
+                                carrier.lon,
+                            ));
+                        }
+                    }
 
                     // Establish the wind reference for AoA correction exactly once, as soon as
                     // the aircraft enters the groove (see docs/GRADING_REFERENCE.md, "AoA").
@@ -1632,6 +1688,26 @@ pub async fn record_recovery(
         }
     };
 
+    // Ordered recovery case, diagnostic only (no grading rule reads it yet). Absent in
+    // `--positions-only`, which never queries output-only DCS metadata.
+    let recovery_case = if params.positions_only {
+        None
+    } else {
+        // V/STOL recoveries have no overhead-pattern/straight-in reading (NAVAIR 00-80T-111
+        // Case I/II/III is a separate task).
+        let flown_approach = (!track.carrier_info.is_vstol()).then(|| {
+            crate::flown_approach::classify_flown_approach(
+                &track.datums,
+                track.groove_entry.is_some(),
+            )
+        });
+        Some(crate::recovery_case::RecoveryCaseReport::new(
+            join_case_assessment(case_at_attempt_start, "attempt_start").await,
+            join_case_assessment(case_at_groove_entry, "groove_entry").await,
+            flown_approach,
+        ))
+    };
+
     // `spot` is retained as the legacy phase-1 alias. New consumers must use the
     // independent intended/nearest fields below.
     let spot_label = track.intended_spot;
@@ -1721,6 +1797,7 @@ pub async fn record_recovery(
         wind_reading_is_groove_entry_fallback,
         wind_reference_established: track.wind_reference_established,
         wind_reference_probes: track.wind_reference_probes,
+        recovery_case: recovery_case.as_ref(),
         datums: &track.datums,
         pattern_rendering,
         mission_datetime: &mission_datetime,
@@ -1928,6 +2005,17 @@ pub async fn record_recovery(
             lso_notation: notes.notation.clone(),
             lso_notes: notes.notes.clone(),
             lso_notes_source: notes.source.map(str::to_string),
+            ordered_case: recovery_case
+                .as_ref()
+                .map(|case| case.ordered.as_str().to_string()),
+            natops_case: recovery_case
+                .as_ref()
+                .map(|case| case.natops_case.as_str().to_string()),
+            night: recovery_case.as_ref().and_then(|case| case.night),
+            flown_approach: recovery_case
+                .as_ref()
+                .and_then(|case| case.flown_approach.as_ref())
+                .map(|flown| flown.kind.as_str().to_string()),
         };
         match tokio::task::spawn_blocking(move || db.insert(&entry)).await {
             Ok(Ok(inserted)) => Some(inserted),
@@ -1950,9 +2038,11 @@ pub async fn record_recovery(
     } else {
         let render_track = track.clone();
         let render_pipeline = pipeline.clone();
+        let render_case_label = recovery_case.as_ref().and_then(|case| case.label());
         match tokio::task::spawn_blocking(move || {
             let started = Instant::now();
-            let rendered = render_pipeline.render_and_publish(&render_track)?;
+            let rendered =
+                render_pipeline.render_and_publish(&render_track, render_case_label.as_deref())?;
             crate::metrics::RUNTIME_METRICS
                 .observe_render(started.elapsed().as_micros().min(u64::MAX as u128) as u64);
             Ok::<_, crate::error::Error>(rendered)
@@ -2123,6 +2213,10 @@ pub async fn record_recovery(
             }
             if let Some(secs) = track.groove_time_secs {
                 embed = embed.field("Groove Time", format!("{:.1} s", secs), true);
+            }
+            // Expected Marshal case from the mission weather; omitted when indeterminate.
+            if let Some(label) = recovery_case.as_ref().and_then(|case| case.label()) {
+                embed = embed.field("Recovery", label, true);
             }
 
             let mut execute = ExecuteWebhook::new()

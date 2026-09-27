@@ -486,7 +486,8 @@ impl CarrierPlanePair {
                 Track::new(&self.pilot_name, self.carrier_info, self.plane_info),
             )
             .finish();
-            crate::draw::draw_chart(&out_dir, &filename, &track)?;
+            // An ACMI replay carries no mission weather: no recovery case label.
+            crate::draw::draw_chart(&out_dir, &filename, &track, None)?;
             self.is_recovery_attempt = false;
             self.landed = false;
             self.landed_at = None;

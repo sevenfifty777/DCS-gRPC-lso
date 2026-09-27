@@ -103,8 +103,12 @@ Common examples:
 # Offline read-only comparison of recorded vs current CATOBAR groove entry/duration/geometry
 .\lso.exe groove-ab C:\LSO\recordings
 
-# Print the raw mission weather and time LSO reads (needs evalEnabled = true on the server)
-.\lso.exe weather --raw
+# Print the raw mission weather and time LSO reads (needs evalEnabled = true on the server),
+# with the predicted recovery case at the named carrier
+.\lso.exe weather --raw --carrier "CVN-71"
+
+# Maintenance: regenerate the embedded cloud preset table after a DCS update
+.\lso.exe cloud-presets --dcs-root "C:\Program Files\Eagle Dynamics\DCS World"
 ```
 
 `lso.exe weather` runs one fixed, read-only Lua chunk through `CustomService.Eval` and prints the

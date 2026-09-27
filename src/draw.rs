@@ -384,6 +384,9 @@ pub fn draw_chart(
     out_dir: &std::path::Path,
     filename: &str,
     track: &TrackResult,
+    // Expected Marshal case (e.g. "Case III (night)"), shown after the aircraft; `None` when
+    // indeterminate or not assessed (ACMI replay).
+    recovery_label: Option<&str>,
 ) -> Result<PathBuf, DrawError> {
     let path = out_dir.join(filename).with_extension("png");
 
@@ -442,7 +445,10 @@ pub fn draw_chart(
     )?;
 
     root_drawing_area.draw_text(
-        &format!("Aircraft: {}", track.plane_info.name),
+        &match recovery_label {
+            Some(label) => format!("Aircraft: {}  ·  {label}", track.plane_info.name),
+            None => format!("Aircraft: {}", track.plane_info.name),
+        },
         &text_style,
         (16, 80),
     )?;

@@ -624,6 +624,18 @@ deux rapports en double si jamais deux processus tournaient en même temps) :
 5. **Un message Discord** (si configuré) — avec la note, le graphique et le fichier de rejeu en
    pièce jointe.
 
+**Le cas de recovery (Case I, II ou III).** Pendant l'approche, le programme demande à DCS la
+météo de la mission (nuages, pluie, brouillard) et l'heure, puis en déduit le cas que le Marshal
+de DCS annonce normalement au check-in : Case III de nuit, par brouillard épais (visibilité sous
+5 NM) ou sous une couche très dense et basse ou pluvieuse ; Case I par temps clair ou plafond
+haut ; Case II entre les deux. Le message Discord et l'image l'affichent (par exemple « Case III
+(night) ») ; quand une donnée manque, rien n'est affiché plutôt qu'un cas deviné. Le rapport
+indique aussi ce que le pilote a réellement volé — circuit avec break et virage final, ou longue
+finale droite — et signale quand les deux ne concordent pas. Pour l'instant c'est une information
+seulement : la note est calculée exactement comme avant, quel que soit le cas. Plusieurs
+réglages (ce que DCS appelle « nuit », la densité d'un nuage prédéfini) sont encore des
+hypothèses à vérifier en mission contre l'annonce réelle du Marshal.
+
 **Exemple fictif du cœur du rapport JSON produit pour Wolf 1-1** (simplifié, valeurs
 inventées) :
 

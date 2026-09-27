@@ -1,7 +1,24 @@
 # Recovery case detection (Case I / II / III): analysis and plan
 
-26 September 2026, decisions D1–D6 taken on 27 September 2026. Status: plan approved, nothing
-implemented. Nothing in this document has been validated live.
+26 September 2026, decisions D1–D6 taken on 27 September 2026. Status on 27 September 2026:
+phases 1, 2, 3 and 5 implemented on branch `feature/case-recovery-weather`; phase 1 passed its
+live smoke test on the dedicated server; phase 4 (calibration) and phase 6 (Case III grading) are
+still to do. Nothing beyond the phase 1 smoke test has been validated live.
+
+Implementation notes that differ from the text below:
+
+- **Preset density.** DCS's `coverage` is a rendering parameter (the "Overcast" presets stay
+  between 0.61 and 0.90), so "density = 10 × coverage" was dropped. A preset's density comes from
+  ED's own METAR description in its name (FEW 2, SCT 4, BKN 7, OVC 9, the mean for a pair such as
+  `BKN/OVC`), which matches CRT's hand-written table. Presets without a METAR description give an
+  unknown density.
+- **NATOPS ceiling of a preset.** Taken from the same METAR codes: the lowest layer's base if it
+  is BKN/OVC, no ceiling if no layer is, unknown if a denser layer sits above a thin lowest one.
+- **Migration 9** also holds `night` and `flown_approach`.
+- **`flown_approach`** checks the continuity of the segment (no gap over 1 s, no outbound motion)
+  and requires lineup within 5°. On the local corpora it classifies the 20 September straight-in
+  as `straight_in` and the Case I passes as `overhead_pattern`; three other `straight_in` passes
+  (6, 8 and 12 September) need a human look before phase 6.
 
 ## 1. What we are trying to know
 

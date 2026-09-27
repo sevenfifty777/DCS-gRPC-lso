@@ -1,13 +1,16 @@
 mod client;
+mod cloud_presets;
 mod commands;
 mod data;
 mod db;
 mod draw;
 mod error;
+mod flown_approach;
 mod grading;
 mod lso_notation;
 mod metrics;
 mod mission_weather;
+mod recovery_case;
 mod tasks;
 mod telemetry;
 #[cfg(test)]
@@ -61,6 +64,10 @@ enum Command {
     /// Diagnostic: print the raw mission weather and time LSO reads through
     /// `CustomService.Eval` (requires `evalEnabled = true` on the server). Read-only.
     Weather(commands::weather::Opts),
+
+    /// Maintenance: regenerate `data/dcs_cloud_presets.json` from a DCS install's
+    /// `Config/Effects/clouds.lua`. Offline; never talks to DCS-gRPC.
+    CloudPresets(commands::cloud_presets::Opts),
 }
 
 #[tokio::main]
@@ -95,6 +102,7 @@ async fn main() {
         Command::GrooveAb(opts) => commands::groove_ab::execute(opts),
         Command::GradeAb(opts) => commands::grade_ab::execute(opts),
         Command::Weather(opts) => commands::weather::execute(opts).await,
+        Command::CloudPresets(opts) => commands::cloud_presets::execute(opts),
     };
     if let Err(err) = result {
         tracing::error!(error = %err, error_chain = ?err, "LSO terminated with an error");

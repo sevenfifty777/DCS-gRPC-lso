@@ -442,7 +442,7 @@ fn generate_chart_images() {
                 format!("{name}_{i}")
             };
 
-            let approach_path = draw_chart(&out_dir, &filename, track)
+            let approach_path = draw_chart(&out_dir, &filename, track, None)
                 .unwrap_or_else(|e| panic!("draw_chart failed for {filename}: {e}"));
             println!("approach : {}", approach_path.display());
 

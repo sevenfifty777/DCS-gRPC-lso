@@ -296,10 +296,21 @@ Plan approuvé le 27 septembre 2026 : `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09
   seules les valeurs runtime font foi. Restent à enregistrer : une mission **sans aucun brouillard**
   (valeur runtime renvoyée ?), une mission `fog2`, un preset ED et un preset ATMOS-X ; et l'appel
   Marshal de cette première mission (attendu Case III, brouillard < 5 NM).
-- **Phases 2 à 6 à faire** : classificateur pur ED + diagnostic NATOPS, requêtes dans
-  `record_recovery.rs`/JSON/SQLite migration 9/affichage, campagne de calibration (journalisation
-  temporaire de `message.parameters.case` dans `Scripts/Speech/common.lua` sur un PC de calibration
-  uniquement), `flown_approach`, puis `CaseIIIGrooveDetector`.
+- **Phases 2, 3 et 5 implémentées, non validées live** : classificateur ED + diagnostic NATOPS,
+  table de presets, requêtes en tâche de fond, JSON `recovery_case`, migration SQLite 9, champ
+  Discord et libellé PNG, `flown_approach` et diagnostic de discordance. Aucune note ne change.
+- **Phase 4, campagne de calibration (à faire par l'opérateur)** : missions dédiées, relevé
+  `run-live-buffered.ps1 -Weather -Carrier <unité>` avant chaque check-in, appel Marshal noté (idéalement via
+  la journalisation temporaire de `message.parameters.case`, `clouds_density`, `clouds_ceiling` et
+  `visibility` dans `Scripts/Speech/common.lua`, sur un PC de calibration uniquement). Hypothèses à
+  confirmer ou remplacer (champ `assumptions`) : seuil de « dark » (−6°), densité d'un preset
+  depuis sa description METAR, plafond d'un preset (base mission + décalage de la couche basse),
+  brouillard absent quand la valeur runtime est nulle, décalages UTC des théâtres (table MOOSE).
+- **Revue humaine des `straight_in` du corpus** (`groove-ab`) : 20 septembre 09:25 (attendu),
+  6 septembre 03:20, 8 septembre 19:12 (entrée Case I à 1 397 m) et 12 septembre 17:54.
+  Confirmer qu'il s'agit de vraies finales longues avant la phase 6.
+- **Phase 6 à faire** : `CaseIIIGrooveDetector` et règles de notation Case III (D3, D4) ; c'est la
+  seule phase qui change des notes.
 
 ## Décisions produit encore ouvertes
 

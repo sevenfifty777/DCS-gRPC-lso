@@ -313,9 +313,41 @@ Frontières implémentées (fichiers vérifiés présents) :
   de `fog2`. Seules les valeurs runtime décrivent le brouillard présent. LSO ne dépend d'aucun
   outil météo tiers (DCS-Dynamic-Weather compris) : il lit uniquement ce que DCS rapporte.
 - [src/commands/weather.rs](src/commands/weather.rs) : commande `lso.exe weather [--raw]
-  [--output <fichier>]`, dump JSON en lecture seule de cette source (avec `captured_unix_ms`) pour
-  le test de fumée live et les missions de calibration ; `--output` écrit un nouveau fichier, jamais
-  un fichier existant, car les logs partagent stdout.
+  [--output <fichier>] [--carrier <unité>]`, dump JSON en lecture seule de cette source (avec
+  `captured_unix_ms`) et, avec `--carrier`, de l'évaluation `recovery_case` à la position du
+  porte-avions, pour le test de fumée live et les missions de calibration ; `--output` écrit un
+  nouveau fichier, jamais un fichier existant, car les logs partagent stdout.
+- [src/recovery_case.rs](src/recovery_case.rs) : classificateur pur du cas ordonné (phase 2 du
+  plan). Règle ED `dcs-ed-statement-v1` : Case III si nuit (« dark »), densité > 8 avec plafond
+  < 1 000 ft ou précipitation, ou brouillard < 5 NM ; sinon Case I si densité < 6 ou plafond
+  > 1 000 ft ; sinon Case II. Diagnostic NATOPS `natops-minima-v1` (00-80T-105 §4.2/§6.4, D6) :
+  Case III de nuit (coucher + 30 min à lever − 30 min), plafond < 1 000 ft ou visibilité < 5 NM ;
+  sinon Case I si plafond ≥ 3 000 ft ; sinon Case II ; jamais utilisé pour choisir un détecteur ni
+  une note. Logique à trois valeurs : une raison Case III suffisante décide seule, toute autre
+  entrée inconnue donne `indeterminate`. Position du soleil par les équations NOAA à la position du
+  porte-avions, décalages UTC par théâtre repris de MOOSE. Hypothèses `PROJECT-DERIVED` à calibrer,
+  sérialisées dans `assumptions` : « dark » = soleil sous −6°, densité d'un preset = description
+  METAR d'ED de sa couche basse (FEW 2, SCT 4, BKN 7, OVC 9, moyenne pour une paire), plafond d'un
+  preset = base mission + décalage de sa couche basse couverte, brouillard absent quand la valeur
+  runtime est nulle, table UTC MOOSE. Plafond arrondi au pied (304,8 m = 1 000 ft exactement).
+  `RecoveryCaseReport` résume les évaluations début de tentative / entrée en groove (préférée).
+- [src/cloud_presets.rs](src/cloud_presets.rs) : table embarquée `data/dcs_cloud_presets.json`
+  (106 presets, DCS 2.9.29.27468), générée hors ligne depuis `Config/Effects/clouds.lua` par
+  [src/commands/cloud_presets.rs](src/commands/cloud_presets.rs) (`lso.exe cloud-presets`) avec
+  un lecteur Lua minimal ; `coverage` est un paramètre de rendu (≤ 0,9 même pour « Overcast »,
+  1,1 pour `clouds10`), jamais une fraction de ciel.
+- [src/flown_approach.rs](src/flown_approach.rs) : approche volée (phase 5) — `straight_in` si un
+  segment continu ailes à plat (|gîte| ≤ 10°), inbound, sur l'axe (|lineup| ≤ 5°), sans trou
+  > 1 s, commence au-delà de 2 NM et atteint 3/4 NM ; sinon `overhead_pattern` si l'entrée en
+  groove Case I est confirmée ; sinon `unknown`. Le `straight_in` prime sur une confirmation
+  Case I tardive. CATOBAR uniquement. `approach_does_not_match_ordered_case` quand l'approche
+  contredit le cas ordonné ; jamais une pénalité. Sur les corpus locaux (`groove-ab`) : le
+  straight-in du 20 septembre 09:25 est `straight_in`, les passes Case I `overhead_pattern`.
+- Enregistrement live (`record_recovery.rs`) : hors `--positions-only`, deux requêtes météo en
+  tâches tokio séparées (première position porte-avions, entrée en groove), jamais attendues dans
+  la boucle 10-20 Hz, jointes à la publication ; JSON `recovery_case`, SQLite migration 9
+  (`ordered_case`, `natops_case`, `night`, `flown_approach`), champ Discord « Recovery » et libellé
+  PNG après l'avion, omis quand le cas est indéterminé. Aucune règle de notation ne lit ce bloc.
 - [src/tasks/detect_recovery_attempt.rs](src/tasks/detect_recovery_attempt.rs) : détecteur par
   paire, vérifié toutes les 2 s. Enveloppe de repérage d'un début d'approche (`is_recovery_attempt`)
   : altitude avion `<= 1100 ft`, distance au porte-avions `<= 3.5 NM` et `> 200 m` (exclut un avion
@@ -963,7 +995,7 @@ afin de préserver prioritairement le dernier quart de nautique et le contact. L
 modifie pas la complétude positionnelle. Seule une perte/débordement de positions dans le segment
 noté produit `BufferLimit`.
 
-SQLite : migrations additives 2–8 (`schema_migrations`), index unique partiel `recovery_id`,
+SQLite : migrations additives 2–9 (`schema_migrations`), index unique partiel `recovery_id`,
 `INSERT OR IGNORE`, base ouverte en mode WAL avec `busy_timeout` 2 s pour qu'un lecteur externe
 (page LSO du DCS Web Dashboard, qui ouvre `lso.db` directement) puisse interroger le board pendant
 une insertion. Discord seulement pour une nouvelle ligne. UCID uniquement SQLite, jamais
@@ -982,7 +1014,10 @@ colonnes que la migration 6 d'`astra-review`, renumérotées pour cette lignée 
 `pilot_notes` (`src/tasks/record_recovery.rs`) que l'embed Discord : commentaire DCS et sa
 traduction, ou à défaut notation mesurée par LSO (`from_episodes`, puis résumé des gates). La page
 LSO du DCS Web Dashboard affiche ces colonnes telles quelles et ne retraduit `dcs_grading` que pour
-les lignes antérieures. Au démarrage, chaque `ALTER TABLE` est précédé d'une inspection
+les lignes antérieures ; 9 = `ordered_case` (`I`/`II`/`III`/`indeterminate`, règle ED),
+`natops_case` (diagnostic), `night` (fenêtre NATOPS, 0/1) et `flown_approach`
+(`overhead_pattern`/`straight_in`/`unknown`), NULL pour les lignes antérieures et en V/STOL pour
+`flown_approach`. Au démarrage, chaque `ALTER TABLE` est précédé d'une inspection
 `PRAGMA table_info(passes)` ; une erreur de migration inattendue est retournée, jamais avalée comme
 une simple "colonne déjà existante". Les lignes existantes sont préservées. `points_awarded` vaut
 `true` par défaut pour les lignes historiques (une note numérique existait toujours avant ce champ)
@@ -1059,6 +1094,12 @@ base en groove finissant 1,5 s avant la première preuve de contact), `arrest_ev
 `kinematic` ; `cause` ajoute `hook_transient_arrest_without_dcs_wire` et
 `kinematic_arrest_without_wire`. Voir "Gates, outcomes et câble" et "Contrat de
 télémétrie" ci-dessus.
+
+Le bloc additif `recovery_case` (27 septembre 2026, absent en `--positions-only`) porte
+`ordered`, `natops_case`, `night`, `source` (`groove_entry`/`attempt_start`/`none`), les deux
+évaluations complètes `at_attempt_start`/`at_groove_entry` (règle, raisons, entrées inconnues,
+diagnostic NATOPS, hypothèses, conditions dérivées), `flown_approach` (CATOBAR), `mismatch` et
+`diagnostics`. Il n'est lu par aucune règle de notation.
 
 Les ajouts P0 courants sont `Grading::ApproachOnly`,
 `gate_deviations.*_quality.coverage_source = "continuous_trajectory_bracket"`,

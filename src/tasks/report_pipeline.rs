@@ -61,10 +61,12 @@ impl ReportPipeline {
     pub fn render_and_publish(
         &self,
         track: &TrackResult,
+        recovery_label: Option<&str>,
     ) -> Result<(PathBuf, PathBuf), crate::error::Error> {
         let temporary = TemporaryDirectory::create(&self.out_dir)
             .map_err(|source| crate::error::Error::file_at(&self.out_dir, source))?;
-        let chart = crate::draw::draw_chart(temporary.path(), &self.filename, track)?;
+        let chart =
+            crate::draw::draw_chart(temporary.path(), &self.filename, track, recovery_label)?;
         let pattern = crate::draw::draw_pattern_chart(temporary.path(), &self.filename, track)?;
         let chart_bytes =
             std::fs::read(&chart).map_err(|source| crate::error::Error::file_at(&chart, source))?;

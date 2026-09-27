@@ -17,7 +17,24 @@ since the `0.2.0` tag are listed under Unreleased.
   becomes `unavailable` with a typed reason, never an error. No case logic in Lua and no grade
   change; the fork is not modified because Eval is enabled on the production server. New read-only
   command `lso.exe weather [--raw] [--output <new file>]` prints the snapshot for the live smoke
-  test and the calibration missions, optionally also writing it to a file that must not exist yet. `run` now builds its channel through the shared `client::connect_authenticated`.
+  test and the calibration missions, optionally also writing it to a file that must not exist yet.
+  `run` now builds its channel through the shared `client::connect_authenticated`.
+- Ordered recovery case (phases 2, 3 and 5 of the same plan), diagnostic only, no grade change.
+  `src/recovery_case.rs` classifies Case I/II/III with ED's rule (`dcs-ed-statement-v1`) and,
+  beside it, the NATOPS minima (`natops-minima-v1`, NAVAIR 00-80T-105 §4.2/§6.4, decision D6),
+  in three-valued logic so an unknown input gives `indeterminate`, never a guess; sun elevation
+  and the NATOPS night window use the NOAA equations at the carrier, with MOOSE's theatre UTC
+  offsets. `src/cloud_presets.rs` embeds `data/dcs_cloud_presets.json`, generated from DCS
+  2.9.29.27468 `Config/Effects/clouds.lua` by the new offline command `lso.exe cloud-presets`;
+  a preset's density comes from ED's METAR description, because `coverage` is a rendering
+  parameter. The calibration hypotheses are serialised in every assessment. `src/flown_approach.rs`
+  classifies the approach flown (`overhead_pattern`, `straight_in`, `unknown`) and the report
+  raises `approach_does_not_match_ordered_case` when it contradicts the ordered case. Each live
+  recording runs two background weather queries (attempt start, groove entry) off the position
+  loop and writes JSON `recovery_case`, SQLite migration 9 (`ordered_case`, `natops_case`,
+  `night`, `flown_approach`), a Discord "Recovery" field and a PNG label (omitted when
+  indeterminate). `lso.exe weather --carrier <unit>` prints the prediction; `groove-ab` gains a
+  `flown_approach` column.
 
 ### Fixed
 
