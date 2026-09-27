@@ -6,6 +6,19 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ## Unreleased
 
+### Changed
+
+- Straight-in finals are now graded (phase 6 of
+  `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md`, decisions D3/D4). `CaseIIIGrooveDetector`
+  (`src/track.rs`) runs beside the Case I roll-out detector, live and in replay: a continuous
+  wings-level, inbound, on-centerline segment from beyond 2 NM enters the groove at 3/4 NM (the
+  ball call), without any turn and without blocking on lineup quality; the first detector to
+  confirm owns the groove. Such a pass sets `gate_deviations.case_iii_straight_in`, which always
+  counts the 3/4 NM gate and grants `_OK_` on amplitude alone (no 15-18 s groove time,
+  `src/grading.rs`). Previously a straight-in had no groove entry and was left ungraded or graded
+  from gate readings only. On the local corpora the Case I passes are unchanged; of the four
+  straight-ins, 6 September 03:20 moves from a recorded `--` to OK. Not validated live.
+
 ### Added
 
 - Mission weather source for recovery-case detection (phase 1 of

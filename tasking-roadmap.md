@@ -299,7 +299,8 @@ Plan approuvé le 27 septembre 2026 : `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09
 - **Phases 2, 3 et 5 implémentées, non validées live** : classificateur ED + diagnostic NATOPS,
   table de presets, requêtes en tâche de fond, JSON `recovery_case`, migration SQLite 9, champ
   Discord et libellé PNG, `flown_approach` et diagnostic de discordance. Aucune note ne change.
-- **Phase 4, campagne de calibration (à faire par l'opérateur)** : missions dédiées, relevé
+- **Phase 4, campagne de calibration (à faire par l'opérateur)**, liste complète des tests C1 à C9
+  avec exemples dans `docs/CASE_RECOVERY_CALIBRATION_2026-09-27.md` : missions dédiées, relevé
   `run-live-buffered.ps1 -Weather -Carrier <unité>` avant chaque check-in, appel Marshal noté (idéalement via
   la journalisation temporaire de `message.parameters.case`, `clouds_density`, `clouds_ceiling` et
   `visibility` dans `Scripts/Speech/common.lua`, sur un PC de calibration uniquement). Hypothèses à
@@ -307,10 +308,13 @@ Plan approuvé le 27 septembre 2026 : `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09
   depuis sa description METAR, plafond d'un preset (base mission + décalage de la couche basse),
   brouillard absent quand la valeur runtime est nulle, décalages UTC des théâtres (table MOOSE).
 - **Revue humaine des `straight_in` du corpus** (`groove-ab`) : 20 septembre 09:25 (attendu),
-  6 septembre 03:20, 8 septembre 19:12 (entrée Case I à 1 397 m) et 12 septembre 17:54.
-  Confirmer qu'il s'agit de vraies finales longues avant la phase 6.
-- **Phase 6 à faire** : `CaseIIIGrooveDetector` et règles de notation Case III (D3, D4) ; c'est la
-  seule phase qui change des notes.
+  6 septembre 03:20 (`--` enregistré → OK avec la phase 6 ; une partie de l'écart peut venir des
+  évolutions du grading depuis), 8 septembre 19:12 (garde son entrée Case I à 1 397 m) et
+  12 septembre 17:54. Confirmer sur leurs PNG de pattern qu'il s'agit de vraies finales longues.
+- **Phase 6 implémentée, non validée live** : `CaseIIIGrooveDetector`, porte 3/4 NM toujours
+  requise et `_OK_` sans temps de groove pour un straight-in. Valider en session live Case III de
+  nuit (finale CCA longue) et comparer à l'appréciation d'un LSO humain ; vérifier aussi qu'un
+  straight-in de jour (discordance D4) reçoit bien sa note avec le diagnostic.
 
 ## Décisions produit encore ouvertes
 

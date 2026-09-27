@@ -1726,21 +1726,30 @@ pub(crate) fn grade_from_gates_with_reason_and_policy(
     // of `Ok`, never an alternate path, so trend/oscillation/late-window already vouch for the
     // approach before this even runs. See `OK_PERFECT_*` for why the amplitude band is
     // PROJECT-DERIVED (MOOSE Airboss-sourced) while the groove-time window is NATOPS `OFFICIAL`.
+    // Case III (decision D3): the 15-18 s groove time is written for the Case I pattern
+    // (NAVAIR 00-80T-105 §6.2.4.3), so a straight-in reaches `_OK_` on amplitude alone.
+    // PROJECT-DERIVED.
+    let groove_time_ok = gates.case_iii_straight_in
+        || groove_time_secs.is_some_and(|t| {
+            (OK_PERFECT_GROOVE_TIME_MIN_S..=OK_PERFECT_GROOVE_TIME_MAX_S).contains(&t)
+        });
     if tier == PassGrade::Ok
         && episodes.is_empty()
         && is_amplitude_perfect(gates, trajectory)
         && trend_worsening_detail(trajectory).is_none()
         && oscillation_detail(trajectory).is_none()
-        && groove_time_secs.is_some_and(|t| {
-            (OK_PERFECT_GROOVE_TIME_MIN_S..=OK_PERFECT_GROOVE_TIME_MAX_S).contains(&t)
-        })
+        && groove_time_ok
     {
         (
             PassGrade::Perfect,
-            format!(
-                "_OK_: textbook pass on every gate and the continuous approach, groove time {:.1} s.",
-                groove_time_secs.unwrap_or_default()
-            ),
+            if gates.case_iii_straight_in {
+                "_OK_: textbook straight-in on every gate and the continuous approach (Case III: amplitude only, no groove-time condition).".to_string()
+            } else {
+                format!(
+                    "_OK_: textbook pass on every gate and the continuous approach, groove time {:.1} s.",
+                    groove_time_secs.unwrap_or_default()
+                )
+            },
         )
     } else {
         (tier, reason)
@@ -2134,7 +2143,21 @@ mod tests {
                 bracket_gap_ms: Some(100.0),
                 ..GateQuality::default()
             },
+            case_iii_straight_in: false,
         }
+    }
+
+    #[test]
+    fn case_iii_straight_in_reaches_perfect_without_groove_time_condition() {
+        // Decision D3: the Case I 15-18 s groove time does not apply to a straight-in.
+        let mut g = gates_deg(0.2, 0.3, 0.1, 0.2, 0.1, 0.1);
+        assert_eq!(grade_from_gates(&g, &[], Some(30.0), None), PassGrade::Ok);
+        g.case_iii_straight_in = true;
+        assert_eq!(
+            grade_from_gates(&g, &[], Some(30.0), None),
+            PassGrade::Perfect
+        );
+        assert_eq!(grade_from_gates(&g, &[], None, None), PassGrade::Perfect);
     }
 
     #[test]

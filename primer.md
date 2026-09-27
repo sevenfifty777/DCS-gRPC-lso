@@ -631,10 +631,18 @@ de DCS annonce normalement au check-in : Case III de nuit, par brouillard épais
 haut ; Case II entre les deux. Le message Discord et l'image l'affichent (par exemple « Case III
 (night) ») ; quand une donnée manque, rien n'est affiché plutôt qu'un cas deviné. Le rapport
 indique aussi ce que le pilote a réellement volé — circuit avec break et virage final, ou longue
-finale droite — et signale quand les deux ne concordent pas. Pour l'instant c'est une information
-seulement : la note est calculée exactement comme avant, quel que soit le cas. Plusieurs
-réglages (ce que DCS appelle « nuit », la densité d'un nuage prédéfini) sont encore des
-hypothèses à vérifier en mission contre l'annonce réelle du Marshal.
+finale droite — et signale quand les deux ne concordent pas, sans jamais retirer de points pour
+cela. Plusieurs réglages (ce que DCS appelle « nuit », la densité d'un nuage prédéfini) sont encore
+des hypothèses à vérifier en mission contre l'annonce réelle du Marshal.
+
+**La finale droite (straight-in) est notée.** Un pilote qui arrive ailes à plat, dans l'axe, depuis
+plus de 2 NM, sans virage final — la finale normale d'un Case III — entre dans le groove au passage
+des 3/4 NM, là où il annoncerait la « ball » aux minima. À partir de là, la notation est la même
+qu'en Case I, avec deux différences : la porte des 3/4 NM compte toujours (c'est le début du
+groove), et le `_OK_` ne demande pas les 15 à 18 secondes de groove, un chiffre écrit pour le
+circuit Case I ; seules les amplitudes comptent. C'est la façon de voler qui choisit cette règle,
+pas la météo : une finale droite par beau temps est notée de la même façon, avec en plus le signal
+de discordance.
 
 **Exemple fictif du cœur du rapport JSON produit pour Wolf 1-1** (simplifié, valeurs
 inventées) :

@@ -517,9 +517,29 @@ l'état du code (voir "Règles de vérité" plus haut).
   champs legacy `stability_duration_s`/`stability_sample_count` désignent désormais la durée et le
   nombre de samples de confirmation du roll-out, pas une stabilité lineup/route/tendance. Le
   contrat RPC ne fournit pas d'ancre exacte DCS→UTC : `utc_mapping_status` l'indique et le temps
-  Unix de réception reste distinct. **Case I CATOBAR uniquement** : le straight-in sans dernier
-  virage observé n'active pas implicitement Case II/III ; V/STOL conserve exactement sa boîte
-  historique `x <= 3/4 NM`, altitude `<=300 ft`, lineup `<=±10°`.
+  Unix de réception reste distinct. `groove_entry.trigger` vaut `CASE_I_GROOVE_TRIGGER`
+  (`case_i_port_final_turn_rollout_sustained`) pour cette entrée ; V/STOL conserve exactement sa
+  boîte historique `x <= 3/4 NM`, altitude `<=300 ft`, lineup `<=±10°`.
+- Entrée en groove Case III CATOBAR (straight-in, phase 6 du plan de détection du cas) :
+  `CaseIIIGrooveDetector` (`src/track.rs`) tourne à côté du détecteur Case I, en live comme en
+  rejeu (`replay_gate_trajectory_and_groove`, donc `groove-ab`/`cadence-ab`), avec exactement la
+  règle `straight_in` de `src/flown_approach.rs` : segment continu ailes à plat (|gîte| ≤ 10°),
+  inbound, sur l'axe (|lineup| ≤ 5°), sans trou de capture > 1 s, commencé au-delà de 2 NM ; le
+  groove commence au premier sample de ce segment sous 3/4 NM (ball call aux minima d'approche,
+  NAVAIR 00-80T-104 §6.6.3.1). Aucun virage requis ; lineup et glideslope à cet instant sont des
+  diagnostics non bloquants, comme pour le roll-out Case I. Le premier détecteur qui confirme
+  possède le groove (un vrai straight-in ne peut pas confirmer Case I d'abord, faute de virage
+  sous 600 ft) ; en rejeu, une confirmation Case I ne remplace pas une entrée Case III.
+  `groove_entry` porte alors `trigger = "case_iii_straight_in_three_quarter_nm"`,
+  `approach_side = "straight_in"`, `last_turn_arm_state = "not_required"`, et
+  `rollout_started_at_dcs`/`stability_*` décrivent le début et la longueur du segment droit.
+  `GateDeviations::case_iii_straight_in` (sérialisé seulement si vrai) passe à vrai : la porte
+  3/4 NM compte toujours (règle historique des trois portes, `three_quarter_counts`) et `_OK_` ne
+  dépend plus du temps de groove 15-18 s (décision D3, amplitude seule). Zones et fenêtres de
+  correction `project-derived-v7` inchangées à partir de 3/4 NM. Corpus locaux (`groove-ab`) :
+  20 septembre 09:25 entre à 1 388 m, (OK) inchangé ; 12 septembre 17:54 OK inchangé ; 6
+  septembre 03:20 `--` enregistré → OK ; 8 septembre 19:12 garde son entrée Case I. Non validé en
+  mission live (session Case III de nuit requise). `PROJECT-DERIVED`.
 - Franchissement du seuil de pont (`crossed_deck_threshold`, distingue `Bolter` de `WO?`) : ne se
   déclenche que si l'avion est proche du niveau du pont au moment du franchissement
   (`DECK_CROSSING_ALT_CAP_FT = 50 ft`, relatif au pont, crosse comprise) — sinon `WaveoffUnknown`.
@@ -679,8 +699,9 @@ faute de référence de vitesse d'approche par type — limite connue, non réso
 `LU_SLIGHT`. Jamais lié au brin (l'ancien couplage MOOSE "brin 3 + 15-18,99 s" reste désactivé, aucun
 NATOPS ne relie brin et note) ; un touch-and-go plafonne systématiquement un tier sous
 `grade_from_gates`, jamais `_OK_`. `lso.exe cadence-ab` ne rejoue pas la détection de toucher, donc
-`groove_time_secs` y vaut toujours `None` : `_OK_` n'apparaît jamais dans une note rejouée, seul
-l'usage live peut l'émettre. Non revalidé en mission live.
+`groove_time_secs` y vaut toujours `None` : `_OK_` n'apparaît jamais dans une note rejouée Case I,
+seul l'usage live peut l'émettre ; un straight-in Case III rejoué (`case_iii_straight_in`) peut en
+revanche l'atteindre, puisque le temps de groove ne s'y applique pas. Non revalidé en mission live.
 
 Contact sans arrest confirmé : `UnconfirmedArrest`, aucun point. Le
 câble DCS/LQM confirme seulement une valeur strictement comprise entre 1 et 4 ; 0, >4, overflow,

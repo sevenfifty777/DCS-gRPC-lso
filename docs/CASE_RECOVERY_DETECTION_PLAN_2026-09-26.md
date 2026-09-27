@@ -1,9 +1,9 @@
 # Recovery case detection (Case I / II / III): analysis and plan
 
 26 September 2026, decisions D1–D6 taken on 27 September 2026. Status on 27 September 2026:
-phases 1, 2, 3 and 5 implemented on branch `feature/case-recovery-weather`; phase 1 passed its
-live smoke test on the dedicated server; phase 4 (calibration) and phase 6 (Case III grading) are
-still to do. Nothing beyond the phase 1 smoke test has been validated live.
+phases 1, 2, 3, 5 and 6 implemented on branch `feature/case-recovery-weather`; phase 1 passed its
+live smoke test on the dedicated server; phase 4 (calibration) is still to do, and phase 6 needs
+its live Case III session. Nothing beyond the phase 1 smoke test has been validated live.
 
 Implementation notes that differ from the text below:
 
@@ -15,6 +15,12 @@ Implementation notes that differ from the text below:
 - **NATOPS ceiling of a preset.** Taken from the same METAR codes: the lowest layer's base if it
   is BKN/OVC, no ceiling if no layer is, unknown if a denser layer sits above a thin lowest one.
 - **Migration 9** also holds `night` and `flown_approach`.
+- **`CaseIIIGrooveDetector`** uses the same straight-in rule as `flown_approach` and enters the
+  groove at the first sample inside 3/4 NM. Lineup within 2°, the glideslope box and the 0.75 s
+  hold from section 7 are not entry conditions: as with the Case I roll-out, they would leave a
+  real straight-in ungraded for the very deviation it should be graded on; the segment itself
+  already proves a sustained wings-level final. The first detector to confirm owns the groove.
+  The Case III rules travel with the gates as `gate_deviations.case_iii_straight_in`.
 - **`flown_approach`** checks the continuity of the segment (no gap over 1 s, no outbound motion)
   and requires lineup within 5°. On the local corpora it classifies the 20 September straight-in
   as `straight_in` and the Case I passes as `overhead_pattern`; three other `straight_in` passes
@@ -317,7 +323,8 @@ Additive only, as usual:
 ## 6. Calibrating against DCS
 
 The ED statement gives the structure, not the exact meaning of "dark", "density" for a preset, or
-"ceiling". We measure it before trusting it.
+"ceiling". We measure it before trusting it. The full test list, with mission settings and the
+expected prediction for each, is in `docs/CASE_RECOVERY_CALIBRATION_2026-09-27.md`.
 
 1. **Test missions.** A Supercarrier on each theatre we use, one mission per condition, varying one
    factor at a time:

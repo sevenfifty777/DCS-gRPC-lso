@@ -1698,7 +1698,10 @@ pub async fn record_recovery(
         let flown_approach = (!track.carrier_info.is_vstol()).then(|| {
             crate::flown_approach::classify_flown_approach(
                 &track.datums,
-                track.groove_entry.is_some(),
+                track
+                    .groove_entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.trigger == crate::track::CASE_I_GROOVE_TRIGGER),
             )
         });
         Some(crate::recovery_case::RecoveryCaseReport::new(

@@ -201,9 +201,14 @@ fn analyze(path: &Path) -> Result<Option<String>, crate::error::Error> {
     let flown_approach = if carrier.is_vstol() {
         "N/A"
     } else {
-        crate::flown_approach::classify_flown_approach(&flown_datums, entry.is_some())
-            .kind
-            .as_str()
+        crate::flown_approach::classify_flown_approach(
+            &flown_datums,
+            entry
+                .as_ref()
+                .is_some_and(|entry| entry.trigger == crate::track::CASE_I_GROOVE_TRIGGER),
+        )
+        .kind
+        .as_str()
     };
     let Some(entry) = entry else {
         return Ok(Some(format!(

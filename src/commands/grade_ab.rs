@@ -68,6 +68,9 @@ struct GateDeviationsInput {
     three_quarter_quality: GateQualityInput,
     half_quality: GateQualityInput,
     quarter_quality: GateQualityInput,
+    /// Absent (false) in reports without a Case III straight-in groove entry.
+    #[serde(default)]
+    case_iii_straight_in: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -168,6 +171,7 @@ impl GateDeviationsInput {
             three_quarter_quality: self.three_quarter_quality.into_quality(),
             half_quality: self.half_quality.into_quality(),
             quarter_quality: self.quarter_quality.into_quality(),
+            case_iii_straight_in: self.case_iii_straight_in,
         }
     }
 }

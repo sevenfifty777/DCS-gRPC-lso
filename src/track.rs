@@ -878,6 +878,8 @@ pub struct Track {
     entered_groove: bool,
     /// CATOBAR Case I pattern/last-turn/roll-out state. Unused for V/STOL.
     case_i_groove_detector: CaseIGrooveDetector,
+    /// CATOBAR Case III straight-in state, run beside Case I. Unused for V/STOL.
+    case_iii_groove_detector: CaseIIIGrooveDetector,
     /// DCS simulation time (seconds since scenario start) when groove entry was first detected.
     groove_entry_time: Option<f64>,
     groove_entry_evidence: Option<GrooveEntryEvidence>,
@@ -1038,6 +1040,11 @@ pub struct GateDeviations {
     pub three_quarter_quality: GateQuality,
     pub half_quality: GateQuality,
     pub quarter_quality: GateQuality,
+    /// Groove entered by the Case III straight-in detector. The 3/4 NM gate is then the ball call
+    /// and always counts (historical three-gate rule), and `_OK_` is judged on amplitude alone
+    /// (decision D3: the 15-18 s groove time is written for Case I). Serialised only when true.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub case_iii_straight_in: bool,
 }
 
 impl GateDeviations {
@@ -1063,6 +1070,10 @@ impl GateDeviations {
     /// I pattern far more reliably, are kept as an unconditional requirement. Non revalidé en
     /// mission live (voir tasking-roadmap.md).
     pub(crate) fn three_quarter_counts(&self, groove_entry_time: Option<f64>) -> bool {
+        // Case III: the 3/4 NM gate is the ball call itself, always required.
+        if self.case_iii_straight_in {
+            return true;
+        }
         let counts = match (&self.at_three_quarter_nm, groove_entry_time) {
             (Some(gate), Some(entry)) => gate.timestamp_dcs >= entry,
             (None, Some(_)) => false,
@@ -1654,7 +1665,7 @@ impl CaseIGrooveDetector {
             lineup_rate_deg_per_s: quality.lineup_rate_deg_per_s,
             stability_duration_s: observation.time_dcs - rollout_started_at_dcs,
             stability_sample_count: self.rollout_sample_count,
-            trigger: "case_i_port_final_turn_rollout_sustained",
+            trigger: CASE_I_GROOVE_TRIGGER,
             criteria: GrooveEntryCriteria::default(),
             rollout_started_at_dcs,
             altitude_relative_ft: observation.altitude_relative_ft,
@@ -1666,6 +1677,114 @@ impl CaseIGrooveDetector {
             last_turn_arm_reason: "port_pattern_turn_observed_below_600_ft_while_inbound",
             decision_semantics:
                 "physical_rollout_bank_and_inbound_only_quality_diagnostics_do_not_block",
+        }
+    }
+}
+
+/// `GrooveEntryEvidence::trigger` of a Case I roll-out entry.
+pub const CASE_I_GROOVE_TRIGGER: &str = "case_i_port_final_turn_rollout_sustained";
+/// `GrooveEntryEvidence::trigger` of a Case III straight-in entry.
+pub const CASE_III_GROOVE_TRIGGER: &str = "case_iii_straight_in_three_quarter_nm";
+
+#[derive(Debug, Clone, Copy)]
+struct CaseIIIGrooveObservation {
+    time_dcs: f64,
+    x: f64,
+    altitude_relative_ft: f64,
+    lineup_deg: f64,
+    bank_deg: f64,
+    valid: bool,
+    inbound_progress_mps: f64,
+}
+
+/// Straight-in groove entry (phase 6 of `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md`).
+///
+/// Uses exactly the straight-in rule of `crate::flown_approach`: a continuous wings-level
+/// (|bank| <= 10°), inbound, on-centerline (|lineup| <= 5°) segment with no capture gap over 1 s
+/// that started beyond 2 NM. The groove starts at the first sample of that segment inside 3/4 NM,
+/// the ball call at approach minimums (NAVAIR 00-80T-104 §6.6.3.1). No turn is required. As for
+/// the Case I roll-out, lineup and glideslope at that instant are diagnostics and never block the
+/// entry: a straight-in 3° off centerline is graded on that deviation, not left ungraded.
+/// `PROJECT-DERIVED`.
+#[derive(Debug, Clone, Default)]
+struct CaseIIIGrooveDetector {
+    segment_start: Option<(f64, f64)>,
+    segment_samples: u32,
+    last: Option<(f64, f64)>,
+    confirmed: bool,
+}
+
+impl CaseIIIGrooveDetector {
+    fn observe(&mut self, observation: CaseIIIGrooveObservation) -> bool {
+        use crate::flown_approach::{
+            STRAIGHT_IN_MAX_ABS_BANK_DEG, STRAIGHT_IN_MAX_ABS_LINEUP_DEG,
+            STRAIGHT_IN_MAX_END_DISTANCE_M, STRAIGHT_IN_MAX_SAMPLE_GAP_S,
+            STRAIGHT_IN_MIN_START_DISTANCE_M,
+        };
+        let straight = observation.valid
+            && observation.x > 0.0
+            && observation.bank_deg.abs() <= STRAIGHT_IN_MAX_ABS_BANK_DEG
+            && observation.lineup_deg.abs() <= STRAIGHT_IN_MAX_ABS_LINEUP_DEG;
+        let continues = self.last.is_some_and(|(time, x)| {
+            observation.time_dcs > time
+                && observation.time_dcs - time <= STRAIGHT_IN_MAX_SAMPLE_GAP_S
+                && observation.x <= x + 1.0
+        });
+        self.last = Some((observation.time_dcs, observation.x));
+        if !straight {
+            self.segment_start = None;
+            self.segment_samples = 0;
+            return false;
+        }
+        if !continues || self.segment_start.is_none() {
+            self.segment_start = Some((observation.time_dcs, observation.x));
+            self.segment_samples = 0;
+        }
+        self.segment_samples += 1;
+        let qualifies = self
+            .segment_start
+            .is_some_and(|(_, start_x)| start_x >= STRAIGHT_IN_MIN_START_DISTANCE_M)
+            && observation.x <= STRAIGHT_IN_MAX_END_DISTANCE_M;
+        if qualifies && !self.confirmed {
+            self.confirmed = true;
+            return true;
+        }
+        false
+    }
+
+    fn evidence(
+        &self,
+        observation: CaseIIIGrooveObservation,
+        track_angle_deg: f64,
+        utc_mapping_status: &'static str,
+        confirmation_received_unix_ms: Option<u64>,
+    ) -> GrooveEntryEvidence {
+        let (segment_start_time, _) = self
+            .segment_start
+            .expect("a confirmed straight-in always has a segment start");
+        GrooveEntryEvidence {
+            timestamp_dcs: observation.time_dcs,
+            utc_mapping_status,
+            confirmation_received_unix_ms,
+            distance_m: observation.x,
+            lineup_deg: observation.lineup_deg,
+            bank_deg: observation.bank_deg,
+            track_angle_deg,
+            lineup_rate_deg_per_s: 0.0,
+            stability_duration_s: observation.time_dcs - segment_start_time,
+            stability_sample_count: self.segment_samples,
+            trigger: CASE_III_GROOVE_TRIGGER,
+            criteria: GrooveEntryCriteria::default(),
+            rollout_started_at_dcs: segment_start_time,
+            altitude_relative_ft: observation.altitude_relative_ft,
+            inbound_progress_mps: observation.inbound_progress_mps,
+            approach_side: "straight_in",
+            port_lineup_corridor_reached: false,
+            port_lineup_corridor_crossing_time_dcs: None,
+            last_turn_arm_state: "not_required",
+            last_turn_arm_reason: "wings_level_on_centerline_final_from_beyond_2_nm",
+            decision_semantics:
+                "straight_in_segment_reaching_three_quarter_nm_quality_diagnostics_do_not_block",
         }
     }
 }
@@ -1881,6 +2000,7 @@ impl Track {
             trajectory_deviations: Default::default(),
             entered_groove: false,
             case_i_groove_detector: CaseIGrooveDetector::default(),
+            case_iii_groove_detector: CaseIIIGrooveDetector::default(),
             groove_entry_time: None,
             groove_entry_evidence: None,
             landing_time: None,
@@ -2672,6 +2792,37 @@ impl Track {
                         self.groove_entry_evidence = None;
                     }
                     _ => {}
+                }
+
+                // Case III straight-in, beside Case I: whichever confirms first owns the groove.
+                // A genuine straight-in cannot confirm Case I first (no turn below 600 ft).
+                let straight_in = CaseIIIGrooveObservation {
+                    time_dcs: plane.time,
+                    x,
+                    altitude_relative_ft: m_to_ft(alt),
+                    lineup_deg,
+                    bank_deg: plane.roll,
+                    valid: sample.is_valid(),
+                    inbound_progress_mps: 0.0,
+                };
+                if self.case_iii_groove_detector.observe(straight_in) && !self.entered_groove {
+                    let quality = groove_quality_measurement(&self.gate_samples);
+                    let straight_in = CaseIIIGrooveObservation {
+                        inbound_progress_mps: quality.map_or(0.0, |q| q.inbound_progress_mps),
+                        ..straight_in
+                    };
+                    self.groove_entry_evidence = Some(
+                        self.case_iii_groove_detector.evidence(
+                            straight_in,
+                            quality.map_or(0.0, |q| q.track_angle_deg),
+                            "unavailable_no_exact_dcs_utc_anchor",
+                            (sample.plane_received_unix_ms != 0)
+                                .then_some(sample.plane_received_unix_ms),
+                        ),
+                    );
+                    self.gate_deviations.case_iii_straight_in = true;
+                    self.mark_fresh_groove_entry(plane.time);
+                    self.entered_groove = true;
                 }
             }
 
@@ -5010,6 +5161,7 @@ pub(crate) fn replay_gate_trajectory_and_groove(
     let mut previous_x = f64::MAX;
     let mut entered_groove = false;
     let mut case_i_groove_detector = CaseIGrooveDetector::default();
+    let mut case_iii_groove_detector = CaseIIIGrooveDetector::default();
     let mut groove_entry = None;
 
     for ReplaySample {
@@ -5130,6 +5282,8 @@ pub(crate) fn replay_gate_trajectory_and_groove(
                 capture_gap_ms,
             };
             match case_i_groove_detector.observe(observation) {
+                // A groove already owned by the Case III detector keeps it, as in `Track::next`.
+                CaseIGrooveUpdate::Confirmed if gate_deviations.case_iii_straight_in => {}
                 CaseIGrooveUpdate::Confirmed => {
                     let quality = groove_quality_measurement(&gate_samples).unwrap_or(
                         GrooveQualityMeasurement {
@@ -5150,9 +5304,38 @@ pub(crate) fn replay_gate_trajectory_and_groove(
                 CaseIGrooveUpdate::BranchReset => {
                     entered_groove = false;
                     groove_entry = None;
+                    gate_deviations.case_iii_straight_in = false;
+                    case_iii_groove_detector = CaseIIIGrooveDetector::default();
                     trajectory_deviations.clear();
                 }
                 CaseIGrooveUpdate::None => {}
+            }
+
+            // Same Case III straight-in detector as `Track::next`.
+            let straight_in = CaseIIIGrooveObservation {
+                time_dcs: time,
+                x,
+                altitude_relative_ft: m_to_ft(alt),
+                lineup_deg,
+                bank_deg: roll_deg,
+                valid,
+                inbound_progress_mps: 0.0,
+            };
+            if case_iii_groove_detector.observe(straight_in) && !entered_groove {
+                let quality = groove_quality_measurement(&gate_samples);
+                let straight_in = CaseIIIGrooveObservation {
+                    inbound_progress_mps: quality.map_or(0.0, |q| q.inbound_progress_mps),
+                    ..straight_in
+                };
+                groove_entry = Some(case_iii_groove_detector.evidence(
+                    straight_in,
+                    quality.map_or(0.0, |q| q.track_angle_deg),
+                    "unavailable_offline_replay",
+                    None,
+                ));
+                gate_deviations.case_iii_straight_in = true;
+                trajectory_deviations.clear();
+                entered_groove = true;
             }
         }
 
@@ -5795,6 +5978,90 @@ mod tests {
         samples
     }
 
+    /// Straight-in final at 20 Hz and 70 m/s, on a 3.5° glideslope, with `lineup(x)` and
+    /// `bank(x)`.
+    fn straight_in_final(
+        from_m: f64,
+        to_m: f64,
+        lineup: impl Fn(f64) -> f64,
+        bank: impl Fn(f64) -> f64,
+    ) -> Vec<ReplaySample> {
+        let mut samples = Vec::new();
+        let mut x = from_m;
+        let mut time = 0.0;
+        while x >= to_m {
+            let altitude_ft = x * 3.5_f64.to_radians().tan() * 3.28084;
+            samples.push(case_i_sample(time, x, lineup(x), altitude_ft, bank(x)));
+            x -= 3.5;
+            time += 0.05;
+        }
+        samples
+    }
+
+    #[test]
+    fn straight_in_final_enters_groove_at_three_quarter_nm() {
+        let samples = straight_in_final(5_000.0, 200.0, |_| 1.0, |_| 2.0);
+        let (gates, trajectory, entry) =
+            replay_gate_trajectory_and_groove(samples, 0.0, 3.5, false);
+        let entry = entry.expect("a long wings-level final must enter the groove");
+        assert_eq!(entry.trigger, CASE_III_GROOVE_TRIGGER);
+        assert_eq!(entry.approach_side, "straight_in");
+        assert!(entry.distance_m <= GATE_THREE_QUARTER_NM);
+        assert!(entry.distance_m > GATE_THREE_QUARTER_NM - 4.0);
+        assert!(gates.case_iii_straight_in);
+        // The 3/4 NM gate is the ball call: captured and always counted.
+        assert!(gates.at_three_quarter_nm.is_some());
+        assert!(gates.three_quarter_counts(Some(entry.timestamp_dcs)));
+        assert!(gates.all_valid(Some(entry.timestamp_dcs)));
+        assert!(trajectory
+            .first()
+            .is_some_and(|sample| sample.distance_m <= GATE_THREE_QUARTER_NM));
+    }
+
+    #[test]
+    fn straight_in_off_centerline_still_enters_and_records_the_lineup() {
+        let samples = straight_in_final(5_000.0, 200.0, |_| 3.0, |_| 0.0);
+        let (_, _, entry) = replay_gate_trajectory_and_groove(samples, 0.0, 3.5, false);
+        let entry = entry.expect("lineup quality must not block a straight-in entry");
+        assert_eq!(entry.trigger, CASE_III_GROOVE_TRIGGER);
+        assert!((entry.lineup_deg - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_turn_between_2_nm_and_3_4_nm_prevents_the_straight_in_entry() {
+        let samples = straight_in_final(
+            5_000.0,
+            200.0,
+            |_| 1.0,
+            |x| {
+                if (2_000.0..2_500.0).contains(&x) {
+                    20.0
+                } else {
+                    2.0
+                }
+            },
+        );
+        let (gates, _, entry) = replay_gate_trajectory_and_groove(samples, 0.0, 3.5, false);
+        assert!(entry.is_none());
+        assert!(!gates.case_iii_straight_in);
+    }
+
+    #[test]
+    fn a_final_starting_inside_2_nm_is_not_a_straight_in() {
+        let samples = straight_in_final(3_000.0, 200.0, |_| 0.0, |_| 0.0);
+        let (_, _, entry) = replay_gate_trajectory_and_groove(samples, 0.0, 3.5, false);
+        assert!(entry.is_none());
+    }
+
+    #[test]
+    fn case_i_rollout_keeps_its_trigger_and_gate_relaxation() {
+        let samples = case_i_turn_and_rollout(16, |index| -2.0 + index as f64 * 0.15);
+        let (gates, _, entry) = replay_gate_trajectory_and_groove(samples, 0.0, 3.5, false);
+        let entry = entry.expect("nominal Case I roll-out should confirm");
+        assert_eq!(entry.trigger, CASE_I_GROOVE_TRIGGER);
+        assert!(!gates.case_iii_straight_in);
+    }
+
     #[test]
     fn nominal_port_final_turn_confirms_physical_rollout() {
         let samples = case_i_turn_and_rollout(16, |index| -2.0 + index as f64 * 0.15);
@@ -6124,6 +6391,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: GateQuality::default(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         track.trajectory_deviations = vec![
             trajectory_point(1.1, 1_400.0),
@@ -6183,6 +6451,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
 
         let result = track.finish();
@@ -6391,6 +6660,7 @@ mod tests {
                 bracket_gap_ms: None,
                 ..GateQuality::default()
             },
+            case_iii_straight_in: false,
         };
         // Captured at t=1.0, after a groove entry at t=0.5: still required, and invalid.
         assert!(!gates.all_valid(Some(0.5)));
@@ -6696,6 +6966,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         track.grading = Some(Grading::Recovered {
             cable: None,
@@ -6732,6 +7003,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         track.grading = Some(Grading::Recovered {
             cable: Some(3),
@@ -6756,6 +7028,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         late_track.grading = Some(Grading::Recovered {
             cable: Some(3),
@@ -6781,6 +7054,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         track.grading = Some(Grading::Recovered {
             cable: Some(3),
@@ -7221,6 +7495,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         track.entered_groove = true;
         track.groove_entry_time = Some(1.0);
@@ -7253,6 +7528,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         track.grading = Some(Grading::Recovered {
             cable: None,
@@ -7403,6 +7679,7 @@ mod tests {
                 three_quarter_quality: valid_quality(),
                 half_quality: valid_quality(),
                 quarter_quality: valid_quality(),
+                case_iii_straight_in: false,
             };
             track.grading = Some(Grading::Recovered {
                 cable: None,
@@ -7433,6 +7710,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         track.entered_groove = true;
         track.mark_telemetry_gap(TelemetryInvalidReason::TelemetryGap);
@@ -8778,6 +9056,7 @@ mod tests {
                 three_quarter_quality: valid_quality(),
                 half_quality: valid_quality(),
                 quarter_quality: valid_quality(),
+                case_iii_straight_in: false,
             };
             track
         };
@@ -8819,6 +9098,7 @@ mod tests {
             three_quarter_quality: valid_quality(),
             half_quality: valid_quality(),
             quarter_quality: valid_quality(),
+            case_iii_straight_in: false,
         };
         assert!(track.set_dcs_grading(
             "LSO: GRADE:WO  _TMRDAR_  (NX)  _SLOX_  _LOIC_  WO(AFU)IC [BC]".to_string()
