@@ -7,6 +7,7 @@ mod error;
 mod grading;
 mod lso_notation;
 mod metrics;
+mod mission_weather;
 mod tasks;
 mod telemetry;
 #[cfg(test)]
@@ -56,6 +57,10 @@ enum Command {
     /// CATOBAR grading policies (see `CatobarGradingPolicy`) and print a Markdown table.
     /// Reads reports without modifying them; never affects live grading.
     GradeAb(commands::grade_ab::Opts),
+
+    /// Diagnostic: print the raw mission weather and time LSO reads through
+    /// `CustomService.Eval` (requires `evalEnabled = true` on the server). Read-only.
+    Weather(commands::weather::Opts),
 }
 
 #[tokio::main]
@@ -89,6 +94,7 @@ async fn main() {
         Command::CadenceAb(opts) => commands::cadence_ab::execute(opts),
         Command::GrooveAb(opts) => commands::groove_ab::execute(opts),
         Command::GradeAb(opts) => commands::grade_ab::execute(opts),
+        Command::Weather(opts) => commands::weather::execute(opts).await,
     };
     if let Err(err) = result {
         tracing::error!(error = %err, error_chain = ?err, "LSO terminated with an error");

@@ -6,6 +6,19 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ## Unreleased
 
+### Added
+
+- Mission weather source for recovery-case detection (phase 1 of
+  `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md`): `src/mission_weather.rs` sends one fixed,
+  read-only Lua chunk through `CustomService.Eval` (`src/client/custom_client.rs`) and parses the
+  raw clouds, legacy fog, `fog2`, runtime fog, visibility, dust, dynamic-weather flag, mission date
+  and `timer.getAbsTime()` strictly: a wrong type or out-of-range value becomes absent plus a
+  recorded issue, and a missing Eval (`PERMISSION_DENIED`), timeout, script error or malformed reply
+  becomes `unavailable` with a typed reason, never an error. No case logic in Lua and no grade
+  change; the fork is not modified because Eval is enabled on the production server. New read-only
+  command `lso.exe weather [--raw] [--output <new file>]` prints the snapshot for the live smoke
+  test and the calibration missions, optionally also writing it to a file that must not exist yet. `run` now builds its channel through the shared `client::connect_authenticated`.
+
 ### Fixed
 
 - The Discord "LSO Notes" line and the greenie board's `lso_notes` misread nearly every real

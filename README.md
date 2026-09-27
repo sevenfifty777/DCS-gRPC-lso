@@ -102,7 +102,18 @@ Common examples:
 
 # Offline read-only comparison of recorded vs current CATOBAR groove entry/duration/geometry
 .\lso.exe groove-ab C:\LSO\recordings
+
+# Print the raw mission weather and time LSO reads (needs evalEnabled = true on the server)
+.\lso.exe weather --raw
 ```
+
+`lso.exe weather` runs one fixed, read-only Lua chunk through `CustomService.Eval` and prints the
+mission clouds, fog, visibility, dynamic-weather flag, date and time as JSON. It is the weather
+source of the recovery-case work
+([docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md](docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md))
+and is used to record calibration missions; it changes no grade. `--output <file>` also writes the
+JSON to a new file (log lines share stdout, so redirecting stdout would mix them in). With `evalEnabled = false` it
+reports `"status": "unavailable", "reason": "eval_disabled"` instead of failing.
 
 Use `lso.exe --help` and `lso.exe run --help` for the complete generated CLI reference.
 With `--no-acmi`, the TacView writer and ACMI-only metadata/unit RPCs are not started; live grading,

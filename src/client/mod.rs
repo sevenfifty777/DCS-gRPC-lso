@@ -1,4 +1,5 @@
 mod atmosphere_client;
+mod custom_client;
 mod hook_client;
 mod metadata_client;
 mod mission_client;
@@ -11,7 +12,7 @@ use std::time::Duration;
 use tonic::metadata::AsciiMetadataValue;
 use tonic::service::interceptor::InterceptedService;
 use tonic::service::Interceptor;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::{Request, Status};
 
 /// Deadline applied to unary DCS-gRPC calls. A timed-out pass is diagnosed
@@ -64,6 +65,42 @@ pub fn authenticated_channel(channel: Channel, interceptor: ApiKeyInterceptor) -
     InterceptedService::new(channel, interceptor)
 }
 
+/// Read the optional X-API-Key token from the environment variable `env_name`. An empty variable
+/// name, an unset variable or an empty value all mean "no token"; a non-Unicode value is a
+/// configuration error rather than a silently unauthenticated channel.
+pub fn api_key_from_env(env_name: &str) -> Result<Option<String>, crate::error::Error> {
+    if env_name.is_empty() {
+        return Ok(None);
+    }
+    match std::env::var(env_name) {
+        Ok(value) if !value.is_empty() => Ok(Some(value)),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(crate::error::Error::InvalidConfiguration(
+            format!("environment variable `{env_name}` is not valid Unicode"),
+        )),
+    }
+}
+
+/// Connect to DCS-gRPC at `uri` and wrap the channel with the API-key interceptor read from
+/// `api_key_env`.
+pub async fn connect_authenticated(
+    uri: Uri,
+    api_key_env: &str,
+) -> Result<GrpcChannel, crate::error::Error> {
+    let raw_channel = Endpoint::from(uri)
+        .connect_timeout(RPC_DEADLINE)
+        .keep_alive_while_idle(true)
+        .connect()
+        .await?;
+    let api_key = api_key_from_env(api_key_env)?;
+    tracing::info!(
+        api_key_configured = api_key.is_some(),
+        "DCS-gRPC authentication configured"
+    );
+    let interceptor = ApiKeyInterceptor::new(api_key.as_deref())?;
+    Ok(authenticated_channel(raw_channel, interceptor))
+}
+
 pub(crate) fn request_with_deadline<T>(message: T) -> Request<T> {
     request_with_timeout(message, RPC_DEADLINE)
 }
@@ -76,6 +113,7 @@ pub(crate) fn request_with_timeout<T>(message: T, timeout: Duration) -> Request<
 }
 
 pub use atmosphere_client::*;
+pub use custom_client::*;
 pub use hook_client::*;
 pub use metadata_client::*;
 pub use mission_client::*;

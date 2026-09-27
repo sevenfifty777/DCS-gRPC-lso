@@ -285,6 +285,20 @@ corpus puis en mission selon sa portée.
   calibration dédiée.
 - Exercer la politique de skew 100/300 ms avec un porte-avions en virage et en accélération.
 
+## Détection du cas de recovery (Case I / II / III)
+
+Plan approuvé le 27 septembre 2026 : `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md`.
+
+- **Phase 1 implémentée, non validée live.** Exécuter `lso.exe weather --raw` sur le serveur dédié
+  (Eval activé) : vérifier que le chunk tourne dans l'environnement mission, que `fog2` et les
+  fonctions `world.weather` répondent, et conserver la sortie brute de quelques missions (preset ED,
+  preset ATMOS-X, nuages manuels, brouillard ancien et `fog2`) pour fixer la disposition de `fog2`
+  et le sens de `fog2.mode`.
+- **Phases 2 à 6 à faire** : classificateur pur ED + diagnostic NATOPS, requêtes dans
+  `record_recovery.rs`/JSON/SQLite migration 9/affichage, campagne de calibration (journalisation
+  temporaire de `message.parameters.case` dans `Scripts/Speech/common.lua` sur un PC de calibration
+  uniquement), `flown_approach`, puis `CaseIIIGrooveDetector`.
+
 ## Décisions produit encore ouvertes
 
 - **`NC` ou statut neutre dédié.** Choisir le libellé pilote et l’impact sur le greenie board pour

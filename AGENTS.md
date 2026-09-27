@@ -184,7 +184,8 @@ débrief (JSON, PNG, ACMI, SQLite, Discord, board HTTP).
 - Humains ; IA seulement avec `--ki`.
 - Multi-avions/navires/recoveries isolé par session et génération.
 - `lso run` live ; `lso file` rejoue seulement un ACMI créé par LSO ; `lso cadence-ab` et
-  `lso groove-ab` sont des diagnostics hors-ligne en lecture seule, jamais des rejeux live.
+  `lso groove-ab` sont des diagnostics hors-ligne en lecture seule, jamais des rejeux live ;
+  `lso weather` est un diagnostic live en lecture seule qui imprime la météo mission brute.
 
 Le grade est un score **PROJECT-DERIVED** `project-derived-v7`, jamais une certification
 USN/USMC. Puissance moteur, mouvement du pont, et auteur réel du waveoff ne sont pas notés. L'AoA
@@ -292,6 +293,23 @@ Frontières implémentées (fichiers vérifiés présents) :
   hors-ligne en lecture seule entre l'entrée/durée enregistrée et le détecteur Case I courant
   sur les `datums` JSON v3. Elle rejoue exactement la géométrie disponible, mais ne peut pas
   reconstruire un UTC de capture, les RPC/événements ni les vitesses absentes de `datums`.
+- [src/mission_weather.rs](src/mission_weather.rs) : source météo unique du futur classement
+  Case I/II/III (`docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md`, phase 1). Envoie un chunk Lua
+  fixe en lecture seule (`MISSION_WEATHER_LUA`, `snippet_version` 1) via `CustomService.Eval`
+  ([src/client/custom_client.rs](src/client/custom_client.rs)) et parse strictement la réponse :
+  nuages (preset, base, épaisseur, densité, `iprecptns`), brouillard ancien, `fog2` brut et son
+  `mode`, brouillard runtime `world.weather`, visibilité, poussière, météo dynamique
+  (`atmosphere_type`), date mission, `start_time` et `timer.getAbsTime()`. Une valeur de mauvais
+  type ou hors plage devient absente avec un `WeatherFieldIssue` ; `PERMISSION_DENIED` (Eval
+  désactivé), `UNIMPLEMENTED`, timeout, erreur de script ou réponse non conforme donnent
+  `MissionWeatherQuery::Unavailable` avec une raison typée, jamais une erreur. Aucune logique de
+  cas dans Lua et aucune interprétation dans ce module ; il n'est encore appelé par aucune
+  recovery et ne change aucune note. Exige `evalEnabled = true` côté serveur (activé sur le
+  serveur de production) ; le fork n'est pas modifié.
+- [src/commands/weather.rs](src/commands/weather.rs) : commande `lso.exe weather [--raw]
+  [--output <fichier>]`, dump JSON en lecture seule de cette source (avec `captured_unix_ms`) pour
+  le test de fumée live et les missions de calibration ; `--output` écrit un nouveau fichier, jamais
+  un fichier existant, car les logs partagent stdout.
 - [src/tasks/detect_recovery_attempt.rs](src/tasks/detect_recovery_attempt.rs) : détecteur par
   paire, vérifié toutes les 2 s. Enveloppe de repérage d'un début d'approche (`is_recovery_attempt`)
   : altitude avion `<= 1100 ft`, distance au porte-avions `<= 3.5 NM` et `> 200 m` (exclut un avion
@@ -400,8 +418,10 @@ note) ; NAVAIR 00-80T-105 §6.2.4.2/6.2.4.3 (groove Case I) ; NAVAIR 00-80T-111 
 chapitre 23 et fiches A-5/A-9 (phases V/STOL, évaluation humaine hover/cross/VL/puissance/
 assiette/spot/cap relatif).
 
-Copies PDF locales de ces manuels, déposées sous `docs/` : `docs/LSO-NATOPS-MAY09.pdf` (NAVAIR
-00-80T-104), `docs/CV-NATOPS-JUL09.pdf` (NAVAIR 00-80T-105), `docs/AV8-CASE-I-II-III.pdf` (extrait
+Copies PDF locales de ces manuels, déposées sous `docs/` : `docs/NATOPS/LSO-NATOPS-MAY09.pdf`
+(NAVAIR 00-80T-104), `docs/NATOPS/CV-NATOPS-JUL09.pdf` (NAVAIR 00-80T-105, avec une extraction
+texte `docs/NATOPS/CV-NATOPS-JUL09.md` ; §4.2 et §6.4 donnent les minima Case I/II/III et la
+fenêtre de nuit), `docs/AV8-CASE-I-II-III.pdf` (extrait
 chapitre 6 de NAVAIR 00-80T-111, procédures de recovery Case I/II/III V/STOL), `docs/AV8-CVN-SPOT.pdf`
 (diagramme de référence des spots de pont AV-8B — image, sans texte extractible). **Ces quatre PDF
 sont des documents doctrinaux de référence, pas une spécification du projet** : ils ne servent qu'à

@@ -24,7 +24,7 @@ use stubs::mission::v0::stream_events_response::Event;
 use stubs::unit::v0::unit_service_client::UnitServiceClient;
 use stubs::{coalition, common, group, mission, unit};
 use tokio::sync::mpsc;
-use tonic::transport::{Endpoint, Uri};
+use tonic::transport::Uri;
 use tonic::Status;
 
 type RecoveryTaskMap = Arc<Mutex<RecoveryTaskRegistry>>;
@@ -348,31 +348,7 @@ async fn run(
     active_tasks: RecoveryTaskMap,
 ) -> Result<(), crate::error::Error> {
     let out_dir = opts.out_dir.clone();
-    let raw_channel = Endpoint::from(opts.uri.clone())
-        .connect_timeout(crate::client::RPC_DEADLINE)
-        .keep_alive_while_idle(true)
-        .connect()
-        .await?;
-    let api_key = if opts.api_key_env.is_empty() {
-        None
-    } else {
-        match std::env::var(&opts.api_key_env) {
-            Ok(value) if !value.is_empty() => Some(value),
-            Ok(_) | Err(std::env::VarError::NotPresent) => None,
-            Err(std::env::VarError::NotUnicode(_)) => {
-                return Err(crate::error::Error::InvalidConfiguration(format!(
-                    "environment variable `{}` is not valid Unicode",
-                    opts.api_key_env
-                )));
-            }
-        }
-    };
-    tracing::info!(
-        api_key_configured = api_key.is_some(),
-        "DCS-gRPC authentication configured"
-    );
-    let interceptor = crate::client::ApiKeyInterceptor::new(api_key.as_deref())?;
-    let channel = crate::client::authenticated_channel(raw_channel, interceptor);
+    let channel = crate::client::connect_authenticated(opts.uri.clone(), &opts.api_key_env).await?;
     tracing::info!("Connected");
     let mut coalition_svc = CoalitionServiceClient::new(channel.clone());
     let group_svc = GroupServiceClient::new(channel.clone());
