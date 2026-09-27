@@ -289,11 +289,13 @@ corpus puis en mission selon sa portée.
 
 Plan approuvé le 27 septembre 2026 : `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md`.
 
-- **Phase 1 implémentée, non validée live.** Exécuter `lso.exe weather --raw` sur le serveur dédié
-  (Eval activé) : vérifier que le chunk tourne dans l'environnement mission, que `fog2` et les
-  fonctions `world.weather` répondent, et conserver la sortie brute de quelques missions (preset ED,
-  preset ATMOS-X, nuages manuels, brouillard ancien et `fog2`) pour fixer la disposition de `fog2`
-  et le sens de `fog2.mode`.
+- **Phase 1 : test de fumée live réussi le 27 septembre 2026** (serveur dédié, Caucasus, nuages
+  manuels 5/10 à 3 000 m) : `status: available`, aucune `issue`, heure/date cohérentes. Constat :
+  `enable_fog = false` et pas de `fog2`, mais `world.weather.getFogVisibilityDistance()` = 2 000 m et
+  brouillard visible en jeu ; les drapeaux mission ne disent donc pas si le brouillard est présent,
+  seules les valeurs runtime font foi. Restent à enregistrer : une mission **sans aucun brouillard**
+  (valeur runtime renvoyée ?), une mission `fog2`, un preset ED et un preset ATMOS-X ; et l'appel
+  Marshal de cette première mission (attendu Case III, brouillard < 5 NM).
 - **Phases 2 à 6 à faire** : classificateur pur ED + diagnostic NATOPS, requêtes dans
   `record_recovery.rs`/JSON/SQLite migration 9/affichage, campagne de calibration (journalisation
   temporaire de `message.parameters.case` dans `Scripts/Speech/common.lua` sur un PC de calibration

@@ -1,0 +1,39 @@
+{
+  "snippet_version": 1,
+  "captured_unix_ms": 1790503970223,
+  "query": {
+    "status": "available",
+    "snippet_version": 1,
+    "abs_time_s": 43561.41,
+    "mission_start_time_s": 43200.0,
+    "date": {
+      "year": 2024,
+      "month": 6,
+      "day": 15
+    },
+    "theatre": "Caucasus",
+    "atmosphere_type": 0,
+    "dynamic_weather": false,
+    "clouds": {
+      "preset": null,
+      "base_m": 3000.0,
+      "thickness_m": 1000.0,
+      "density_0_10": 5.0,
+      "precipitation_code": 0
+    },
+    "legacy_fog_enabled": false,
+    "legacy_fog": {
+      "visibility_m": 2000.0,
+      "thickness_m": 1000.0
+    },
+    "fog2_mode": null,
+    "fog2_raw": null,
+    "visibility_m": 20000.0,
+    "dust_enabled": false,
+    "dust_density": 0.0,
+    "runtime_fog_visibility_m": 2000.0,
+    "runtime_fog_thickness_m": 1000.0,
+    "issues": []
+  },
+  "raw_reply": "{\"abs_time_s\":43561.41,\"enable_fog\":false,\"runtime_fog_thickness_m\":1000,\"visibility_m\":20000,\"runtime_fog_visibility_m\":2000,\"date\":{\"day\":15,\"year\":2024,\"month\":6},\"mission_start_time_s\":43200,\"dust_density\":0,\"snippet_version\":1,\"enable_dust\":false,\"fog\":{\"visibility_m\":2000,\"thickness_m\":1000},\"atmosphere_type\":0,\"theatre\":\"Caucasus\",\"clouds\":{\"density\":5,\"iprecptns\":0,\"base_m\":3000,\"thickness_m\":1000}}"
+}

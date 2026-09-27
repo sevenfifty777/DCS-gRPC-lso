@@ -99,7 +99,7 @@ is out of scope. The detection part is `IsNight()`, `CloudInfo()`, `fog_visibili
 |---|---|---|
 | `IsNight()` | MOOSE sunset/sunrise at map origin `(0,0)`; night = from 30 min **before** sunset to 30 min **after** sunrise | Idea yes, implementation no: map origin instead of the carrier, and a ±30 min window ED never stated |
 | `CloudInfo()` | Hand-written density per preset (Scattered = 4, Broken = 7, Overcast = 9, Rainy = 9 or 5); for manual clouds, `clouds.density` and `clouds.iprecptns` | Idea yes, table no (see below) |
-| `fog_visibility()` | Legacy fog: `weather.fog.visibility`; new fog (`fog2`): `world.weather.getFogVisibilityDistance()`; adds 10 NM when fog is off | Yes, the two fog paths are right; the +10 NM hack is not needed |
+| `fog_visibility()` | Legacy fog: `weather.fog.visibility`; new fog (`fog2`): `world.weather.getFogVisibilityDistance()`; adds 10 NM when fog is off | No: it trusts the mission's fog switches, which live data contradicts (see below) |
 | `weather_case_factor()` | Its own thresholds: 3,000 ft base for Case I, density > 4 for Case II, any rain means II or III | No: these are NATOPS-like thresholds, not the DCS rule in section 2 |
 | Dynamic weather | Always Case III | No: we mark it `indeterminate` (D5) |
 
@@ -170,7 +170,7 @@ pub struct RecoveryConditions {
     pub cloud_density_0_10: Option<f64>,  // manual clouds, or derived from the preset table
     pub ceiling_ft: Option<f64>,          // above sea level = above the deck's waterline
     pub precipitation: Option<bool>,
-    pub fog_visibility_nm: Option<f64>,   // None when there is no fog
+    pub fog_visibility_nm: Option<f64>,   // from world.weather.getFogVisibilityDistance(), see below
     pub visibility_nm: Option<f64>,       // mission visibility (env.mission.weather.visibility), NATOPS diagnostic only
     pub preset: Option<String>,
 }
@@ -187,6 +187,22 @@ pub struct CaseAssessment {
     pub inputs: RecoveryConditions,       // snapshot for the JSON
 }
 ```
+
+**Fog comes from the runtime functions, not the mission's fog switches.** First live reading, 27
+September 2026, dedicated server (Caucasus, `Logs\Weather\weather-20260927-121250.json`): the
+mission had `enable_fog = false` and no `fog2` table, yet `world.weather.getFogVisibilityDistance()`
+returned 2,000 m and `getFogThickness()` 1,000 m, and fog was visible in game. The `.miz` holds the
+same values (`enable_fog = false`, `fog = { visibility = 2000, thickness = 1000 }`, no `fog2`). The
+mission uses our DCS-Dynamic-Weather tool, but it sets nothing at run time: `SetWeather.lua` only
+builds restart menus, and its `.miz` editor leaves the old fog values in place when it switches fog
+off. So it is DCS itself that applies the legacy fog block regardless of `enable_fog` when there is
+no `fog2` table. The mission flags therefore cannot say whether fog is present; the runtime values
+are the fog input. LSO does not depend on DCS-Dynamic-Weather: it reads only what DCS reports. Still open: what
+the runtime functions return in a mission with no fog at all (0, or a stored value?). A no-fog
+sample must be recorded before the classifier treats a runtime value as fog; until then a runtime
+value that cannot be told apart from "no fog" gives `Indeterminate` for the fog clause. Expected
+case for that first mission (clouds 5/10 at 3,000 m, fog 2,000 m): ED Case III (fog under 5 NM),
+NATOPS Case III; the Marshal call has not been checked yet.
 
 Rules for missing data, following the project's truth rules (never invent a value):
 

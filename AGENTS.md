@@ -305,7 +305,13 @@ Frontières implémentées (fichiers vérifiés présents) :
   `MissionWeatherQuery::Unavailable` avec une raison typée, jamais une erreur. Aucune logique de
   cas dans Lua et aucune interprétation dans ce module ; il n'est encore appelé par aucune
   recovery et ne change aucune note. Exige `evalEnabled = true` côté serveur (activé sur le
-  serveur de production) ; le fork n'est pas modifié.
+  serveur de production) ; le fork n'est pas modifié. Test de fumée live réussi le 27 septembre
+  2026 sur le serveur dédié. Les drapeaux mission de brouillard (`enable_fog`, `fog2`) ne sont pas
+  fiables : une mission `enable_fog = false` sans `fog2` montrait un brouillard réel de 2 000 m,
+  rapporté correctement par `world.weather.getFogVisibilityDistance()` ; aucun script ne le posait
+  au runtime, c'est DCS qui applique le bloc `fog` hérité malgré `enable_fog = false` en l'absence
+  de `fog2`. Seules les valeurs runtime décrivent le brouillard présent. LSO ne dépend d'aucun
+  outil météo tiers (DCS-Dynamic-Weather compris) : il lit uniquement ce que DCS rapporte.
 - [src/commands/weather.rs](src/commands/weather.rs) : commande `lso.exe weather [--raw]
   [--output <fichier>]`, dump JSON en lecture seule de cette source (avec `captured_unix_ms`) pour
   le test de fumée live et les missions de calibration ; `--output` écrit un nouveau fichier, jamais
