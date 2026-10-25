@@ -481,6 +481,15 @@ notable du tout (étape 5) ? — mais une fois cette question réglée, le calcu
    sont rangés dans des bandes « aucune », « petite », « moyenne » ou « grosse ». Une seule mesure
    anormale isolée est ignorée. Plusieurs mesures consécutives forment un épisode dont le rapport
    conserve le début, la durée, la zone, le pic, l'évolution et les éventuelles oscillations.
+   Tout près du pont, un angle n'a plus de sens (un mètre de haut fait dix degrés à cinq mètres),
+   alors le programme juge les derniers mètres en mètres : la hauteur par rapport à la pente est
+   lue comme si l'avion était encore à 100 m, et l'écart latéral comme s'il était encore à 150 m.
+   Un écart latéral constant garde donc la même gravité de 150 m jusqu'aux brins : « petit » à
+   partir de 2,6 m, « moyen » à partir de 5,2 m, « gros » à partir de 7,9 m. Jusqu'au 26 octobre
+   2026, une erreur de calcul faisait fondre ces écarts à mesure que l'avion approchait des brins,
+   au point qu'une dérive de 4 m à droite au toucher passait pour rien ; c'est corrigé, et c'est
+   pourquoi un rapport renoté peut maintenant signaler un lineup non corrigé au ramp qui ne
+   figurait pas avant.
 3. **La correction change la gravité d'un épisode.** Le programme part du pire instant de
    l'épisode : une aggravation initiale n'annule donc plus une réaction franche qui suit ce pic.
    Une correction qui franchit durablement une bande dans le délai propre à l'endroit du pic

@@ -56,6 +56,21 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Fixed
 
+- Lineup and glideslope errors in the last 100 m were shrunk in proportion to the remaining
+  distance, so the grader was nearly blind at the wires. The 16 September near-deck sizing
+  (`near_deck_equivalent_deg`, `src/grading.rs`) recovered the error as tan(angle) × distance,
+  but the trajectory angles it received already carried a fixed reference (150 m for lineup
+  since 12 September, 75 m for glideslope since 5 September, `src/track.rs`): the lateral error
+  was divided by 150 / x inside 100 m and the height error by 75 / x inside 75 m. On the 25
+  October 2026 night Case III pass, 4.1 m right of centerline at the wires (DCS: landed right in
+  the wires, gross) read 0.16 degrees and the only lineup episode was judged corrected while the
+  drift was still growing. The glideslope sizing now undoes the 75 m reference before sizing at
+  100 m, and lineup is used as the fixed 150 m angle it already is (bands 2.6 / 5.2 / 7.9 m from
+  150 m to touchdown, continuous, no jump at 100 m). `lso grade-ab` converts reports written
+  before 12 September (no `lineup_deviation_m`, lineup against 75 m) to the 150 m reference so
+  both generations re-grade on the same lateral metres (`src/commands/grade_ab.rs`). On 192 local
+  reports 9 grade symbols move (5 `--` → `(OK)`, 4 `OK` → `(OK)`); no DCS `_OK_` pass is demoted.
+  Two regression tests. Not revalidated live.
 - The Discord "LSO Notes" line and the greenie board's `lso_notes` misread nearly every real
   DCS comment: the translator was written from invented examples and a 25-symbol table. The
   NATOPS underline (`_LOAR_`, the gross deviation) was rendered "slightly" and lost its

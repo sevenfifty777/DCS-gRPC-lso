@@ -301,13 +301,20 @@ pub struct CatobarGradingPolicy {
     /// model's AoA collapses as the nose comes down and the glideslope angle is measured from a
     /// few metres. Passes that were still flying at the landing reference are unaffected.
     pub series_ends_at_physical_touchdown: bool,
-    /// Inside this distance to the landing point (metres), a glideslope or lineup deviation is
-    /// sized as the angle the same height or lateral error would make at this distance, so that
-    /// the angle stops growing as the distance shrinks (a foot of height is ten degrees at 5 m).
-    /// At 100 m the existing thresholds become 0.87 m (small), 1.75 m (moderate) and 4.4 m
-    /// (gross) of height, and 1.75 / 3.5 / 5.2 m of lineup. `0.0` disables the scaling. Without
-    /// it no pass could reach `OK` through the ramp: 19:43 on 15 September 2026 missed it on
-    /// 0.86 degrees at 5 m, which is 7 cm.
+    /// Inside this distance to the landing point (metres), a glideslope deviation is sized as the
+    /// angle the same height error would make at this distance, so that the angle stops growing
+    /// as the distance shrinks (a foot of height is ten degrees at 5 m). At 100 m the existing
+    /// thresholds become 0.87 m (small), 1.75 m (moderate) and 4.4 m (gross) of height. `0.0`
+    /// disables the scaling. Without it no pass could reach `OK` through the ramp: 19:43 on 15
+    /// September 2026 missed it on 0.86 degrees at 5 m, which is 7 cm. The trajectory already
+    /// holds its own 75 m reference below 75 m (`track::NEAR_TOUCHDOWN_ANGLE_REFERENCE_M`), and
+    /// the sizing undoes that reference first; applying it to the already-referenced angle
+    /// shrank the height error by `x / 75` in the last 75 m. Lineup is not scaled here at all:
+    /// `lineup_deg` carries a fixed 150 m reference throughout the late window
+    /// (`track::NEAR_TOUCHDOWN_LINEUP_REFERENCE_M`, 12 September 2026), so its bands already mean
+    /// 2.6 / 5.2 / 7.9 m of lateral error from 150 m to touchdown. Scaling it a second time
+    /// shrank the lateral error by `x / 150` in the last 100 m, which is how 4.1 m right of
+    /// centerline at the wires read 0.16 degrees on the 25 October 2026 night Case III pass.
     pub near_deck_reference_distance_m: f64,
 }
 
@@ -1221,12 +1228,23 @@ fn demote_short_gross_runs(observations: &mut [AxisObservation], min_duration_s:
 }
 
 /// `CatobarGradingPolicy::near_deck_reference_distance_m`: inside `reference_m` of the landing
-/// point, the angle that the same height or lateral error would make at `reference_m`.
-fn near_deck_equivalent_deg(value_deg: f64, distance_m: f64, reference_m: f64) -> f64 {
+/// point, the angle that the same height error would make at `reference_m`. `value_deg` is a
+/// trajectory angle, which the trajectory builder already computed against
+/// `max(distance_m, measured_reference_m)` rather than against `distance_m` alone
+/// (`track::trajectory_deviation_angles_deg`), so the error is recovered with that same
+/// denominator. Recovering it with `distance_m` alone, as this function did until 26 October
+/// 2026, divided the error by `measured_reference_m / distance_m` once the aircraft was inside
+/// the measured reference, that is by up to 25 for the glideslope at 3 m.
+fn near_deck_equivalent_deg(
+    value_deg: f64,
+    distance_m: f64,
+    measured_reference_m: f64,
+    reference_m: f64,
+) -> f64 {
     if reference_m <= 0.0 || distance_m >= reference_m || !value_deg.is_finite() {
         return value_deg;
     }
-    let offset_m = value_deg.to_radians().tan() * distance_m.max(0.0);
+    let offset_m = value_deg.to_radians().tan() * distance_m.max(0.0).max(measured_reference_m);
     (offset_m / reference_m).atan().to_degrees()
 }
 
@@ -1506,7 +1524,12 @@ fn classify_catobar_episodes(
         None => trajectory,
     };
     let near_deck = |value: f64, distance_m: f64| {
-        near_deck_equivalent_deg(value, distance_m, policy.near_deck_reference_distance_m)
+        near_deck_equivalent_deg(
+            value,
+            distance_m,
+            crate::track::NEAR_TOUCHDOWN_ANGLE_REFERENCE_M,
+            policy.near_deck_reference_distance_m,
+        )
     };
     let gs = trajectory
         .iter()
@@ -1527,11 +1550,14 @@ fn classify_catobar_episodes(
             }
         })
         .collect::<Vec<_>>();
+    // `lineup_deg` is already the angle the lateral offset makes at a fixed 150 m reference
+    // throughout the late window (`track::NEAR_TOUCHDOWN_LINEUP_REFERENCE_M`): a constant offset
+    // keeps a constant severity from 150 m to the wires, so no further near-deck scaling applies.
     let lineup = trajectory
         .iter()
         .filter(|sample| sample.lineup_deg.is_finite())
         .map(|sample| {
-            let error = near_deck(sample.lineup_deg, sample.distance_m);
+            let error = sample.lineup_deg;
             AxisObservation {
                 time: sample.timestamp_dcs,
                 distance_m: sample.distance_m,
@@ -4030,18 +4056,118 @@ mod tests {
 
     #[test]
     fn near_deck_deviation_is_judged_in_height_inside_the_reference_distance() {
-        // 0.86 deg at 5 m is 7 cm: nothing (19:43 on 15 September 2026 missed `OK` on it).
-        let at_5_m = near_deck_equivalent_deg(0.86, 5.0, 100.0);
+        // A trajectory angle measured against the real distance (no measured reference): 0.86
+        // deg at 5 m is 7 cm, nothing (19:43 on 15 September 2026 missed `OK` on it).
+        let at_5_m = near_deck_equivalent_deg(0.86, 5.0, 0.0, 100.0);
         assert!(at_5_m < 0.05, "{at_5_m}");
         // 1.0 deg at 50 m is 0.87 m, the angle 0.5 deg makes at 100 m.
-        let at_50_m = near_deck_equivalent_deg(1.0, 50.0, 100.0);
+        let at_50_m = near_deck_equivalent_deg(1.0, 50.0, 0.0, 100.0);
         assert!((at_50_m - 0.5).abs() < 0.01, "{at_50_m}");
         // At and beyond the reference distance the angle is unchanged; disabled leaves it alone.
-        assert_eq!(near_deck_equivalent_deg(2.0, 100.0, 100.0), 2.0);
-        assert_eq!(near_deck_equivalent_deg(2.0, 400.0, 100.0), 2.0);
-        assert_eq!(near_deck_equivalent_deg(2.0, 5.0, 0.0), 2.0);
+        assert_eq!(near_deck_equivalent_deg(2.0, 100.0, 0.0, 100.0), 2.0);
+        assert_eq!(near_deck_equivalent_deg(2.0, 400.0, 0.0, 100.0), 2.0);
+        assert_eq!(near_deck_equivalent_deg(2.0, 5.0, 0.0, 0.0), 2.0);
         // Sign is kept.
-        assert!(near_deck_equivalent_deg(-1.0, 50.0, 100.0) < 0.0);
+        assert!(near_deck_equivalent_deg(-1.0, 50.0, 0.0, 100.0) < 0.0);
+    }
+
+    #[test]
+    fn near_deck_height_error_is_recovered_with_the_trajectory_reference() {
+        // The trajectory holds the glideslope denominator at 75 m below 75 m
+        // (`track::NEAR_TOUCHDOWN_ANGLE_REFERENCE_M`): one metre high at 20 m is stored as
+        // atan(1 / 75) = 0.76 deg, not atan(1 / 20). Sized at 100 m that metre is 0.57 deg
+        // (small), whatever the distance.
+        let stored = (1.0f64 / 75.0).atan().to_degrees();
+        let expected = (1.0f64 / 100.0).atan().to_degrees();
+        for distance_m in [3.0, 20.0, 50.0, 74.9] {
+            let error = near_deck_equivalent_deg(stored, distance_m, 75.0, 100.0);
+            assert!((error - expected).abs() < 1e-9, "{distance_m} m: {error}");
+        }
+        // Between 75 and 100 m the stored angle is geometric and the sizing is unchanged.
+        let geometric = (1.0f64 / 90.0).atan().to_degrees();
+        let error = near_deck_equivalent_deg(geometric, 90.0, 75.0, 100.0);
+        assert!((error - expected).abs() < 1e-9, "{error}");
+        // Before 26 October 2026 the same metre at 20 m was sized as 20 / 75 of a metre: none.
+        let before = near_deck_equivalent_deg(stored, 20.0, 0.0, 100.0);
+        assert!(before < 0.2, "{before}");
+    }
+
+    #[test]
+    fn lineup_drift_through_the_ramp_keeps_its_severity_to_the_wires() {
+        // 25 October 2026, 21:48Z, F-14B(U), night Case III straight-in (`Weather/LSO-20261025-
+        // 224804-...`): left of centerline until about 290 m, then a steady drift right with no
+        // correction, 3.0 m right at 90 m and 4.1 m right at the wires, where the DCS LSO wrote
+        // "landed right in the wires (gross)". The trajectory stores lineup against a fixed
+        // 150 m reference, so 4.1 m reads 1.56 deg (small) all the way in. Rescaling that angle
+        // a second time for the last 100 m divided the offset by 150 / x and read 0.16 deg at
+        // 10 m: the only lineup episode was 0.6 s long, peaked at 99 m and was judged corrected
+        // while the drift was still growing.
+        let samples = 60u32;
+        let trajectory = (0..samples)
+            .map(|index| {
+                let distance_m = 300.0 - f64::from(index) * 5.0;
+                // Offset: -0.2 m at 300 m, crossing at 290 m, +4.1 m at the wires (linear).
+                let lineup_deviation_m = -0.2 + (300.0 - distance_m) / 295.0 * 4.3;
+                TrajectoryDeviation {
+                    timestamp_dcs: 100.0 + f64::from(index) * 0.075,
+                    distance_m,
+                    gs_deviation_deg: 0.2,
+                    lineup_deg: lineup_deviation_m
+                        .atan2(distance_m.max(crate::track::NEAR_TOUCHDOWN_LINEUP_REFERENCE_M))
+                        .to_degrees(),
+                    lineup_deviation_m,
+                    track_angle_deg: 0.0,
+                    alt_m: 20.0 - f64::from(index) * (20.0 / f64::from(samples)),
+                    bank_deg: 0.0,
+                    sink_rate_mps: 4.0,
+                }
+            })
+            .collect::<Vec<_>>();
+        let last = trajectory.last().unwrap();
+        assert!(last.distance_m <= 6.0 && last.lineup_deviation_m > 4.0);
+        assert!(
+            last.lineup_deg > 1.5 && last.lineup_deg < 2.0,
+            "{}",
+            last.lineup_deg
+        );
+
+        let episodes = classify_catobar_episodes(
+            &trajectory,
+            &[],
+            None,
+            false,
+            &CatobarGradingPolicy::CONVENTION,
+        );
+        let lineup = episodes
+            .iter()
+            .filter(|episode| episode.axis == GradingAxis::Lineup)
+            .collect::<Vec<_>>();
+        assert_eq!(lineup.len(), 1, "{lineup:?}");
+        let episode = lineup[0];
+        // The episode opens where the offset passes 2.6 m (1 deg at 150 m) and runs to the last
+        // sample: the drift is never judged corrected.
+        assert_eq!(episode.maximum_severity, EpisodeSeverity::Small);
+        assert_eq!(episode.peak_zone, ApproachZone::Ramp);
+        assert_eq!(episode.peak_classification, "right");
+        assert!(
+            (episode.ended_at_dcs - last.timestamp_dcs).abs() < 1e-9,
+            "episode ended at {} before the last sample {}",
+            episode.ended_at_dcs,
+            last.timestamp_dcs
+        );
+        assert!(
+            (episode.peak_value - last.lineup_deg).abs() < 1e-9,
+            "peak {} is not the offset at the wires {}",
+            episode.peak_value,
+            last.lineup_deg
+        );
+        assert!(!episode.returned_to_less_severe_band);
+        assert_ne!(episode.correction, CorrectionQuality::Good);
+        assert!(
+            episode.effective_severity >= 2.0,
+            "{}",
+            episode.effective_severity
+        );
     }
 
     #[test]

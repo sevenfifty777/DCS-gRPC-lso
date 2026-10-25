@@ -112,8 +112,11 @@ struct TrajectoryInput {
     distance_m: f64,
     gs_deviation_deg: f64,
     lineup_deg: f64,
+    /// Absent from reports written before 12 September 2026 (`project-derived-v4` and earlier),
+    /// whose `lineup_deg` was computed against the vertical 75 m reference rather than the fixed
+    /// 150 m lineup reference every later report carries; see `into_trajectory_deviation`.
     #[serde(default)]
-    lineup_deviation_m: f64,
+    lineup_deviation_m: Option<f64>,
     #[serde(default)]
     track_angle_deg: f64,
     #[serde(default)]
@@ -122,6 +125,44 @@ struct TrajectoryInput {
     bank_deg: f64,
     #[serde(default)]
     sink_rate_mps: f64,
+}
+
+impl TrajectoryInput {
+    /// The grader reads `lineup_deg` as the angle the lateral offset makes at a fixed 150 m
+    /// reference inside 150 m (`track::NEAR_TOUCHDOWN_LINEUP_REFERENCE_M`, since 12 September
+    /// 2026). A report from before that date has no `lineup_deviation_m` and stored its lineup
+    /// against the vertical 75 m reference instead; its offset is recovered with that reference
+    /// and re-expressed at 150 m, so the two generations of reports are graded on the same
+    /// lateral metres. Reports that carry the offset are used as recorded.
+    fn into_trajectory_deviation(self) -> TrajectoryDeviation {
+        let (lineup_deg, lineup_deviation_m) = match self.lineup_deviation_m {
+            Some(offset_m) => (self.lineup_deg, offset_m),
+            None => {
+                let offset_m = self.lineup_deg.to_radians().tan()
+                    * self
+                        .distance_m
+                        .max(crate::track::NEAR_TOUCHDOWN_ANGLE_REFERENCE_M);
+                let lineup_deg = offset_m
+                    .atan2(
+                        self.distance_m
+                            .max(crate::track::NEAR_TOUCHDOWN_LINEUP_REFERENCE_M),
+                    )
+                    .to_degrees();
+                (lineup_deg, offset_m)
+            }
+        };
+        TrajectoryDeviation {
+            timestamp_dcs: self.timestamp_dcs,
+            distance_m: self.distance_m,
+            gs_deviation_deg: self.gs_deviation_deg,
+            lineup_deg,
+            lineup_deviation_m,
+            track_angle_deg: self.track_angle_deg,
+            alt_m: self.alt_m,
+            bank_deg: self.bank_deg,
+            sink_rate_mps: self.sink_rate_mps,
+        }
+    }
 }
 
 impl GateInput {
@@ -398,17 +439,7 @@ fn analyze(path: &Path, list_episodes: bool) -> Result<Option<String>, crate::er
             gates.into_gates(),
             std::mem::take(&mut input.trajectory_deviations)
                 .into_iter()
-                .map(|sample| TrajectoryDeviation {
-                    timestamp_dcs: sample.timestamp_dcs,
-                    distance_m: sample.distance_m,
-                    gs_deviation_deg: sample.gs_deviation_deg,
-                    lineup_deg: sample.lineup_deg,
-                    lineup_deviation_m: sample.lineup_deviation_m,
-                    track_angle_deg: sample.track_angle_deg,
-                    alt_m: sample.alt_m,
-                    bank_deg: sample.bank_deg,
-                    sink_rate_mps: sample.sink_rate_mps,
-                })
+                .map(TrajectoryInput::into_trajectory_deviation)
                 .collect::<Vec<_>>(),
             input.groove_entry.as_ref().map(|entry| entry.timestamp_dcs),
             input.groove_time_secs,

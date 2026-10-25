@@ -164,13 +164,21 @@ corpus puis en mission selon sa portée.
 
 ### Calibration du grading et de la géométrie
 
-- **Lineup près du pont — correction à revalider live.** Le corpus humain F-14B(U) du 8 septembre
-  confirme que le plancher angulaire commun de 75 m resserrait artificiellement le seuil lineup
-  tardif : `1,5°` représentait 3,93 m à 150 m mais seulement 1,96 m en close. Le code courant garde
-  75 m pour le glide, normalise séparément le lineup sur 150 m dans toute la fenêtre tardive et
-  sérialise l’écart brut `lineup_deviation_m`. Revalider ce candidat sur une nouvelle mission avec
-  vérité LSO et vent nettement différent ; vérifier qu’un vrai écart bref supérieur à environ
-  3,93 m reste bien sanctionné et comparer les verdicts `project-derived-v7` aux commentaires LQM.
+- **Lineup et pente près du pont — correction du 26 octobre 2026 à revalider live.** La
+  référence lineup de 150 m (12 septembre) et la mise à l'échelle à 100 m de la politique
+  `CONVENTION` (16 septembre) se doublaient : l'erreur latérale était divisée par `150/x` dans les
+  100 derniers mètres et l'erreur de hauteur par `75/x` sous 75 m, ce qui rendait le classificateur
+  presque aveugle aux brins (pass Case III du 25 octobre : 4,1 m à droite lus 0,16°, DCS `_LRIW_`
+  gross). Corrigé sur `fix/near-deck-lineup-rescaling` (option B : lineup gardé à la référence
+  fixe 150 m, pente ramenée à 100 m après inversion du 75 m). Reste : revalider en mission avec
+  vérité LSO qu'un écart latéral réel de 3 à 5 m aux brins produit bien un épisode lineup non
+  corrigé au RAMP, et que les passes propres restent `OK`.
+- **Sévérité du lineup aux brins : bandes 2,6/5,2/7,9 m contre le « gross » DCS.** Avec la
+  référence 150 m, 4,1 m à droite aux brins est « petit » pour LSO alors que le LSO DCS l'a marqué
+  gross et a coupé la passe (`_LRIW_`, 25 octobre 2026). LSO n'a pas de Cut lineup (seuls pente
+  `< −2,5°`, taux de chute `>= 8 m/s` et gîte `>= 30°` coupent). Décider, avec un corpus noté par
+  LSO humain, si les bandes lineup du RAMP doivent se resserrer (option A : 1,75/3,5/5,2 m à
+  100 m) et si un « landed right/left in the wires » gross doit devenir un Cut.
 - **Classificateur CASE I CATOBAR v7.** Confronter les zones START/MIDDLE/IN_CLOSE/RAMP, leurs
   poids 1,0/1,2/1,5/2,0, les bandes GS/lineup/AoA, les délais post-pic 3,0/2,5/1,5/0,75 s, la
   stabilisation sur deux samples, l'erreur AoA normalisée à OnSpeed, la tendance 4 s à 0,075°/s
@@ -195,7 +203,8 @@ corpus puis en mission selon sa portée.
   Échantillon propre à exploiter : le straight-in Case III du 25 octobre 2026 (F-14B(U), référence
   de vent établie, `Weather/LSO-20261025-214406-…json`), où LSO mesure Fast (IM un peu, IC modéré)
   et High (AR un peu) alors que le LSO DCS écrit `_SLOX_` (Slow au début) et note `---` : signe
-  opposé sur le même axe, à expliquer avant toute promotion de l'AoA.
+  opposé sur le même axe, à expliquer avant toute promotion de l'AoA. Second échantillon le même
+  soir, autre pilote (`LSO-20261025-224804-…`) : DCS `SLOX`, LSO Fast IM/IC puis Slow AR.
 
 ### Corrections implémentées qui attendent encore une preuve live suffisante
 

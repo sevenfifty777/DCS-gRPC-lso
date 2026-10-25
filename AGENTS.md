@@ -112,9 +112,15 @@ Sur le HEAD `e62506d`, qui inclut la correction de segmentation des waveoffs :
 
 Sur le working tree courant :
 
-- `cargo test --locked --no-fail-fast` : **292 réussis, 0 échec** (290 tests du binaire + 2 tests
-  de provenance) ;
+- `cargo test --locked --no-fail-fast` : **431 réussis, 0 échec, 1 ignoré** (428 tests du
+  binaire + 3 tests de provenance), branche `fix/near-deck-lineup-rescaling` du 26 octobre 2026 ;
 - `cargo fmt --check` et `cargo clippy --locked --all-targets -- -D warnings` propres ;
+- `lso.exe grade-ab` avant/après la correction de la mise à l'échelle près du pont, sur 192
+  rapports locaux (`Weather/`, `trap_records/`) : 34 lignes changent, dont 9 symboles de note
+  (5 `--` → `(OK)` sur des rapports antérieurs au 12 septembre renotés à la même référence
+  latérale, 4 `OK` → `(OK)` par une erreur de hauteur sous 75 m désormais visible) et 25
+  changements d'épisode décisif seulement ; aucune passe `_OK_` DCS ne descend ; la passe Case III
+  du 25 octobre 21:48Z reste `(OK)` ;
 - les tests du grading v7 couvrent les quatre zones et leurs délais post-pic, corrections
   bonne/moyenne/mauvaise, aggravation initiale puis correction rapide récompensée,
   stagnation/aggravation/oscillation, bruit isolé, axes multiples
@@ -641,7 +647,22 @@ l'état du code (voir "Règles de vérité" plus haut).
   **PROJECT-DERIVED** et attendent une validation face à des appréciations de LSO humains.
   La géométrie proche du pont garde `NEAR_TOUCHDOWN_LINEUP_REFERENCE_M = 150 m` et
   `NEAR_TOUCHDOWN_ANGLE_REFERENCE_M = 75 m`; `trajectory_deviations[].lineup_deviation_m` conserve
-  l'écart signé brut. Indépendamment du classificateur, un Cut dédié (seuils
+  l'écart signé brut. La politique `CatobarGradingPolicy::CONVENTION` (`src/grading.rs`) termine
+  les trois séries au toucher physique (`physical_touchdown_time` : `<=1,2 m`, taux de chute
+  `<=1,5 m/s` après une vraie descente, dans la zone RAMP) et, dans les 100 derniers mètres
+  (`near_deck_reference_distance_m`), classe la pente par la hauteur qu'elle représente à 100 m :
+  `near_deck_equivalent_deg` retrouve d'abord l'erreur de hauteur avec le dénominateur réellement
+  employé par la trajectoire (`max(x, 75 m)`), puis la ramène à 100 m, de sorte que les bandes
+  `<0,5/1,0/2,5°` valent 0,87/1,75/4,4 m de hauteur jusqu'au toucher. Le lineup n'y subit aucune
+  seconde mise à l'échelle : `lineup_deg` porte déjà la référence fixe de 150 m dans toute la
+  fenêtre tardive, donc ses bandes `<1/2/3°` valent 2,6/5,2/7,9 m d'écart latéral constants de
+  150 m au toucher (option retenue le 26 octobre 2026 : continuité d'un écart constant, pas de
+  saut à 100 m). Jusqu'au 26 octobre, la mise à l'échelle appliquée à un angle déjà référencé
+  divisait l'erreur latérale par `150/x` dans les 100 derniers mètres et l'erreur de hauteur par
+  `75/x` sous 75 m : 4,1 m à droite aux brins (pass Case III du 25 octobre, DCS `_LRIW_` gross)
+  lisaient 0,16°. `lso.exe grade-ab` convertit les rapports antérieurs au 12 septembre 2026 (sans
+  `lineup_deviation_m`, lineup référencé à 75 m) vers la référence 150 m avant de les renoter.
+  Indépendamment du classificateur, un Cut dédié (seuils
   `PROJECT-DERIVED`, **non chiffrés par NATOPS** — les deux NATOPS de référence ne codifient
   `TMRD`/`W`/`TMA`/`DLW`/`DRW` que comme codes de commentaire qualitatifs, jamais un nombre)
   sanctionne un sink rate (`SINK_RATE_CUT_MPS = 8.0 m/s`, environ le double du régime nominal de

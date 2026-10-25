@@ -130,15 +130,18 @@ const TRAJECTORY_MIN_DISTANCE_M: f64 = 3.0;
 /// docs/GRADING_REFERENCE.md, "Continuous trajectory, near-touchdown geometry" for the derivation
 /// and live numbers), while short enough to still evaluate a deviation that only develops in the
 /// final seconds using its own reasonably real geometry rather than one held all the way back to
-/// a gate distance.
-const NEAR_TOUCHDOWN_ANGLE_REFERENCE_M: f64 = 75.0;
+/// a gate distance. Crate-visible because the grader's near-deck sizing has to undo this
+/// reference before it can recover the height error (`grading::near_deck_equivalent_deg`).
+pub(crate) const NEAR_TOUCHDOWN_ANGLE_REFERENCE_M: f64 = 75.0;
 /// Lineup uses a longer fixed reference inside the complete late-grading window. Human F-14B(U)
 /// telemetry from 8 September 2026 showed that the former 75 m denominator made the 1.5 degree
 /// late threshold tighten from 3.93 m at 150 m to 1.96 m in close even when the aircraft's real
 /// lateral displacement was stable or converging. Holding the denominator at 150 m makes that
 /// angular threshold represent one consistent lateral error throughout the window while still
-/// exposing the raw measured displacement in `TrajectoryDeviation::lineup_deviation_m`.
-const NEAR_TOUCHDOWN_LINEUP_REFERENCE_M: f64 = 150.0;
+/// exposing the raw measured displacement in `TrajectoryDeviation::lineup_deviation_m`. The
+/// grader reads `lineup_deg` as the fixed-reference angle it already is and applies no further
+/// near-deck scaling to it (`grading::classify_catobar_episodes`).
+pub(crate) const NEAR_TOUCHDOWN_LINEUP_REFERENCE_M: f64 = 150.0;
 const MAX_EVENT_EVIDENCE: usize = 256;
 const MAX_INVALID_SOURCE_EVIDENCE: usize = 512;
 /// At the maximum supported 4 Hz hook cadence this retains about 8.5 minutes, comfortably beyond
