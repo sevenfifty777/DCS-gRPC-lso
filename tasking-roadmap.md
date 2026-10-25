@@ -192,6 +192,10 @@ corpus puis en mission selon sa portée.
   progressif observé dans le groove de l’artefact ponctuel à hauteur de pont. Le v6 ne pénalise
   l'AoA que lorsque la référence de vent est établie, mais cette condition ne transforme pas
   l'estimation géométrique en mesure cockpit : vérifier les faux épisodes par type avant promotion.
+  Échantillon propre à exploiter : le straight-in Case III du 25 octobre 2026 (F-14B(U), référence
+  de vent établie, `Weather/LSO-20261025-214406-…json`), où LSO mesure Fast (IM un peu, IC modéré)
+  et High (AR un peu) alors que le LSO DCS écrit `_SLOX_` (Slow au début) et note `---` : signe
+  opposé sur le même axe, à expliquer avant toute promotion de l'AoA.
 
 ### Corrections implémentées qui attendent encore une preuve live suffisante
 
@@ -293,9 +297,10 @@ Plan approuvé le 27 septembre 2026 : `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09
   manuels 5/10 à 3 000 m) : `status: available`, aucune `issue`, heure/date cohérentes. Constat :
   `enable_fog = false` et pas de `fog2`, mais `world.weather.getFogVisibilityDistance()` = 2 000 m et
   brouillard visible en jeu ; les drapeaux mission ne disent donc pas si le brouillard est présent,
-  seules les valeurs runtime font foi. Restent à enregistrer : une mission **sans aucun brouillard**
-  (valeur runtime renvoyée ?), une mission `fog2`, un preset ED et un preset ATMOS-X ; et l'appel
-  Marshal de cette première mission (attendu Case III, brouillard < 5 NM).
+  seules les valeurs runtime font foi. Relevé sans brouillard fait le 25 octobre 2026 (C7-a) : les
+  deux valeurs runtime valent 0, l'hypothèse « nul = absent » tient sur un échantillon. Restent à
+  enregistrer : une mission `fog2`, un preset ED et un preset ATMOS-X ; et l'appel Marshal de la
+  première mission du 27 septembre (attendu Case III, brouillard < 5 NM).
 - **Phases 2, 3 et 5 implémentées, non validées live** : classificateur ED + diagnostic NATOPS,
   table de presets, requêtes en tâche de fond, JSON `recovery_case`, migration SQLite 9, champ
   Discord et libellé PNG, `flown_approach` et diagnostic de discordance. Aucune note ne change.
@@ -311,10 +316,16 @@ Plan approuvé le 27 septembre 2026 : `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09
   6 septembre 03:20 (`--` enregistré → OK avec la phase 6 ; une partie de l'écart peut venir des
   évolutions du grading depuis), 8 septembre 19:12 (garde son entrée Case I à 1 397 m) et
   12 septembre 17:54. Confirmer sur leurs PNG de pattern qu'il s'agit de vraies finales longues.
-- **Phase 6 implémentée, non validée live** : `CaseIIIGrooveDetector`, porte 3/4 NM toujours
-  requise et `_OK_` sans temps de groove pour un straight-in. Valider en session live Case III de
-  nuit (finale CCA longue) et comparer à l'appréciation d'un LSO humain ; vérifier aussi qu'un
-  straight-in de jour (discordance D4) reçoit bien sa note avec le diagnostic.
+- **Phase 6, première validation live acquise (C9-a), le reste ouvert.** Le straight-in Case III de
+  nuit du 25 octobre 2026 (un pilote, F-14B(U), détail dans AGENTS.md) a produit l'entrée
+  `case_iii_straight_in_three_quarter_nm`, `case_iii_straight_in = true`, `flown_approach =
+  straight_in`, `mismatch = false` et une note `(OK)` publiée sur JSON, SQLite, PNG et Discord.
+  L'appel Marshal (Case III, nuit, ciel clair) a été entendu mais pas journalisé ; ce point ne
+  calibre donc pas le seuil « dark » (soleil à −13,7°, nettement sous −6°). Restent : C9-b
+  (straight-in de jour, discordance D4 avec sa note et son diagnostic), C9-c (pattern overhead en
+  conditions Case III), C9-e (virage de correction > 10° dans la finale), C9-f (finale décalée de
+  3°), C9-g (`_OK_` sans temps de groove), plusieurs pilotes et types, et la comparaison à
+  l'appréciation d'un LSO humain.
 
 ## Décisions produit encore ouvertes
 

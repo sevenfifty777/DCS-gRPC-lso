@@ -310,8 +310,14 @@ Frontières implémentées (fichiers vérifiés présents) :
   fiables : une mission `enable_fog = false` sans `fog2` montrait un brouillard réel de 2 000 m,
   rapporté correctement par `world.weather.getFogVisibilityDistance()` ; aucun script ne le posait
   au runtime, c'est DCS qui applique le bloc `fog` hérité malgré `enable_fog = false` en l'absence
-  de `fog2`. Seules les valeurs runtime décrivent le brouillard présent. LSO ne dépend d'aucun
-  outil météo tiers (DCS-Dynamic-Weather compris) : il lit uniquement ce que DCS rapporte.
+  de `fog2`. Seules les valeurs runtime décrivent le brouillard présent. Relevé du 25 octobre 2026
+  (`Weather/weather-20261025-220627-case3-check.json`, mission sans brouillard, `enable_fog =
+  false`, `fog` 0/0, pas de `fog2`) : les deux valeurs runtime valent exactement 0, ce qui confirme
+  sur un échantillon l'hypothèse « brouillard absent quand la valeur runtime est nulle » (C7-a).
+  Ce même relevé, pris sans nom de porte-avions résolu, donne `missing_carrier_position` et un cas
+  `indeterminate` : `--carrier` doit porter le nom d'unité DCS exact (`CVN-72` sur cette mission).
+  LSO ne dépend d'aucun outil météo tiers (DCS-Dynamic-Weather compris) : il lit uniquement ce que
+  DCS rapporte.
 - [src/commands/weather.rs](src/commands/weather.rs) : commande `lso.exe weather [--raw]
   [--output <fichier>] [--carrier <unité>]`, dump JSON en lecture seule de cette source (avec
   `captured_unix_ms`) et, avec `--carrier`, de l'évaluation `recovery_case` à la position du
@@ -348,6 +354,8 @@ Frontières implémentées (fichiers vérifiés présents) :
   la boucle 10-20 Hz, jointes à la publication ; JSON `recovery_case`, SQLite migration 9
   (`ordered_case`, `natops_case`, `night`, `flown_approach`), champ Discord « Recovery » et libellé
   PNG après l'avion, omis quand le cas est indéterminé. Aucune règle de notation ne lit ce bloc.
+  Exercé live : trois passes Case I de jour le 27 septembre 2026, deux (WO, bolter) le 23 octobre
+  et un straight-in Case III de nuit le 25 octobre (voir "Gates, outcomes et câble").
 - [src/tasks/detect_recovery_attempt.rs](src/tasks/detect_recovery_attempt.rs) : détecteur par
   paire, vérifié toutes les 2 s. Enveloppe de repérage d'un début d'approche (`is_recovery_attempt`)
   : altitude avion `<= 1100 ft`, distance au porte-avions `<= 3.5 NM` et `> 200 m` (exclut un avion
@@ -538,8 +546,16 @@ l'état du code (voir "Règles de vérité" plus haut).
   dépend plus du temps de groove 15-18 s (décision D3, amplitude seule). Zones et fenêtres de
   correction `project-derived-v7` inchangées à partir de 3/4 NM. Corpus locaux (`groove-ab`) :
   20 septembre 09:25 entre à 1 388 m, (OK) inchangé ; 12 septembre 17:54 OK inchangé ; 6
-  septembre 03:20 `--` enregistré → OK ; 8 septembre 19:12 garde son entrée Case I. Non validé en
-  mission live (session Case III de nuit requise). `PROJECT-DERIVED`.
+  septembre 03:20 `--` enregistré → OK ; 8 septembre 19:12 garde son entrée Case I. Première
+  validation live le 25 octobre 2026 (serveur dédié, Caucasus, nuit, soleil à −13,7°, un pilote,
+  F-14B(U) sur CVN-72, rapport `LSO-20261025-214406-…`) : cas ordonné `III` (`dark`) au début de
+  tentative comme à l'entrée en groove, `flown_approach = straight_in` (segment ailes à plat de
+  5 031 m jusqu'au pont, gîte max 1,0°, lineup max 2,6°), entrée `case_iii_straight_in_three_quarter_nm`
+  à 1 388,5 m, trois portes mesurées à 50 ms sans skew, `case_iii_straight_in = true`, `mismatch =
+  false`, note `(OK)` 3,0 pts avec `WIRE# 4` DCS et Rust concordants, temps de groove 24,8 s sans
+  effet ; ligne SQLite 559 avec `ordered_case = III`, `night = 1`, `flown_approach = straight_in` ;
+  PNG libellé « Case III (night) » à une seule branche. Correspond à C9-a du plan de calibration ;
+  C9-b à C9-g et la comparaison à un LSO humain restent ouverts. `PROJECT-DERIVED`.
 - Franchissement du seuil de pont (`crossed_deck_threshold`, distingue `Bolter` de `WO?`) : ne se
   déclenche que si l'avion est proche du niveau du pont au moment du franchissement
   (`DECK_CROSSING_ALT_CAP_FT = 50 ft`, relatif au pont, crosse comprise) — sinon `WaveoffUnknown`.

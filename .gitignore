@@ -46,6 +46,10 @@ coverage/
 /trap sample/
 /tools/*
 recovery_*/
+# Weather/ keeps the committed weather snapshots only; the live run's database
+# and recorded passes written there stay local.
+/Weather/lso.db*
+/Weather/LSO-*
 
 # Local launch scripts carry the Discord webhook and machine-specific paths.
 # Keep them untracked; read the webhook from the environment (see

@@ -17,7 +17,12 @@ since the `0.2.0` tag are listed under Unreleased.
   counts the 3/4 NM gate and grants `_OK_` on amplitude alone (no 15-18 s groove time,
   `src/grading.rs`). Previously a straight-in had no groove entry and was left ungraded or graded
   from gate readings only. On the local corpora the Case I passes are unchanged; of the four
-  straight-ins, 6 September 03:20 moves from a recorded `--` to OK. Not validated live.
+  straight-ins, 6 September 03:20 moves from a recorded `--` to OK. First live validation on
+  25 October 2026 (one night Case III straight-in, F-14B(U), test C9-a of
+  `docs/CASE_RECOVERY_CALIBRATION_2026-09-27.md`): Case III groove entry at 1,388.5 m, three
+  measured gates, ordered case `III` by darkness, `flown_approach = straight_in`, no mismatch,
+  grade `(OK)` with the DCS wire; details in AGENTS.md. The same session gave the C7-a no-fog
+  reading (runtime fog values exactly 0). Other C9 tests and the human-LSO comparison remain open.
 
 ### Added
 

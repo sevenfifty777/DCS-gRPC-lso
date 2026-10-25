@@ -1,0 +1,86 @@
+{
+  "snippet_version": 1,
+  "captured_unix_ms": 1792962387862,
+  "query": {
+    "status": "available",
+    "snippet_version": 1,
+    "abs_time_s": 83801.28,
+    "mission_start_time_s": 79200.0,
+    "date": {
+      "year": 2024,
+      "month": 6,
+      "day": 15
+    },
+    "theatre": "Caucasus",
+    "atmosphere_type": 0,
+    "dynamic_weather": false,
+    "clouds": {
+      "preset": null,
+      "base_m": 3000.0,
+      "thickness_m": 200.0,
+      "density_0_10": 0.0,
+      "precipitation_code": 0
+    },
+    "legacy_fog_enabled": false,
+    "legacy_fog": {
+      "visibility_m": 0.0,
+      "thickness_m": 0.0
+    },
+    "fog2_mode": null,
+    "fog2_raw": null,
+    "visibility_m": 25000.0,
+    "dust_enabled": false,
+    "dust_density": 0.0,
+    "runtime_fog_visibility_m": 0.0,
+    "runtime_fog_thickness_m": 0.0,
+    "issues": []
+  },
+  "recovery_case": {
+    "ordered": "indeterminate",
+    "rule_version": "dcs-ed-statement-v1",
+    "reasons": [],
+    "unknown_inputs": [
+      "missing_carrier_position"
+    ],
+    "natops": {
+      "case": "indeterminate",
+      "rule_version": "natops-minima-v1",
+      "reasons": [],
+      "unknown_inputs": [
+        "missing_carrier_position"
+      ]
+    },
+    "assumptions": [
+      "ed_dark_is_sun_elevation_below_minus_6_deg",
+      "preset_density_from_ed_metar_description_of_lowest_layer",
+      "preset_ceiling_is_mission_base_plus_offset_of_lowest_covered_layer",
+      "fog_absent_when_runtime_visibility_or_thickness_is_zero",
+      "theatre_utc_offset_from_moose_table"
+    ],
+    "conditions": {
+      "utc": "2024-06-15T19:16:41.28Z",
+      "utc_offset_hours": 4.0,
+      "carrier_lat_deg": null,
+      "carrier_lon_deg": null,
+      "sun_elevation_deg": null,
+      "dark": null,
+      "natops_night": null,
+      "dynamic_weather": false,
+      "cloud_source": {
+        "kind": "manual"
+      },
+      "cloud_density_0_10": 0.0,
+      "ceiling": "no_ceiling",
+      "natops_ceiling": "no_ceiling",
+      "precipitation": false,
+      "fog": {
+        "kind": "absent"
+      },
+      "visibility_nm": 13.498920086393088,
+      "unknown_inputs": [
+        "missing_carrier_position"
+      ]
+    }
+  },
+  "raw_reply": "{\"abs_time_s\":83801.28,\"enable_fog\":false,\"runtime_fog_thickness_m\":0,\"visibility_m\":25000,\"runtime_fog_visibility_m\":0,\"date\":{\"day\":15,\"year\":2024,\"month\":6},\"mission_start_time_s\":79200,\"dust_density\":0,\"snippet_version\":1,\"enable_dust\":false,\"fog\":{\"visibility_m\":0,\"thickness_m\":0},\"atmosphere_type\":0,\"theatre\":\"Caucasus\",\"clouds\":{\"density\":0,\"iprecptns\":0,\"base_m\":3000,\"thickness_m\":200}}"
+}
