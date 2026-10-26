@@ -93,6 +93,10 @@ Common examples:
 .\lso.exe -v run -o C:\LSO\recordings
 .\lso.exe -vv run -o C:\LSO\recordings
 
+# Also write the log to C:\LSO\logs\lso.YYYY-MM-DD.log (UTF-8, one file per UTC day, the
+# newest 14 kept by default; --log-max-files changes that). The console output is unchanged.
+.\lso.exe --log-dir C:\LSO\logs run -o C:\LSO\recordings
+
 # Regenerate an approach PNG from an LSO-created ACMI file
 .\lso.exe file C:\LSO\recordings\LSO-20260825-031018-Pilot.zip.acmi
 
@@ -118,6 +122,12 @@ source of the recovery-case work
 and is used to record calibration missions; it changes no grade. `--output <file>` also writes the
 JSON to a new file (log lines share stdout, so redirecting stdout would mix them in). With `evalEnabled = false` it
 reports `"status": "unavailable", "reason": "eval_disabled"` instead of failing.
+
+`--log-dir` writes the same lines as the console into daily files and deletes the oldest once
+more than `--log-max-files` exist; the writer runs on its own thread and drops lines rather
+than stalling telemetry if the disk cannot keep up. An unwritable directory or
+`--log-max-files 0` stops LSO at start-up with exit code 2. Prefer it to piping the console
+through `Tee-Object`, which never rotates and writes UTF-16 on Windows PowerShell.
 
 Use `lso.exe --help` and `lso.exe run --help` for the complete generated CLI reference.
 With `--no-acmi`, the TacView writer and ACMI-only metadata/unit RPCs are not started; live grading,

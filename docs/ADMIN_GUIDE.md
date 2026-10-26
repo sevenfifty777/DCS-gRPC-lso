@@ -82,8 +82,13 @@ and whether tracked files were modified (`lso_dirty`).
 New-Item -ItemType Directory -Force C:\LSO\recordings
 $env:DCS_GRPC_API_KEY = "<the token configured in dcs-grpc.lua>"
 $env:LSO_DISCORD_WEBHOOK = "<optional webhook URL>"   # keep it out of scripts and logs
-.\target\release\lso.exe run -o C:\LSO\recordings --discord-webhook $env:LSO_DISCORD_WEBHOOK
+.\target\release\lso.exe --log-dir C:\LSO\logs run -o C:\LSO\recordings --discord-webhook $env:LSO_DISCORD_WEBHOOK
 ```
+
+`--log-dir` keeps one UTF-8 log file per UTC day (`lso.YYYY-MM-DD.log`) and deletes the oldest
+beyond `--log-max-files` (default 14). Do not pipe the console through `Tee-Object -Append`
+instead: it never rotates and Windows PowerShell writes it as UTF-16 (1.39 GB accumulated on the
+dedicated server between 7 September and 25 October 2026).
 
 At start-up LSO logs the server version and one of three verdicts:
 
@@ -107,7 +112,8 @@ Useful options:
 | `--positions-only` | acquisition diagnostic: positions and JSON quality report only |
 | `--baseline-manifest` | JSON describing the DCS build, mission and deployed DLL/Lua hashes, copied into every report |
 | `--discord-webhook`, `--discord-users` | optional Discord publication |
-| `-v`, `-vv` | debug or trace logging; global flags go before `run` |
+| `-v`, `-vv` | debug or trace logging; global flags go before `run`. Trace logging multiplies the volume by about ten (the pair detector writes a line every 2 s per aircraft/carrier pair): reserve it for a session you are capturing |
+| `--log-dir`, `--log-max-files` | daily rolling log files in that directory, newest N kept (default 14); global flags, before `run`; an unwritable directory stops LSO with exit code 2 |
 
 The greenie board is the LSO page of the DCS Web Dashboard: point its `LSO_DIR` at the same
 `--out-dir`. `lso.db` is opened in SQLite WAL mode so the dashboard can read while a pass is being

@@ -112,8 +112,9 @@ Sur le HEAD `e62506d`, qui inclut la correction de segmentation des waveoffs :
 
 Sur le working tree courant :
 
-- `cargo test --locked --no-fail-fast` : **431 réussis, 0 échec, 1 ignoré** (428 tests du
-  binaire + 3 tests de provenance), branche `fix/near-deck-lineup-rescaling` du 26 octobre 2026 ;
+- `cargo test --locked --no-fail-fast` : **433 réussis, 0 échec, 1 ignoré** (430 tests du
+  binaire + 3 tests de provenance), branche `feature/log-rotation` du 26 octobre 2026 (inclut la
+  correction de la mise à l'échelle près du pont et la rotation des journaux) ;
 - `cargo fmt --check` et `cargo clippy --locked --all-targets -- -D warnings` propres ;
 - `lso.exe grade-ab` avant/après la correction de la mise à l'échelle près du pont, sur 192
   rapports locaux (`Weather/`, `trap_records/`) : 34 lignes changent, dont 9 symboles de note
@@ -892,6 +893,18 @@ purement observationnel (jamais utilisé pour une décision métier) :
 
 Les rapports de track ajoutent par-dessus le gap/skew maximum, les compteurs invalid/warning/dropped
 et la complétude des buffers bornés.
+
+Journal sur disque : l'option globale `--log-dir <dossier>` ([src/logging.rs](src/logging.rs),
+`tracing-appender` 0.2) écrit les mêmes lignes que la console dans un fichier UTF-8 par jour UTC
+(`lso.YYYY-MM-DD.log`, rotation au premier écrit après minuit UTC) et supprime les plus anciens
+au-delà de `--log-max-files` (défaut 14, élagage aussi à l'ouverture). L'écriture passe par le
+thread `non_blocking` de tracing-appender (file de 128 000 lignes, lossy : des lignes sont perdues
+plutôt que de bloquer la boucle 10-20 Hz, et le nombre perdu est consigné à la reprise) ; le
+`WorkerGuard` est relâché explicitement avant tout `process::exit` pour vider la file. Dossier
+non créable ou `--log-max-files 0` : message sur stderr et code de sortie 2 avant toute
+initialisation du journal. Le script de lancement local passe ces options et n'utilise plus
+`Tee-Object -Append`, qui ne tournait jamais et écrivait en UTF-16 (1,39 Go, 2,68 M lignes, du
+7 septembre au 25 octobre 2026, dont 90 % de TRACE des sessions `-vv`).
 
 ### Protocole de benchmark
 

@@ -29,6 +29,7 @@ tokio = { version = "1.2", features = [
 ] }
 tonic = "0.13"
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = "0.3"
 ultraviolet = { version = "0.9", features = ["f64"] }
 zip = "2.2"

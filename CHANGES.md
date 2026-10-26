@@ -26,6 +26,12 @@ since the `0.2.0` tag are listed under Unreleased.
 
 ### Added
 
+- `--log-dir <dir>` and `--log-max-files <n>` (global flags, `src/logging.rs`, `src/main.rs`):
+  daily rolling UTF-8 log files `lso.YYYY-MM-DD.log` beside the console output, the oldest
+  deleted beyond `n` (default 14), written from a background thread (`tracing-appender` 0.2,
+  lossy queue) and flushed before exit; an unwritable directory or `n = 0` stops LSO with exit
+  code 2. Replaces the launch script's `Tee-Object -Append`, which never rotated and wrote
+  UTF-16 (1.39 GB between 7 September and 25 October 2026).
 - Mission weather source for recovery-case detection (phase 1 of
   `docs/CASE_RECOVERY_DETECTION_PLAN_2026-09-26.md`): `src/mission_weather.rs` sends one fixed,
   read-only Lua chunk through `CustomService.Eval` (`src/client/custom_client.rs`) and parses the

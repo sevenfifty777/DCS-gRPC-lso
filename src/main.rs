@@ -7,6 +7,7 @@ mod draw;
 mod error;
 mod flown_approach;
 mod grading;
+mod logging;
 mod lso_notation;
 mod metrics;
 mod mission_weather;
@@ -34,6 +35,14 @@ struct Opts {
     /// Enable colorized output
     #[clap(long)]
     color: bool,
+    /// Also write the log to one UTF-8 file per UTC day in this directory
+    /// (`lso.YYYY-MM-DD.log`), created if needed, keeping the newest `--log-max-files` files.
+    /// The console output is unchanged. Global flag: goes before the subcommand.
+    #[clap(long, value_name = "DIR")]
+    log_dir: Option<std::path::PathBuf>,
+    /// Number of daily log files kept in `--log-dir`; the oldest are deleted at rotation.
+    #[clap(long, default_value_t = logging::DEFAULT_MAX_LOG_FILES, value_name = "N")]
+    log_max_files: usize,
     #[clap(subcommand)]
     command: Command,
 }
@@ -78,12 +87,37 @@ async fn main() {
         1 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
+    // The rolling file writer is opened before the subscriber exists, so a bad `--log-dir` is
+    // reported on stderr and stops the process instead of logging to nowhere.
+    let (file_layer, file_guard) = match opts
+        .log_dir
+        .as_deref()
+        .map(|dir| logging::rolling_writer(dir, opts.log_max_files))
+    {
+        None => (None, None),
+        Some(Ok((writer, guard))) => (
+            Some(fmt::layer().with_ansi(false).with_writer(writer)),
+            Some(guard),
+        ),
+        Some(Err(err)) => {
+            eprintln!("LSO cannot start: {err}");
+            std::process::exit(2);
+        }
+    };
     tracing_subscriber::registry()
         .with(filter::filter_fn(move |m| {
             m.target().starts_with("lso") && m.level() <= &max_level
         }))
         .with(fmt::layer().with_ansi(opts.color))
+        .with(file_layer)
         .init();
+    if let Some(dir) = &opts.log_dir {
+        tracing::info!(
+            log_dir = %dir.display(),
+            max_files = opts.log_max_files,
+            "daily log file rotation enabled"
+        );
+    }
 
     // shutdown gracefully on CTRL+C
     let shutdown = Shutdown::new();
@@ -104,8 +138,15 @@ async fn main() {
         Command::Weather(opts) => commands::weather::execute(opts).await,
         Command::CloudPresets(opts) => commands::cloud_presets::execute(opts),
     };
-    if let Err(err) = result {
+    let failed = if let Err(err) = result {
         tracing::error!(error = %err, error_chain = ?err, "LSO terminated with an error");
+        true
+    } else {
+        false
+    };
+    // `process::exit` runs no destructors: flush the file writer's queue explicitly first.
+    drop(file_guard);
+    if failed {
         std::process::exit(1);
     }
 }

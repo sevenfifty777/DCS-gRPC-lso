@@ -133,9 +133,11 @@ corrigés en conséquence.
   est un index de type et non un ID d’unité, sans casser le schema-v3.
 - **Scripts de déploiement locaux.** `run-live*.ps1` est désormais ignoré par git et
   `docs/ADMIN_GUIDE.md` (13 septembre) fixe la référence : webhook lu depuis l'environnement,
-  release serveur `v0.10.0` avec `recoveryTelemetry.enabled`. Reste à rendre le script lui-même
-  autonome hors du poste de développement (manifeste optionnel ou livré, `$lsoRoot` réellement
-  utilisé), vérifier l'écriture UTF-8 sur Windows PowerShell 5.1 et PowerShell 7, et inspecter avec
+  release serveur `v0.10.0` avec `recoveryTelemetry.enabled`. Depuis le 26 octobre 2026 le
+  script passe `--log-dir`/`--log-max-files` au binaire au lieu de `Tee-Object` (question UTF-8
+  close). Reste à rendre le script lui-même autonome hors du poste de développement (manifeste
+  optionnel ou livré, `$lsoRoot` réellement utilisé), déployer cette version du script et du
+  binaire sur le serveur dédié et vérifier la première rotation à minuit UTC, et inspecter avec
   `sqlite3` la base `Records` qui mélange deux lignées de schéma avant de faire confiance au board.
 
 ### Externaliser les seuils `PROJECT-DERIVED`
